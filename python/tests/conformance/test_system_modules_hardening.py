@@ -6,23 +6,14 @@ are hand-written rather than generated from the fixture; ``TestFixtureCoverage``
 at the bottom holds the two in step, so a case added on the spec side fails here
 instead of going unnoticed.
 
-Covers all 11 test cases defined in the canonical conformance fixture:
-
-  1.  overrides_persisted_on_update
-  2.  overrides_loaded_on_startup
-  3.  audit_entry_records_actor
-  4.  audit_entry_records_change
-  5.  prometheus_usage_exports_calls_total
-  6.  reload_with_path_filter
-  7.  reload_module_id_and_filter_conflict
-  8.  startup_fail_on_error_true_raises
-  9.  startup_fail_on_error_false_continues
-  10. rust_register_returns_result  (language=rust — skipped for Python)
-  11. reload_order_is_topological_not_alphabetical
+The responses exercised through the public client also validate against the
+canonical response schemas.
 """
 
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
 import os
 import sys
@@ -33,10 +24,13 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 import yaml
+from jsonschema import Draft202012Validator
+from referencing import Registry as SchemaRegistry
+from referencing import Resource
 
-from apcore import APCore
+from apcore import APCore, AutoApproveHandler
 from apcore.config import Config
-from apcore.errors import ModuleReloadConflictError, SysModuleRegistrationError
+from apcore.errors import ModuleError, ModuleReloadConflictError, SysModuleRegistrationError
 from apcore.events.emitter import EventEmitter
 from apcore.observability.metrics import MetricsCollector
 from apcore.observability.usage import UsageCollector
@@ -50,9 +44,10 @@ from apcore.sys_modules.control import (
 )
 from apcore.sys_modules.health import HealthSummaryModule
 from apcore.sys_modules.manifest import ManifestFullModule
+from apcore.sys_modules.overrides import InMemoryOverridesStore
 from apcore.sys_modules.registration import register_sys_modules
 
-from conformance.canonical_fixtures import case_ids, load_fixture
+from conformance.canonical_fixtures import case_ids, load_fixture, schemas_dir
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -69,6 +64,83 @@ _CASES: dict[str, Any] = {case["id"]: case for case in load_fixture(FIXTURE)["te
 
 def _case(case_id: str) -> dict[str, Any]:
     return _CASES[case_id]
+
+
+class TestCanonicalWireResponses:
+    @staticmethod
+    def _schema(name: str) -> dict[str, Any]:
+        return json.loads((schemas_dir() / f"{name}.schema.json").read_text())
+
+    def test_manifest_responses_follow_canonical_schema(self) -> None:
+        case = _case("manifest_responses_follow_canonical_schema")
+        setup = case["setup"]
+        client = APCore(config=_make_config(**{"sys_modules.enabled": True}))
+        client.registry.register(
+            setup["module_id"],
+            _WireTestModule(),
+            metadata={"dependencies": [setup["dependency"]]},
+        )
+        entry_schema = self._schema("sys-manifest-module")
+        single = json.loads(json.dumps(client.call("system.manifest.module", {"module_id": setup["module_id"]})))
+        Draft202012Validator(entry_schema).validate(single)
+        assert {key: single[key] for key in case["expected"]["entry"]} == case["expected"]["entry"]
+
+        options = {"prefix": setup["module_id"], "include_schemas": False, "include_source_paths": False}
+        full = json.loads(json.dumps(client.call("system.manifest.full", options)))
+        resources = SchemaRegistry().with_resource(entry_schema["$id"], Resource.from_contents(entry_schema))
+        Draft202012Validator(self._schema("sys-manifest-full"), registry=resources).validate(full)
+        want = {**case["expected"]["entry"], **case["expected"]["suppressed_fields"]}
+        assert full["module_count"] == 1
+        assert {key: full["modules"][0][key] for key in want} == want
+
+    def test_first_config_update_has_null_old_value(self) -> None:
+        case = _case("first_config_update_has_null_old_value")
+        config = _make_config(**{"sys_modules.enabled": True, "sys_modules.events.enabled": True})
+        client = APCore(config=config)
+        client.executor.set_approval_handler(AutoApproveHandler())
+        result = json.loads(json.dumps(client.call("system.control.update_config", case["action"]["input"])))
+        validator = Draft202012Validator(self._schema("sys-control-update-config"))
+        validator.validate(result)
+        assert result == case["expected"]
+        del result["old_value"]
+        assert not validator.is_valid(result)
+
+    def test_config_update_rejects_empty_path(self) -> None:
+        case = _case("config_update_rejects_empty_path")
+        config = _make_config(
+            **{"sys_modules.enabled": True, "sys_modules.events.enabled": True, "extensions.root": case["setup"]["initial_root"]}
+        )
+        client = APCore(config=config)
+        client.executor.set_approval_handler(AutoApproveHandler())
+        payloads: list[Any] = []
+
+        class Recorder:
+            subscriber_id = "config-updates"
+            event_pattern = "apcore.config.updated"
+
+            async def on_event(self, event: Any) -> None:
+                payloads.append(event.data)
+
+        try:
+            assert client.events is not None
+            client.events.subscribe(Recorder())
+            with pytest.raises(ModuleError) as caught:
+                client.call("system.control.update_config", case["action"]["input"])
+            assert caught.value.code == case["expected"]["error_code"]
+            assert config.get(case["action"]["input"]["key"]) == case["expected"]["effective_value"]
+            client.events.flush()
+            assert len(payloads) == case["expected"]["update_events"]
+        finally:
+            client.close()
+
+
+class _WireTestModule:
+    description = "Conformance manifest module"
+    input_schema: dict[str, Any] = {"type": "object"}
+    output_schema: dict[str, Any] = {"type": "object"}
+
+    def execute(self, inputs: dict[str, Any], context: Any) -> dict[str, Any]:
+        return {}
 
 
 def _assert_topological_order(
@@ -177,6 +249,20 @@ def _make_context(identity_id: str = "unknown", identity_type: str = "user") -> 
 class TestOverridesPersistOnUpdate:
     """Case: overrides_persisted_on_update"""
 
+    @pytest.mark.parametrize("key", ["toggle.fixture.probe", "sys_modules", "apcore.sys_modules", "apcore"])
+    def test_update_config_cannot_change_reserved_state(self, tmp_path: Path, key: str) -> None:
+        path = tmp_path / "overrides.yaml"
+        config = _make_config()
+        mod = _make_update_config_module(config, overrides_path=str(path))
+        before = config.data
+
+        with pytest.raises(ModuleError) as error:
+            mod.execute({"key": key, "value": False, "reason": "test"}, _make_context())
+
+        assert error.value.code == "CONFIG_KEY_RESTRICTED"
+        assert config.data == before
+        assert not path.exists()
+
     def test_update_config_writes_overrides_file(self, tmp_path: Path) -> None:
         """update_config with overrides_path writes the change to the YAML file."""
         case = _case("overrides_persisted_on_update")
@@ -193,6 +279,20 @@ class TestOverridesPersistOnUpdate:
             written = yaml.safe_load(f)
         for key, value in expected["overrides_file_contains"].items():
             assert written.get(key) == value, f"overrides file missing {key}={value!r}; got {written!r}"
+
+    def test_config_update_rejects_persisted_toggle_keys(self) -> None:
+        case = _case("config_update_rejects_persisted_toggle_keys")
+        config = _make_config()
+        overrides = InMemoryOverridesStore()
+        module = UpdateConfigModule(config, EventEmitter(), overrides_store=overrides)
+        before = config.data
+
+        with pytest.raises(ModuleError) as error:
+            module.execute(case["action"]["input"], _make_context())
+
+        assert error.value.code == case["expected"]["error_code"]
+        assert overrides.load() == case["expected"]["overrides"]
+        assert config.data == before
 
     def test_overrides_file_accumulates_multiple_keys(self, tmp_path: Path) -> None:
         """Multiple update_config calls accumulate keys in the overrides file."""
@@ -320,6 +420,63 @@ class TestOverridesLoadedOnStartup:
 # ---------------------------------------------------------------------------
 # 3. audit_entry_records_actor
 # ---------------------------------------------------------------------------
+
+
+class TestConfigUpdateChangesDefaultExecutionTimeout:
+    @pytest.mark.asyncio
+    async def test_next_call_uses_updated_default(self) -> None:
+        case = _case("config_update_changes_default_execution_timeout")
+        setup, expected = case["setup"], case["expected"]
+        config = _make_config(
+            **{
+                "executor.default_timeout": setup["initial_default_timeout_ms"],
+                "sys_modules.enabled": True,
+                "sys_modules.events.enabled": True,
+            }
+        )
+        client = APCore(config=config)
+        client.executor.set_approval_handler(AutoApproveHandler())
+        finished = asyncio.Event()
+
+        class Probe:
+            input_schema = None
+            output_schema = None
+            description = "Probe the live execution timeout"
+
+            async def execute(self, inputs: dict[str, Any], context: Any) -> dict[str, Any]:
+                try:
+                    await asyncio.sleep(setup["probe_duration_ms"] / 1000)
+                    return {"ok": True}
+                finally:
+                    finished.set()
+
+        client.register("fixture.timeout", Probe())
+        changed = await client.call_async("system.control.update_config", dict(case["action"]["input"]))
+        assert changed["success"] is expected["call_success"]
+        try:
+            with pytest.raises(ModuleError) as error:
+                await client.call_async("fixture.timeout", {})
+            assert error.value.code == expected["probe_error_code"]
+        finally:
+            await asyncio.wait_for(finished.wait(), 2)
+
+
+class TestConfigUpdateRedactsConfiguredKeys:
+    def test_response_and_audit_mask_configured_keys(self) -> None:
+        case = _case("config_update_redacts_configured_keys")
+        setup, inputs, expected = case["setup"], case["action"]["input"], case["expected"]
+        config = _make_config(
+            **{"obs.redaction.sensitive_keys": setup["sensitive_keys"], inputs["key"]: setup["initial_value"]}
+        )
+        audit_store = InMemoryAuditStore()
+        module = _make_update_config_module(config, audit_store=audit_store)
+
+        result = module.execute(inputs, _make_context())
+
+        assert result["old_value"] == expected["old_value"]
+        assert result["new_value"] == expected["new_value"]
+        assert audit_store.query()[0].change == {"before": expected["old_value"], "after": expected["new_value"]}
+        assert config.get(inputs["key"]) == inputs["value"]
 
 
 class TestAuditEntryRecordsActor:
@@ -1131,6 +1288,12 @@ class TestFixtureCoverage:
 
     #: canonical case id → the class in this module that asserts it.
     COVERED: dict[str, str] = {
+        "manifest_responses_follow_canonical_schema": "TestCanonicalWireResponses",
+        "first_config_update_has_null_old_value": "TestCanonicalWireResponses",
+        "config_update_rejects_empty_path": "TestCanonicalWireResponses",
+        "config_update_rejects_persisted_toggle_keys": "TestOverridesPersistOnUpdate",
+        "config_update_redacts_configured_keys": "TestConfigUpdateRedactsConfiguredKeys",
+        "config_update_changes_default_execution_timeout": "TestConfigUpdateChangesDefaultExecutionTimeout",
         "overrides_persisted_on_update": "TestOverridesPersistOnUpdate",
         "overrides_loaded_on_startup": "TestOverridesLoadedOnStartup",
         "audit_entry_records_actor": "TestAuditEntryRecordsActor",

@@ -3,7 +3,7 @@
   "driver_contract": {
     "how_to_invoke": "Register `target_id` as a module with `requires_approval: true` (or force it via the same `ExecutionPolicy(gate_destructive=true)` / ACL `approval: required` mechanism `approval_gate.json` and `acl_argument_scoped_approval.json` use — any path that reaches Step 4.5 with `requires_approval` true is equivalent for this fixture, since the field is populated once, upstream of which path triggered the gate). Configure a recording `ApprovalHandler` whose `request_approval` returns `approved` and captures the `ApprovalRequest` it was handed. When `caller_id` is non-null, invoke `target_id` from within a module of that ID (so `Context.child()` sets `caller_id`); when it is null, invoke `target_id` as a top-level call (a fresh `Context`, never passed through `child()`).",
     "no_wire_assertion": "`caller_id` and `action` are read off the in-process `ApprovalRequest` object the handler receives, not off a serialized payload — Rust's `ApprovalRequest` skips `context` during serialization and neither field has a wire-format fixture elsewhere. A driver MUST assert on the object the handler's callback/trait method actually received, not a round-tripped copy.",
-    "no_phase_b_case": "A pending approval resumed via `_approval_token` (Phase B) never reaches `ApprovalRequest` construction at all — `check_approval(token)` is called instead of `request_approval(request)`. This fixture has no case for that path; there is no request object there for `caller_id`/`action` to be present on."
+    "phase_b_driver": "This fixture covers the request projected at initial approval. The approval_gate fixture checks the invocation passed to the scoped resume method."
   },
   "test_cases": [
     {

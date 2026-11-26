@@ -291,7 +291,7 @@ pub struct ObsLoggingMiddleware {
     log_inputs: bool,
     log_outputs: bool,
     redaction: Option<RedactionConfig>,
-    starts: Mutex<HashMap<String, std::time::Instant>>,
+    timer: crate::middleware::CallTimer,
 }
 
 impl ObsLoggingMiddleware {
@@ -303,7 +303,7 @@ impl ObsLoggingMiddleware {
             log_inputs: true,
             log_outputs: true,
             redaction: None,
-            starts: Mutex::new(HashMap::new()),
+            timer: crate::middleware::CallTimer::default(),
         }
     }
 
@@ -315,7 +315,7 @@ impl ObsLoggingMiddleware {
             log_inputs,
             log_outputs,
             redaction: None,
-            starts: Mutex::new(HashMap::new()),
+            timer: crate::middleware::CallTimer::default(),
         }
     }
 
@@ -351,11 +351,7 @@ impl Middleware for ObsLoggingMiddleware {
         inputs: serde_json::Value,
         ctx: &Context<serde_json::Value>,
     ) -> Result<Option<serde_json::Value>, ModuleError> {
-        // Store start time keyed by trace_id for concurrency safety
-        {
-            let mut starts = self.starts.lock();
-            starts.insert(ctx.trace_id.clone(), std::time::Instant::now());
-        }
+        self.timer.start(module_id, ctx);
 
         let mut extra = HashMap::new();
         // D-28: protocol-canonical names are `module_id` / `inputs`.
@@ -381,6 +377,7 @@ impl Middleware for ObsLoggingMiddleware {
                 ctx.redacted_inputs.as_ref(),
                 &inputs,
                 self.redaction.as_ref(),
+                ctx.executor.is_some(),
             );
             self.apply_redaction(&mut payload);
             extra.insert("inputs".to_string(), payload);
@@ -398,13 +395,10 @@ impl Middleware for ObsLoggingMiddleware {
         output: serde_json::Value,
         ctx: &Context<serde_json::Value>,
     ) -> Result<Option<serde_json::Value>, ModuleError> {
-        // Remove start time by trace_id and compute duration
-        let duration_ms = {
-            let mut starts = self.starts.lock();
-            starts
-                .remove(&ctx.trace_id)
-                .map_or(0.0, |s| s.elapsed().as_secs_f64() * 1000.0)
+        let Some(duration) = self.timer.finish(module_id, ctx) else {
+            return Ok(None);
         };
+        let duration_ms = duration.as_secs_f64() * 1000.0;
 
         let mut extra = HashMap::new();
         extra.insert(
@@ -422,6 +416,7 @@ impl Middleware for ObsLoggingMiddleware {
                 ctx.redacted_output.as_ref(),
                 &output,
                 self.redaction.as_ref(),
+                ctx.executor.is_some(),
             );
             self.apply_redaction(&mut payload);
             extra.insert("output".to_string(), payload);
@@ -442,13 +437,10 @@ impl Middleware for ObsLoggingMiddleware {
         error: &ModuleError,
         ctx: &Context<serde_json::Value>,
     ) -> Result<Option<serde_json::Value>, ModuleError> {
-        // Remove start time by trace_id and compute duration
-        let duration_ms = {
-            let mut starts = self.starts.lock();
-            starts
-                .remove(&ctx.trace_id)
-                .map_or(0.0, |s| s.elapsed().as_secs_f64() * 1000.0)
+        let Some(duration) = self.timer.finish(module_id, ctx) else {
+            return Ok(None);
         };
+        let duration_ms = duration.as_secs_f64() * 1000.0;
 
         let mut extra = HashMap::new();
         extra.insert(
@@ -469,7 +461,7 @@ impl Middleware for ObsLoggingMiddleware {
         // the same rule the metrics label and the tracing span attribute follow.
         extra.insert(
             "error_code".to_string(),
-            serde_json::Value::String(error.code.wire_str()),
+            serde_json::Value::String(error.wire_code().into_owned()),
         );
         self.logger.emit(
             "error",

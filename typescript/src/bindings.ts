@@ -30,7 +30,7 @@ import { annotationsFromJSON } from './module.js';
 const SUPPORTED_SPEC_VERSIONS = new Set(['1.0']);
 const BINDING_KEYS = new Set(['module_id', 'target', 'description', 'documentation',
   'input_schema', 'output_schema', 'schema_ref', 'auto_schema', 'tags', 'version',
-  'annotations', 'resources', 'metadata']);
+  'annotations', 'resources', 'metadata', 'display']);
 
 /** D-139: reject malformed declarations before importing any target code. */
 function validateBindingEntry(entry: unknown, filePath: string): asserts entry is Record<string, unknown> {
@@ -39,6 +39,9 @@ function validateBindingEntry(entry: unknown, filePath: string): asserts entry i
   }
   for (const key of Object.keys(entry)) {
     if (!BINDING_KEYS.has(key)) throw new BindingFileInvalidError(filePath, `Unknown binding key '${key}'`);
+  }
+  if ('display' in entry && (entry.display === null || typeof entry.display !== 'object' || Array.isArray(entry.display))) {
+    throw new BindingFileInvalidError(filePath, 'display must be a mapping');
   }
   if (('input_schema' in entry) !== ('output_schema' in entry)) {
     throw new BindingFileInvalidError(filePath, 'input_schema and output_schema must be provided together');
@@ -227,6 +230,8 @@ export class BindingLoader {
 
   /**
    * Load a binding file and register every module it declares.
+   * Prepare every entry before registration, then register in file order.
+   * Registry errors can occur after an earlier module was registered.
    *
    * @param config Optional configuration supplying the `validation.binding.*`
    *   limits of PROTOCOL_SPEC §9.1.2. All four are **unconstrained by
@@ -300,9 +305,11 @@ export class BindingLoader {
       }
 
       validateBindingLimits(entryObj, config ?? null, filePath);
-      const fm = await this._createModuleFromBinding(entryObj, bindingFileDir, filePath, config ?? null);
-      await registry.register(entryObj['module_id'] as string, fm);
-      results.push(fm);
+      results.push(await this._createModuleFromBinding(entryObj, bindingFileDir, filePath, config ?? null));
+    }
+
+    for (const module of results) {
+      await registry.register(module.moduleId, module);
     }
 
     return results;
@@ -527,6 +534,8 @@ export class BindingLoader {
       }
     }
 
+    const display = binding['display'] as Record<string, unknown> | undefined;
+    const metadata = binding['metadata'] as Record<string, unknown> | undefined;
     return new FunctionModule({
       execute: async (inputs, context) => {
         const result = await func(inputs, context);
@@ -545,7 +554,8 @@ export class BindingLoader {
       annotations: binding['annotations']
         ? annotationsFromJSON(binding['annotations'] as Record<string, unknown>)
         : undefined,
-      metadata: binding['metadata'] as Record<string, unknown> | undefined,
+      metadata: display === undefined ? metadata : { ...metadata, display },
+      display,
       resources: binding['resources'] as ResourceLimits | undefined,
     });
   }

@@ -20,7 +20,10 @@
 
 /** Validate *value* against a raw JSON Schema object, via the caller's converter. */
 export type SubSchemaCheck = (sub: Record<string, unknown>, value: unknown) => boolean;
-type ResolveReference = (reference: string) => Record<string, unknown> | boolean | undefined;
+type ResolveReference = (
+  reference: string,
+  fromSchema: Record<string, unknown>,
+) => Record<string, unknown> | boolean | undefined;
 
 /**
  * Presence of any of these makes a schema need the applicator evaluator.
@@ -49,19 +52,23 @@ export const APPLICATOR_KEYWORDS: readonly string[] = [
  * TypeBox's array check returns early when the match count is `0`, before it
  * consults `minContains` (`typebox/value/check`), so `minContains: 0` — which
  * JSON Schema 2020-12 §6.4.5 defines as making `contains` vacuously satisfiable
- * — would reject every array with no matching element. apcore-python and
- * apcore-rust both accept it. Only this case is rerouted; a schema with the
- * default or an explicit positive `minContains` stays with TypeBox.
+ * — would reject every array with no matching element. The default or an
+ * explicit positive `minContains` stays with TypeBox.
  */
 export function containsNeedsEvaluator(schema: Record<string, unknown>): boolean {
-  return schema['minContains'] === 0 && isPlainObject(schema['contains']);
+  const contains = schema['contains'];
+  return schema['minContains'] === 0 && (typeof contains === 'boolean' || isPlainObject(contains));
 }
 
 /** True when *schema* carries at least one keyword this module enforces. */
 export function hasApplicatorKeyword(schema: Record<string, unknown>): boolean {
+  const properties = schema['properties'];
+  const type = schema['type'];
   return (
     APPLICATOR_KEYWORDS.some((keyword) => keyword in schema) || containsNeedsEvaluator(schema) ||
-    (Array.isArray(schema.required) && schema.required.some((key) => Object.hasOwn(Object.prototype, key)))
+    (typeof schema['multipleOf'] === 'number' && (type === undefined || type === 'integer' || type === 'number')) ||
+    (Array.isArray(schema.required) && schema.required.some((key) =>
+      !isPlainObject(properties) || !Object.hasOwn(properties, key) || Object.hasOwn(Object.prototype, key)))
   );
 }
 
@@ -95,23 +102,24 @@ function checkSub(sub: unknown, value: unknown, check: SubSchemaCheck): boolean 
 }
 
 /**
- * Assert every applicator keyword *schema* carries against *value*.
+ * Return the first failed applicator, or null if all assertions hold.
  *
  * Each keyword is inert on instances of the wrong type (§6, and §10.3 for the
  * applicators): `prefixItems` accepts every non-array, the object keywords
  * accept every non-object. That is what lets a type-less schema carrying one of
  * them be intersected unconditionally.
  */
-export function checkApplicators(
+export function applicatorFailure(
   schema: Record<string, unknown>,
   value: unknown,
   check: SubSchemaCheck,
   resolveReference: ResolveReference,
-): boolean {
+): string | null {
+  if (!checkOwnRequired(schema, value)) return 'required';
+  if (!checkContains(schema, value, check)) return 'maxContains';
+  if (!checkMultipleOf(schema['multipleOf'], value)) return 'multipleOf';
   return (
-    checkOwnRequired(schema, value) &&
     checkPrefixItems(schema, value, check) &&
-    checkContains(schema, value, check) &&
     checkPatternProperties(schema, value, check) &&
     checkPropertyNames(schema, value, check) &&
     checkDependentRequired(schema, value) &&
@@ -119,7 +127,27 @@ export function checkApplicators(
     checkConditional(schema, value, check) &&
     checkUnevaluatedItems(schema, value, check, resolveReference) &&
     checkUnevaluatedProperties(schema, value, check, resolveReference)
-  );
+  ) ? null : 'type';
+}
+
+/** Compare divisibility in decimal, without a floating-point remainder. */
+function checkMultipleOf(divisor: unknown, value: unknown): boolean {
+  if (typeof divisor !== 'number' || typeof value !== 'number') return true;
+  if (!Number.isFinite(value) || !Number.isFinite(divisor) || divisor <= 0) return false;
+  if (Number.isSafeInteger(value) && Number.isSafeInteger(divisor)) return value % divisor === 0;
+
+  const [numerator, numeratorExponent] = decimalParts(value);
+  const [denominator, denominatorExponent] = decimalParts(divisor);
+  const exponentDifference = numeratorExponent - denominatorExponent;
+  return exponentDifference >= 0
+    ? (numerator * 10n ** BigInt(exponentDifference)) % denominator === 0n
+    : numerator % (denominator * 10n ** BigInt(-exponentDifference)) === 0n;
+}
+
+function decimalParts(value: number): [coefficient: bigint, exponent: number] {
+  const [mantissa, exponent = '0'] = value.toString().split('e');
+  const [integer, fraction = ''] = mantissa.split('.');
+  return [BigInt(integer + fraction), Number(exponent) - fraction.length];
 }
 
 function checkOwnRequired(schema: Record<string, unknown>, value: unknown): boolean {
@@ -320,7 +348,7 @@ function annotatingSubSchemas(
 ): Record<string, unknown>[] {
   const sources: Record<string, unknown>[] = [];
   if (typeof schema.$ref === 'string') {
-    const target = resolveReference(schema.$ref);
+    const target = resolveReference(schema.$ref, schema);
     if (isPlainObject(target) && target !== schema) sources.push(target);
   }
 

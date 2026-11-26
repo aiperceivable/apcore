@@ -7,18 +7,19 @@ import time
 from typing import Any, AsyncIterator
 
 import pytest
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from apcore.client import APCore
-from apcore.cancel import CancelToken
+from apcore.cancel import CancelToken, ExecutionCancelledError
 from apcore.config import Config
 from apcore.context import Context
-from apcore.errors import InvalidInputError, ModuleNotFoundError, ModuleTimeoutError
+from apcore.errors import InvalidInputError, ModuleError, ModuleExecuteError, ModuleNotFoundError, ModuleTimeoutError
 from apcore.events.emitter import ApCoreEvent
 from apcore.executor import Executor
 from apcore.middleware import Middleware
 from apcore.module import ModuleAnnotations
 from apcore.registry import Registry
+from conformance.canonical_fixtures import load_fixture
 
 
 class SimpleInput(BaseModel):
@@ -299,7 +300,7 @@ class SchemaFailStreamingModule:
         self.input_schema = None
 
         class _OutSchema(BaseModel):
-            value: int  # stream yields str, forcing validation failure
+            value: int = Field(json_schema_extra={"x-sensitive": True})
 
         self.output_schema = _OutSchema
 
@@ -314,8 +315,52 @@ class SchemaFailStreamingModule:
 class TestStreamPostValidationFailure:
     """Post-stream validation failures surface through the emitter + log."""
 
+    @pytest.mark.parametrize(
+        "case", load_fixture("stream_post_processing.json")["test_cases"], ids=lambda case: case["id"]
+    )
+    async def test_post_processing_failure(self, case: dict[str, Any]) -> None:
+        inputs = case["input"]
+        expected = case["expected"]
+        on_error_calls = 0
+
+        class FixtureModule(StreamingModule):
+            async def stream(self, inputs: dict[str, Any], context: Context) -> AsyncIterator[dict[str, Any]]:
+                for chunk in case["input"]["chunks"]:
+                    yield chunk
+
+        class FailingAfter(Middleware):
+            def after(self, module_id: str, args: dict[str, Any], output: dict[str, Any], context: Context) -> None:
+                if inputs["after_error_code"] == "EXECUTION_CANCELLED":
+                    raise ExecutionCancelledError()
+                raise ModuleExecuteError(module_id, "after failed")
+
+            def on_error(self, module_id: str, args: dict[str, Any], error: Exception, context: Context) -> None:
+                nonlocal on_error_calls
+                on_error_calls += 1
+
+        config = Config({"sys_modules": {"enabled": True, "events": {"enabled": True}}})
+        client = APCore(config=config)
+        client.register("test.stream", FixtureModule())
+        client.use(FailingAfter())
+        events: list[ApCoreEvent] = []
+        client.on("apcore.stream.post_validation_failed", events.append)
+        chunks = []
+        error_code = None
+        try:
+            async for chunk in client.stream("test.stream", {"count": len(inputs["chunks"])}):
+                chunks.append(chunk)
+        except ModuleError as error:
+            error_code = error.code
+
+        assert client.events is not None
+        client.events.flush()
+        assert chunks == expected["chunks"]
+        assert error_code == expected["error_code"]
+        assert on_error_calls == expected["on_error_calls"]
+        assert len(events) == expected["post_failure_events"]
+
     @pytest.mark.asyncio
-    async def test_post_stream_failure_emits_event(self) -> None:
+    async def test_post_stream_failure_emits_event(self, caplog: pytest.LogCaptureFixture) -> None:
         config = Config({"sys_modules": {"enabled": True, "events": {"enabled": True}}})
         client = APCore(config=config)
         client.register("failstream", SchemaFailStreamingModule())
@@ -336,6 +381,8 @@ class TestStreamPostValidationFailure:
         assert event.module_id == "failstream"
         assert event.severity == "error"
         assert "error_type" in event.data
+        assert "not-an-int-b" not in caplog.text
+        assert "not-an-int-b" not in event.data["message"]
 
 
 class BadChunkStreamingModule:

@@ -16,9 +16,11 @@
  * written against.
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import * as fs from 'node:fs';
+import { tmpdir } from 'node:os';
 import * as path from 'node:path';
+import '../src/registry/install-filesystem.js';
 import { Registry } from '../src/registry/registry.js';
 import { EventEmitter } from '../src/events/emitter.js';
 import type { ApCoreEvent } from '../src/events/emitter.js';
@@ -46,6 +48,48 @@ const validModuleMetadata = {
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
 describe('Conformance: registry_load_ordering.json', () => {
+  it('discovery_skips_dependents_of_failed_provider', async () => {
+    const tc = caseById('discovery_skips_dependents_of_failed_provider');
+    const expected = tc['expected'];
+    const directory = fs.mkdtempSync(path.join(tmpdir(), 'apcore-registry-load-'));
+    const marker = path.join(directory, 'load.log');
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      fs.writeFileSync(path.join(directory, 'package.json'), '{"type":"module"}');
+      for (const module of tc['setup']['modules']) {
+        const id = module.id as string;
+        const failure = module.fails ? 'throw new Error("provider unavailable");' : '';
+        fs.writeFileSync(path.join(directory, `${id}.js`), `
+          import { appendFileSync } from 'node:fs';
+          export default {
+            ...${JSON.stringify(validModuleMetadata)},
+            execute() { return {}; },
+            onLoad() { appendFileSync(${JSON.stringify(marker)}, ${JSON.stringify(`${id}\n`)}); ${failure} },
+          };
+        `);
+        fs.writeFileSync(path.join(directory, `${id}_meta.yaml`), JSON.stringify({
+          version: '1.0.0', dependencies: module.dependencies ?? [],
+        }));
+      }
+      const registry = new Registry({ extensionsDir: directory });
+      const published: string[] = [];
+      registry.on('register', (id) => { published.push(id); });
+      expect(await registry.discover()).toBe(expected['post_register_count']);
+      expect(registry.list().sort()).toEqual(expected['published_ids']);
+      expect(published.sort()).toEqual(expected['published_ids']);
+      expect(fs.readFileSync(marker, 'utf-8').trim().split('\n').sort()).toEqual(expected['load_hook_ids']);
+      for (const id of expected['blocked_ids']) {
+        expect(warning).toHaveBeenCalledWith(
+          expect.stringContaining(id), expect.objectContaining({ code: expected['dependency_error_code'] }),
+        );
+      }
+      expect(warning).toHaveBeenCalledWith(expect.stringMatching(/optional.*provider/));
+    } finally {
+      warning.mockRestore();
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   it('visibility_after_successful_on_load', async () => {
     const tc = caseById('visibility_after_successful_on_load');
     const setup = tc['setup']['module'];

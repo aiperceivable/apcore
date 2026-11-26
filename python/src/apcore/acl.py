@@ -10,7 +10,9 @@ import contextvars
 import inspect
 import logging
 import os
+import stat
 import threading
+from copy import deepcopy
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -1588,13 +1590,12 @@ class ACL:
     def rules(self) -> tuple[ACLRule, ...]:
         """The current rule list, in definition order.
 
-        Read-only accessor required by PROTOCOL_SPEC §6.8. Returns an immutable
-        tuple taken under the same snapshot discipline :meth:`check` uses, so a
-        caller cannot reach through it to mutate the ACL's own list. Reflects
-        the reloaded file after :meth:`reload`.
+        The tuple contains detached rules, including patterns and nested
+        conditions. The accessor reflects the reloaded file after :meth:`reload`.
         """
         with self._lock:
-            return tuple(self._rules)
+            snapshot = tuple(self._rules)
+        return deepcopy(snapshot)
 
     @classmethod
     def load(
@@ -1796,7 +1797,8 @@ class ACL:
             ConfigNotFoundError: Never raised for a missing root (that path
                 returns ``None``); only propagated from :meth:`load` if the
                 path disappears between the existence check and the load.
-            ACLRuleError: If the ACL file exists but is structurally invalid.
+            ConfigError: If the configured policy path cannot be inspected or is not a file.
+            ACLRuleError: If the ACL file is structurally invalid.
         """
         root = config.get("acl.root", Config.get_default("acl.root"))
         if root is None:
@@ -1804,21 +1806,33 @@ class ACL:
         if root == "":
             root = Config.get_default("acl.root")
 
-        root_path = config.resolve_path(str(root))
-
-        if not os.path.exists(root_path):
-            # Missing path -> no enforcement. Do NOT synthesize an ACL.
+        path = Path(config.resolve_path(str(root)))
+        mode = cls._discovery_mode(path)
+        if mode is None:
             return None
-
-        if os.path.isdir(root_path):
-            # Directory convention: acl/{scope}_acl.yaml (PROTOCOL_SPEC §3.1).
-            acl_file = Path(root_path) / "global_acl.yaml"
-            if not acl_file.is_file():
-                # Directory present but no conventional ACL file -> no-op.
+        if stat.S_ISDIR(mode):
+            path /= "global_acl.yaml"
+            mode = cls._discovery_mode(path)
+            if mode is None:
                 return None
-            return cls.load(str(acl_file))
+        if not stat.S_ISREG(mode):
+            raise ConfigError(f"ACL path {str(path)!r} is not a regular file")
+        return cls.load(str(path))
 
-        return cls.load(root_path)
+    @staticmethod
+    def _discovery_mode(path: Path) -> int | None:
+        try:
+            mode = path.lstat().st_mode
+        except FileNotFoundError:
+            return None
+        except OSError as error:
+            raise ConfigError(f"Cannot inspect ACL path {str(path)!r}: {error}") from error
+        if stat.S_ISLNK(mode):
+            try:
+                return path.stat().st_mode
+            except OSError as error:
+                raise ConfigError(f"Cannot resolve ACL path {str(path)!r}: {error}") from error
+        return mode
 
     def check(
         self,

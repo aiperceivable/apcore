@@ -8,7 +8,7 @@ description: "The canonical apcore protocol specification (RFC 2119): module, sc
 
 > Version: 2.0.0
 > Status: Draft
-> Last Updated: 2026-11-24
+> Last Updated: 2026-11-26
 
 ---
 
@@ -87,7 +87,7 @@ apcore is a **module construction specification**, MCP/A2A is a **communication 
 
 ### 1.5 Specification Keywords
 
-Keywords in this document are interpreted according to [RFC 2119](https://www.rfc-editor.org/rfc/rfc2119) definitions.
+The keywords in the table have the meanings defined by BCP 14 ([RFC 2119](https://www.rfc-editor.org/rfc/rfc2119) and [RFC 8174](https://www.rfc-editor.org/rfc/rfc8174)) when written in uppercase in normative text.
 
 | English | Chinese | Meaning |
 |------|------|------|
@@ -96,8 +96,6 @@ Keywords in this document are interpreted according to [RFC 2119](https://www.rf
 | **SHOULD** / **RECOMMENDED** | Should | Strongly recommended, can deviate only with sufficient reason |
 | **SHOULD NOT** / **NOT RECOMMENDED** | Should Not | Strongly discouraged, unless there's sufficient reason |
 | **MAY** / **OPTIONAL** | May | Completely optional, implementer decides |
-
-When this document uses bolded forms of the above keywords, their semantics strictly follow RFC 2119 definitions. Normal font "must", "should", etc. do not have normative meaning.
 
 ### 1.6 Term Definitions
 
@@ -740,22 +738,25 @@ All modules **MUST** define `input_schema` and `output_schema` to support:
 
 ### 4.2 Schema Format
 
-**MUST** be based on **JSON Schema Draft 2020-12** ([RFC unpublished draft](https://json-schema.org/draft/2020-12/json-schema-core)), extending with LLM-friendly fields.
+The `input_schema` and `output_schema` **MUST** use [JSON Schema Draft 2020-12](https://json-schema.org/draft/2020-12/json-schema-core). The `*.schema.yaml` file is a module document containing those Schemas. Its top-level `$schema` identifies the [APCore module document Schema](https://apcore.aiperceivable.com/schemas/module-schema.schema.json). A `$schema` inside an input or output Schema identifies that Schema's dialect, `https://json-schema.org/draft/2020-12/schema`.
 
 **Compliance Requirements:**
 
 | Requirement | Level | Description |
 |------|------|------|
-| Draft 2020-12 core vocabulary | **MUST** | type, properties, required, $ref, etc. |
-| Draft 2020-12 validation vocabulary | **MUST** | minimum, maximum, pattern, enum, etc. |
-| `$schema` declaration | **SHOULD** | Schema files **SHOULD** declare `$schema` field |
-| `x-` extension prefix | **MUST** | Custom extension fields **MUST** be named with `x-` prefix |
-| `additionalProperties` | **SHOULD** | input_schema **SHOULD** explicitly declare `additionalProperties: false` |
+| Core vocabulary | **MUST** | Identifiers, references, and definitions such as `$id`, `$schema`, `$ref`, and `$defs` |
+| Applicator vocabulary | **MUST** | Subschema application such as `properties`, `additionalProperties`, `items`, and `anyOf` |
+| Validation vocabulary | **MUST** | Assertions such as `type`, `required`, `minimum`, `pattern`, and `enum` |
+| Module document `$schema` | **SHOULD** | Declare the APCore module document Schema URI at the top of the file |
+| APCore extensions | **MUST** | Use the `x-` prefix for custom extensions. See [§4.3](#43-llm-extension-fields). |
+| `additionalProperties` | **SHOULD** | Explicitly set `additionalProperties: false` for a closed input object |
+
+See [Type Mapping §17.2](type-mapping.md#172-requirement-table) for the keyword support and rejection rules. Use a type array such as `["string", "null"]`, or an `anyOf` branch with `{"type": "null"}`, to accept null. `nullable` is an OpenAPI 3.0 keyword and has no validation effect in Draft 2020-12. The unknown-keyword rule in [§4.15](#415-edge-case-handling) applies to it.
 
 ```yaml
 # schemas/executor/validator/db_params.schema.yaml
 
-$schema: "https://apcore.dev/schema/v1"
+$schema: "https://apcore.aiperceivable.com/schemas/module-schema.schema.json"
 version: "1.0.0"
 module_id: "executor.validator.db_params"
 
@@ -1747,39 +1748,7 @@ Implementations **MUST** merge rather than replace when loading: If YAML only de
 
 ### 4.14 Schema Validation Error Format
 
-When Schema validation fails, implementations **MUST** return structured error information:
-
-```yaml
-schema_validation_error:
-  type: object
-  required: [code, message, errors]
-  properties:
-    code:
-      type: string
-      const: "SCHEMA_VALIDATION_ERROR"
-    message:
-      type: string
-      description: "Human-readable error summary"
-    errors:
-      type: array
-      items:
-        type: object
-        required: [path, message]
-        properties:
-          path:
-            type: string
-            description: "JSON Pointer to error field (e.g., '/table' or '/options/retry_count')"
-          message:
-            type: string
-            description: "Detailed description of validation failure"
-          constraint:
-            type: string
-            description: "Name of violated constraint (e.g., 'pattern', 'minimum', 'required')"
-          expected:
-            description: "Expected value or constraint"
-          actual:
-            description: "Actual value"
-```
+When Schema validation fails, implementations **MUST** serialize `SCHEMA_VALIDATION_ERROR` with the `details.errors` structure defined in [§8.1](#81-unified-error-format). The [`error_details_shape` conformance fixture](conformance.md#81-fixture-inventory) exercises this format through the SDKs' public execution entry points.
 
 ### 4.15 Edge Case Handling
 
@@ -2460,8 +2429,7 @@ context_schema:
       example: "4bf92f3577b34da6a3ce929d0e0e4736"
 
     caller_id:
-      type: string
-      nullable: true
+      type: [string, "null"]
       description: "Caller's Canonical ID (null for top-level calls)"
       example: "orchestrator.engine.task_flow"
 
@@ -2478,8 +2446,7 @@ context_schema:
     # ====== Almost all users need, semantically stable ======
 
     identity:
-      type: object
-      nullable: true
+      type: [object, "null"]
       description: "Caller identity (ACL engine depends on)"
       properties:
         id:
@@ -2508,17 +2475,14 @@ context_schema:
     # ====== Optional extension fields (MAY be provided by implementations) ======
 
     cancel_token:
-      nullable: true
       description: "Cooperative cancellation token. During a call it is that call's own token, a child of its caller's (§12.7.5)"
 
     services:
-      type: object
-      nullable: true
+      type: [object, "null"]
       description: "Dependency injection container for sharing services across the call chain (MAY)"
 
     redacted_inputs:
-      type: object
-      nullable: true
+      type: [object, "null"]
       description: "Copy of inputs with x-sensitive fields replaced by REDACTED_VALUE, for safe logging (MAY)"
 ```
 
@@ -3785,10 +3749,12 @@ The canonical spelling of every field is snake_case, as in the schema. An implem
 | `before` | string | Insert immediately before the named step. |
 
 1. An entry carrying a key outside these ten **MUST** fail the load with `PIPELINE_CONFIGURATION_ERROR` before that step is constructed.
-2. `type` is resolved first, against the step-type registry. When `type` is absent or names no registered type, `handler` is resolved by the host language's dynamic import and `config` is passed to what it names. An entry that resolves through neither fails the load. An implementation that cannot load code at runtime **MUST** reject every entry carrying `handler` with `PIPELINE_HANDLER_NOT_SUPPORTED`. `$defs/PipelineStep` admits exactly one of `type` and `handler`.
+2. A schema-valid configuration entry contains exactly one of `type` and `handler` (`$defs/PipelineStep`). `type` resolves against the step-type registry. `handler` resolves through the host language's dynamic import, with `config` passed to the resolved factory. An entry that cannot resolve its factory fails the load. An implementation that cannot load code at runtime **MUST** reject every entry carrying `handler` with `PIPELINE_HANDLER_NOT_SUPPORTED`.
 3. The entry's `name`, `match_modules`, `ignore_errors`, `pure` and `timeout_ms` apply to the constructed step.
-4. An entry **MUST** name its anchor through `after` or `before`; an entry with neither, or whose anchor names no step in the strategy, **MUST** fail the load with `PIPELINE_CONFIGURATION_ERROR`. `$defs/PipelineStep` admits exactly one of the two; an entry carrying both is anchored by `after`.
+4. A schema-valid configuration entry contains exactly one of `after` and `before` (`$defs/PipelineStep`). An entry with neither, or whose anchor names no step in the strategy, **MUST** fail the load with `PIPELINE_CONFIGURATION_ERROR`.
 5. Entries are inserted in declaration order, after `remove` and `configure` have been applied. Each anchor is resolved against the strategy as it stands when its entry is inserted, so an entry may anchor on a step inserted by an earlier entry and cannot anchor on a removed one. A step whose `name` is already in the strategy fails the load with `STEP_NAME_DUPLICATE`.
+
+**SDK builder compatibility.** A raw mapping passed directly to a strategy builder can bypass configuration Schema validation. Python and TypeScript first try a registered `type` when such a mapping supplies both factory fields, then fall back to `handler` if the type is unknown. Rust rejects any `handler`. All three builders use `after` when supplied with both anchors. Use one factory field and one anchor in portable configuration. Code that constructs a step instance can insert it directly through the strategy's `insert_before` or `insert_after` API.
 
 The optional `validation.pipeline.*` limits bound the step names and timeouts the section declares (§9.1.2).
 
@@ -5085,16 +5051,25 @@ Interface: ApprovalHandler
   request_approval(request: ApprovalRequest) → ApprovalResult
 
   /**
-   * Check status of a previously pending approval (Phase B).
+   * Query the status of a pending approval.
    * Default implementation SHOULD return rejected.
    *
    * @param approval_id — Identifier from a prior pending result
    * @return result     — ApprovalResult with current status
    */
   check_approval(approval_id: String) → ApprovalResult
+
+  /**
+   * Authorize resumption of a specific invocation (optional, Phase B).
+   * @param approval_id — Resume credential from a prior pending result
+   * @param request    — ApprovalRequest for the current invocation
+   */
+  check_approval_for_call(approval_id: String, request: ApprovalRequest) → ApprovalResult
 ```
 
-Both methods **MUST** be asynchronous (async/await) in implementations that support it.
+These methods **MUST** be asynchronous (async/await) in implementations that support it. An SDK **MUST** reject a request to resume an approval when the configured handler does not implement scoped resumption. Status-only handlers remain usable for fresh requests.
+
+Before returning `approved` from `check_approval_for_call`, a handler **MUST** verify the credential's expiry and match the current request to the original approved invocation. The scope **MUST** cover the trusted principal (when present), `caller_id`, canonical target ID, and the arguments. The handler **MUST** consume the approved credential atomically with successful verification. A handler using durable storage **MAY** authorize resumption after a process restart.
 
 ### 7.3 Data Types
 
@@ -5110,7 +5085,7 @@ ApprovalRequest:
       description: "Target module's canonical ID"
     arguments:
       type: object
-      description: "The arguments that will be passed to the module"
+      description: "Snapshot of the business arguments at the approval gate, before the standard before-middleware and input-validation steps"
     context:
       type: object
       description: "Execution context (trace_id, identity, call_chain) — see §5.7 Context Parameter Specification"
@@ -5118,15 +5093,13 @@ ApprovalRequest:
       type: object
       description: "Module's ModuleAnnotations (requires_approval is guaranteed true) — see §4.4 Module Behavior Annotations"
     caller_id:
-      type: string
-      nullable: true
+      type: [string, "null"]
       description: "The invoking module's canonical ID, read from context.caller_id; null for a top-level/external call, exactly as Context.caller_id is (§5.7) — not the \"@external\" substitution ACL evaluation makes internally"
     action:
       type: string
       description: "The target module's canonical ID being requested, equal to module_id — a flat field so a handler can read request.action without cross-referencing request.module_id under a second name (decision D-03)"
     description:
-      type: string
-      nullable: true
+      type: [string, "null"]
       description: "Module's human-readable description"
     tags:
       type: array
@@ -5148,21 +5121,20 @@ ApprovalResult:
       enum: [approved, rejected, timeout, pending]
       description: "Approval decision"
     approved_by:
-      type: string
-      nullable: true
+      type: [string, "null"]
       description: "Identifier of the approver (human, agent, policy)"
     reason:
-      type: string
-      nullable: true
+      type: [string, "null"]
       description: "Reason for rejection or additional context"
     approval_id:
-      type: string
-      nullable: true
-      description: "Identifier for async approval tracking (Phase B)"
+      type: [string, "null"]
+      description: "Confidential resume credential for a pending approval"
     metadata:
-      type: object
-      nullable: true
+      type: [object, "null"]
       description: "Additional metadata from the approval process"
+    audit_id:
+      type: [string, "null"]
+      description: "Optional non-secret approval correlation identifier"
 ```
 
 ### 7.4 Executor Integration (Step 5)
@@ -5195,11 +5167,12 @@ Executor Pipeline:
 **Step 5 Algorithm:**
 
 ```text
-Algorithm: approval_gate(module, arguments, context, approval_handler)
+Algorithm: approval_gate(module, arguments, resume_credential, context, approval_handler)
 
 Input:
   module         — Resolved module instance
-  arguments      — Call arguments
+  arguments      — Business arguments at the gate
+  resume_credential — Optional private invocation credential from _approval_token
   context        — Execution context (with identity)
   approval_handler — Configured ApprovalHandler or null
 
@@ -5210,12 +5183,12 @@ Behavior:
      (the requirement is the UNION of every governance source — see
       "The gate fires on the union of its governance sources" below —
       not this one alone)
-  4. IF arguments contains "_approval_token":
-       a. LET token = arguments.pop("_approval_token")
-       b. LET result = approval_handler.check_approval(token)
+  4. LET request = ApprovalRequest(module_id, snapshot of arguments, context, annotations, ...)
+     IF resume_credential is present:
+       a. IF approval_handler has no check_approval_for_call → THROW ApprovalDeniedError
+       b. LET result = approval_handler.check_approval_for_call(resume_credential, request)
      ELSE:
-       a. LET request = ApprovalRequest(module_id, arguments, context, annotations, ...)
-       b. LET result = approval_handler.request_approval(request)
+       a. LET result = approval_handler.request_approval(request)
   5. SWITCH result.status:
        "approved" → CONTINUE to Step 6
        "rejected" → THROW ApprovalDeniedError(result)
@@ -5250,9 +5223,11 @@ An implementation that read only the annotation would silently ignore every rule
 - When no `ApprovalHandler` is configured, Step 5 is **skipped** (inactive by absence, §6.6.3.1) — but per the fail-loud principle (§7.9.4) a module that needs approval **MUST** produce a warning on skip, and an `ExecutionPolicy` with `strict` (§7.9) turns this skip into a fail-closed `ApprovalDeniedError` instead.
 - When an `ExecutionPolicy` (§7.9) is attached, the gate consults it first: the policy may force approval on a module that does not declare `requires_approval`, or (with `gate_destructive`) gate a `destructive` module.
 - The `_approval_token` mechanism (Phase B) allows clients to retry after external approval without re-triggering the approval flow.
-- The `_approval_token` key **MUST** be removed from arguments before passing to subsequent steps.
+- The `_approval_token` key **MUST** be removed from business arguments before they reach subsequent steps. This applies to an invocation whose strategy omits the approval gate as well. The executor can carry the credential separately for the approval handler. A preflight has no approval decision to resume.
 
-**Resume semantics.** When a caller retries an `APPROVAL_PENDING` call by injecting `_approval_token` into `arguments`, the executor **MUST** re-enter the pipeline from Step 1. Implementations **MUST NOT** preserve any intermediate `PipelineContext` state across the suspend/resume boundary — the pipeline is stateless across the approval gate, and resumption is a fresh top-to-bottom traversal of the 11 steps with `_approval_token` present in `arguments`. Steps 1–4 run on both the suspended call and its resume, so their side effects — the ACL audit entry (§6.3.1), tracing — occur once per traversal, and modules **MUST NOT** assume they are skipped on resume. Step 6 (`middleware_before`) and every later step come after the gate: on a call the gate suspends they do not run at all, and on the resume they run once, after approval. Step 5 removes `_approval_token` from `arguments` on every path through the gate — including the not-gated and no-handler paths — so neither middleware nor the module ever observes it, and middleware needs no at-most-once guard across an approval gate. This contract enables external retry/replay layers to drive long-running pause/resume cycles by persisting `approval_id` plus the original inputs, without any mid-pipeline checkpointing in apcore. See [`./design-durability-boundary.md`](./design-durability-boundary.md) §2.2 for downstream integration patterns.
+**Resume semantics.** When a caller retries an `APPROVAL_PENDING` call with `_approval_token` in the request arguments, the executor **MUST** re-enter the pipeline from Step 1. Implementations **MUST NOT** preserve intermediate `PipelineContext` state across suspension and resumption. The fresh traversal receives business arguments separately from the resume credential. Steps 1–4 run on both traversals, so the ACL audit entry (§6.3.1) and tracing occur once per traversal. Modules **MUST NOT** assume those steps are skipped on resume. In the standard strategy, Step 6 (`middleware_before`) and later steps run only after the gate allows the call to continue. Neither module middleware nor the module receives the credential as a business argument. External retry and replay layers can persist `approval_id` and the original inputs to drive this flow. See [Durability Boundary §2.2](./design-durability-boundary.md) for integration patterns.
+
+**Scope of approved arguments.** Fresh and resumed requests use the same gate-time snapshot. In the standard strategy, `middleware_before` can transform those inputs after approval, and input validation checks the transformed values. A deployment that lets a transformation change the resource or action being authorized can normalize the values before the gate or enforce a separate authorization check on the transformed values.
 
 ### 7.5 Error Types
 
@@ -5326,7 +5301,7 @@ These handlers are **not** part of the apcore core specification — they are pr
 
 - `request_approval()` may return `status: "pending"` with an `approval_id`.
 - Client retries the tool call with `_approval_token` in arguments.
-- `check_approval(approval_id)` returns the current status.
+- `check_approval_for_call(approval_id, request)` checks the current invocation and consumes an approved credential.
 - Suitable for long-running approval workflows (Slack, email, dashboard).
 - **Phase B is optional but recommended for production deployments.**
 
@@ -5393,7 +5368,7 @@ The tiers below grade the approval subsystem alone. They are not the SDK conform
 |-------|-------------|
 | **Tier 1 (Basic)** | `ApprovalHandler` protocol defined; Executor skips gate when handler is null |
 | **Tier 2 (Standard)** | Step 5 implemented in `call()`, `call_async()`, and `stream()` paths; `AlwaysDenyHandler` and `AutoApproveHandler` provided |
-| **Tier 3 (Full)** | Phase B support (`check_approval`, `_approval_token`); `CallbackApprovalHandler` provided; approval audit events emitted |
+| **Tier 3 (Full)** | Phase B support (`check_approval_for_call`, `_approval_token`); `CallbackApprovalHandler` provided; approval audit events emitted |
 | **Tier 4 (Governance)** | Execution Policy (§7.9): external override + specificity precedence, `gate_destructive`, `strict` fail-closed, effective-annotations contract, and the `apcore.approval.decision` / `apcore.policy.override` / `apcore.acl.denied` events |
 
 ---
@@ -5428,20 +5403,16 @@ error_format:
       type: string
       format: datetime
     retryable:
-      type: boolean
-      nullable: true
+      type: [boolean, "null"]
       description: "Whether the error is retryable (see §8.6 for defaults per error code)"
     ai_guidance:
-      type: string
-      nullable: true
+      type: [string, "null"]
       description: "Machine-readable hint for AI agents on how to handle this error"
     user_fixable:
-      type: boolean
-      nullable: true
+      type: [boolean, "null"]
       description: "Whether the end-user can fix the root cause without developer intervention"
     suggestion:
-      type: string
-      nullable: true
+      type: [string, "null"]
       description: "Actionable suggestion for resolving the error"
 ```
 
@@ -5484,11 +5455,15 @@ These fields are the foundation of apcore's **Self-Healing** mechanism, which se
 ```json
 {
   "code": "SCHEMA_VALIDATION_ERROR",
-  "message": "Invalid table name format",
-  "details": { "field": "table", "value": "User-Info" },
+  "message": "Input validation failed",
+  "details": {
+    "errors": [
+      { "path": "/table", "keyword": "pattern", "message": "Table name does not match the required pattern" }
+    ]
+  },
   "retryable": false,
   "user_fixable": true,
-  "suggestion": "Table names must use only lowercase letters and underscores. Change 'User-Info' to 'user_info'.",
+  "suggestion": "Use 'user_info' as the table name.",
   "ai_guidance": "validate input against schema before retry; this error will recur with the same input"
 }
 ```
@@ -8217,7 +8192,7 @@ The following are the canonical event type names, payload keys, and severity for
 | `apcore.health.error_threshold_exceeded` | `apcore.error.threshold_exceeded` | `error` | `PlatformNotifyMiddleware` | `module_id`, `error_rate`, `threshold` |
 | `apcore.health.latency_threshold_exceeded` | `apcore.latency.threshold_exceeded` | `warn` | `PlatformNotifyMiddleware` | `module_id`, `p99_latency_ms`, `threshold` |
 | `apcore.health.recovered` | `module_health_changed` (recovery usage) | `info` | `PlatformNotifyMiddleware` | `module_id`, `error_rate` |
-| `apcore.approval.decision` | — | `info` (approved/pending) / `warn` (rejected/timeout) | Approval Gate (§7) | `module_id`, `status`, `approved_by`, `reason`, `approval_id`, `trace_id` |
+| `apcore.approval.decision` | — | `info` (approved/pending) / `warn` (rejected/timeout) | Approval Gate (§7) | `module_id`, `status`, `approved_by`, `reason`, `approval_id` (non-secret `audit_id` or null), `trace_id` |
 | `apcore.policy.override` | — | `info` | Approval Gate (§7) | `module_id`, `pattern`, `requires_approval`, `destructive`, `needs_approval`, `reason`, `trace_id` |
 | `apcore.acl.denied` | — | `warn` | ACL Check (§6) | `module_id`, `caller_id`, `reason`, `trace_id` |
 | `apcore.acl.audit` | — | `observability`-independent: the ACL file's `audit.log_level`, default `info` | ACL Check (§6) — the **default sink** of §6.3.2 only, never a supplied callback | all thirteen §6.3.1 `AuditEntry` fields, under their `snake_case` wire names |
@@ -8290,6 +8265,8 @@ tracing:
 
 `apcore.module.execute` is the one span the specification defines. `Executor.validate()` (§12.8) is
 not traced (D-143).
+
+Each execution span records the calling invocation's span ID as its parent. At the entry to a local call tree, the parent is the validated remote parent ID when a `TraceParent` supplied the trace ID. Concurrent calls in the same trace retain individual start times and parent links. See [Tracing architecture](../features/observability.md#tracing-architecture) and the `trace_context` conformance fixture.
 
 #### 10.1.1 Tracing from Configuration (`observability.tracing.*`)
 
@@ -8439,17 +8416,17 @@ trace_id_spec:
   generation:
     - "Top-level calls MUST generate a random 128-bit trace_id when no valid trace_parent is supplied"
     - "Child calls MUST inherit the parent call's trace_id unchanged"
-    - "All-zero (00000000000000000000000000000000) and all-f (ffffffffffffffffffffffffffffffff) are INVALID per W3C and MUST be rejected"
+    - "All-zero (00000000000000000000000000000000) is invalid under W3C Trace Context. APCore also reserves all-f (ffffffffffffffffffffffffffffffff). Implementations MUST reject both values as APCore trace IDs."
 
   external_trace_parent_handling:
     # Applies only when Context.create receives an explicit trace_parent argument.
-    - "Input matching ^[0-9a-f]{32}$ and not equal to the W3C-invalid values MUST be accepted as-is"
+    - "Input matching ^[0-9a-f]{32}$ and unequal to either reserved value above MUST be accepted as-is"
     - "All other inputs MUST cause the SDK to generate a fresh trace_id and SHOULD log a warning at WARN level"
     - "Implementations MUST NOT raise or reject the inbound request on invalid trace_parent — execution MUST continue with a regenerated trace_id"
     - "Implementations MUST NOT perform dashed-UUID stripping, case folding, or similar normalization at Context.create — such normalization, if needed, is the responsibility of the TraceParent header parser or the user's ContextFactory"
 ```
 
-> Note: This format reflects W3C Trace Context Level 2 as of the current protocol version. Future protocol versions MAY introduce alternative formats, structured trace IDs, or additional trace-related context fields (for example, for multi-agent or non-linear trace topologies). Implementations SHOULD treat the trace_id format as a versioned contract rather than a permanent guarantee.
+> Note: The field layout follows [W3C Trace Context](https://www.w3.org/TR/trace-context/#trace-id), with the additional APCore all-f reservation. Implementations SHOULD treat the trace ID format as a versioned contract.
 
 ### 10.6 Sensitive Data Redaction
 
@@ -9113,14 +9090,13 @@ Interface: Executor
   call(module_id: String, inputs: Map, context: Context) → Map
 
   /**
-   * [SHOULD] Non-destructive preflight check that runs Steps 1–5 and Step 7
-   * of the execution pipeline (skipping Step 6 Middleware Before Chain),
-   * plus an optional module-level preflight (Check 7), without invoking
-   * module code or middleware. See §12.8 for the language-specific guide.
+   * [SHOULD] Non-destructive preflight check over the strategy's pure steps.
+   * The standard execution checks are Steps 1–4 and 7. The result also
+   * reports the effective approval requirement and any permitted module-level
+   * preflight and preview. See §12.8 for the language-specific guide.
    *
    * Runs: context creation (Step 1), call chain guard (Step 2), module
-   * lookup (Step 3), ACL enforcement (Step 4), approval detection (Step 5,
-   * report only — MUST NOT invoke ApprovalHandler), input schema validation
+   * lookup (Step 3), ACL enforcement (Step 4), input schema validation
    * (Step 7), and — only when the ACL permitted the call — module.preflight()
    * and module.preview() for advisory warnings and predicted changes
    * (§12.8.5.1).
@@ -9770,9 +9746,7 @@ class DatabaseModule:
 
 ### 12.8 Executor.validate() Cross-Language Implementation Guide
 
-The `validate()` preflight method (§12.2, SHOULD level) runs Steps 1–5 and Step 7 of the Executor pipeline
-(plus the optional module-level `preflight()` and `preview()` of §12.8.5.1) without invoking the module's `execute()` or middleware. This section provides language-specific guidance for
-SDK implementers.
+The `validate()` preflight method (§12.2, SHOULD level) evaluates the strategy's pure steps. The standard execution checks are context creation, call-chain guard, module lookup, ACL, and input validation (Steps 1–4 and 7). The approval gate is impure and is skipped. `requires_approval` reports the governance-effective requirement without consulting the `ApprovalHandler` or requesting, resuming, or recording an approval decision. The invocation pipeline performs that decision on a formal call. Preflight can also run the optional module-level `preflight()` and `preview()` of §12.8.5.1 when ACL permits disclosure.
 
 #### 12.8.1 Design Principles
 
@@ -10200,7 +10174,7 @@ The specification is versioned independently of the SDK release line (`0.x`); `C
 
 | Version | Date | Summary | Records |
 |---|---|---|---|
-| 2.0.0 | Unreleased | Resolve every path-typed configuration value against one project root (§9.2.2). Clarify that configured observability redaction applies to schema-less calls (§6.1.8, §10.6.1). | [#113](https://github.com/aiperceivable/apcore/issues/113) |
+| 2.0.0 | Unreleased | Resolve every path-typed configuration value against one project root (§9.2.2). Clarify configured redaction for schema-less calls (§6.1.8, §10.6.1). Require invocation-scoped approval resumption and use a non-secret correlation ID in approval telemetry (§7, §9.16.2). Clarify pipeline configuration, preflight, and approval argument scope (§5.16.1, §7.3–7.4, §12.8). Align schema examples with Draft 2020-12 and the unified validation error format (§4.2, §4.14, §8.1). Clarify the APCore trace ID reservation (§10.5). | [#113](https://github.com/aiperceivable/apcore/issues/113) |
 | 1.66.0 | 2026-10-19 | A23 preserves optional enum, const, reference and applicator constraints inside an anyOf-null wrapper; required fields remain unchanged. | [#124](https://github.com/aiperceivable/apcore/issues/124) |
 | 1.65.0 | 2026-10-08 | Add public bare-name canonicalization with structured, non-throwing results in all SDKs; preserve A02, ASCII-only case conversion and existing underscores, and reject non-ASCII, invalid starts and overlong output (§2.2.1). | [Rust #40](https://github.com/aiperceivable/apcore-rust/issues/40) |
 | 1.64.0 | 2026-10-08 | Algorithm A02 is exhaustive and ASCII-scoped: it preserves existing underscores and non-ASCII characters through case conversion, then rejects a result outside the Canonical ID grammar; it never repairs arbitrary identifiers (§2.2). The repairing class-name conversion is named `snake_case_name` and is distinct from A02's `snake_case_identifier` (§2.1.1). | #122 |

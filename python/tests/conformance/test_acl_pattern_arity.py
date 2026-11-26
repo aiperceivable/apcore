@@ -597,17 +597,15 @@ def _run_backstop(case: dict[str, Any]) -> None:
     )
 
     captured: list[AuditEntry] = []
+    installed = ACLRule(**_rule_kwargs(case["rule"]))
     acl = ACL(
-        rules=[ACLRule(**_rule_kwargs(case["rule"]))],
+        rules=[installed],
         default_effect=case["default_effect"],
         audit_logger=captured.append,
     )
 
-    # Reached through the public accessor on purpose: `mutation_route:
-    # installed_rule` requires mutating a rule that is ALREADY IN the ACL, and
-    # `ACL.rules` handing back the live dataclass is exactly the route
-    # apcore-rust does not have (`&[ACLRule]`, no `rules_mut`).
-    installed = acl.rules[0]
+    # Fault injection targets the supplied rule after installation. ACL.rules
+    # returns detached copies, while this test drives the defensive matcher.
     for mutation in _mutations(case):
         setattr(installed, mutation["field"], mutation["value"])
 

@@ -502,10 +502,8 @@ export async function buildStrategyFromConfig(
  * `handler:` targets are ESM specifiers, so this SDK — alone of the three —
  * needs `await` to build them: apcore-python imports synchronously and
  * apcore-rust looks the target up in a handler map. The synchronous path
- * therefore returns `null` for a `handler:` entry rather than throwing, and
- * the caller reports it. Skipping it silently is what §5.16 requirement 6
- * exists to stop; failing construction outright would take a project that
- * starts today and stop it from starting, over a step that has never once run.
+ * reports a `handler:` entry as deferred. The Executor rejects the result
+ * if any configured step is deferred.
  */
 function _resolveStepSyncOrNull(stepDef: StepDefinition): Step | null {
   if (stepDef.type && _stepTypeRegistry.has(stepDef.type)) {
@@ -536,7 +534,8 @@ function _resolveStepSync(stepDef: StepDefinition): Step {
  * pending — a half-state of exactly the kind this requirement exists to remove.
  *
  * Everything except a `handler:` step resolves synchronously. Those are
- * returned in `deferred` for the caller to report.
+ * returned in `deferred`. A caller applying the configured strategy must
+ * check that list before installing it.
  */
 export function buildStrategyFromConfigSync(
   pipelineConfig: PipelineConfig,

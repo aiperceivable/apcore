@@ -102,8 +102,10 @@ describe('ManifestModule', () => {
 
     expect(result['module_id']).toBe('system.detailed');
     expect(result['description']).toBe('Detailed module');
-    expect(result['input_schema']).toBe(inputSchema);
-    expect(result['output_schema']).toBe(outputSchema);
+    expect(result['input_schema']).toStrictEqual(inputSchema);
+    expect(result['output_schema']).toStrictEqual(outputSchema);
+    expect(result['input_schema']).not.toBe(inputSchema);
+    expect(result['output_schema']).not.toBe(outputSchema);
     // SYS-5: annotations are emitted in the snake_case WIRE shape, as
     // apcore-python and apcore-rust emit them and as system-modules.md's own
     // output example shows. The camelCase struct stays internal.

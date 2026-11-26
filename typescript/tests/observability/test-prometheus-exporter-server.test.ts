@@ -5,7 +5,7 @@
  * Uses port 0 so the OS picks a free ephemeral port; tests don't compete
  * for a fixed listener.
  */
-import { afterEach, describe, it, expect } from 'vitest';
+import { afterEach, describe, it, expect, vi } from 'vitest';
 import {
   MetricsCollector,
   PrometheusExporter,
@@ -64,7 +64,7 @@ describe('PrometheusExporter HTTP server', () => {
     exporter.start({ port: 0, path: '/p' });
     const port = getPort(exporter);
 
-    const ok = await fetchText(port, '/p');
+    const ok = await fetchText(port, '/p?format=openmetrics');
     expect(ok.status).toBe(200);
 
     const missing = await fetchText(port, '/metrics');
@@ -136,5 +136,30 @@ describe('PrometheusExporter HTTP server', () => {
     const e = new PrometheusExporter({ collector, usageCollector });
     const text = e.export();
     expect(text).not.toContain('apcore_usage_calls_total');
+  });
+
+  it('exposes rolling usage counts as gauges that fall as calls leave the window', () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date('2026-02-01T10:00:00Z'));
+      const collector = new MetricsCollector();
+      collector.increment('demo_counter_total', {});
+      const usageCollector = new UsageCollector();
+      usageCollector.record('demo.one', 'client', 12, true);
+      const renderer = new PrometheusExporter({ collector, usageCollector });
+      const before = renderer.export();
+      vi.setSystemTime(new Date('2026-02-02T11:00:00Z'));
+      const after = renderer.export();
+
+      for (const family of ['apcore_usage_calls_24h', 'apcore_usage_calls_total']) {
+        const sample = `${family}{module_id="demo.one",status="success"}`;
+        expect(before.split('\n')).toContain(`# TYPE ${family} gauge`);
+        expect(before.split('\n')).toContain(`${sample} 1`);
+        expect(after.split('\n')).toContain(`${sample} 0`);
+      }
+      expect(before.endsWith('\n') && after.endsWith('\n')).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

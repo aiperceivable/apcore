@@ -173,7 +173,7 @@ Each SDK stores the table as an internal symbol, not part of the public API.
     use chrono::{DateTime, Utc};
 
     pub struct ModuleError {
-        pub code: ErrorCode,                               // serialized as "SCREAMING_SNAKE_CASE"
+        pub code: ErrorCode,                               // typed framework classification
         pub message: String,
         pub details: HashMap<String, serde_json::Value>,   // omitted when empty
         pub cause: Option<String>,
@@ -189,6 +189,8 @@ Each SDK stores the table as an internal symbol, not part of the public API.
     ```
 
 Python and TypeScript define one subclass per error (tables below). Rust has a single `ModuleError` struct: the code is an `ErrorCode` variant (for example `ErrorCode::ModuleNotFound`), and common errors have named builders (`ModuleError::invalid_input`, `ModuleError::module_timeout`, `ModuleError::circuit_breaker_open`, `ModuleError::task_store_unavailable`, …). The Rust exceptions are `ExecutionCancelledError` (converts into `ModuleError` via `From`), `VersionIncompatibleError` and `ErrorCodeCollisionError` (convert via `to_module_error()`).
+
+Rust modules create business errors with `ModuleError::new_custom(code, message)`. The typed `code` field classifies these errors as `ErrorCode::ModuleExecuteError`. Use `wire_code()` to route errors by their exact code and `custom_code()` to read codes outside the SDK's typed framework table. An unknown code received from a peer keeps its original wire value. Use `with_details()` when replacing the whole details map on an error carrying such a code. The map key `$apcore_wire_error_code` is reserved for the SDK's in-memory representation.
 
 Structured data such as `caller_id` or `call_chain` always travels in `details` (the wire contract). Python and TypeScript subclasses additionally expose some of it as typed accessors (e.g. `err.caller_id` / `err.callerId`); in Rust read `err.details`.
 
@@ -464,6 +466,10 @@ The `ErrorCodeRegistry` enables modules to register custom error codes at runtim
             .map(|s| s.to_string())
             .collect();
         registry.register("payments.stripe", &codes)?;
+
+        let declined = ModuleError::new_custom("STRIPE_CARD_DECLINED", "Card declined")?;
+        assert_eq!(declined.wire_code(), "STRIPE_CARD_DECLINED");
+        assert_eq!(declined.to_dict()["code"], "STRIPE_CARD_DECLINED");
 
         // Framework prefixes are reserved
         let reserved: HashSet<String> = ["MODULE_CUSTOM".to_string()].into_iter().collect();

@@ -27,18 +27,19 @@ use apcore::observability::usage::UsageCollector;
 use apcore::registry::registry::{Registry, RegistryEvents};
 use apcore::sys_modules::audit::{AuditAction, AuditStore, InMemoryAuditStore};
 use apcore::sys_modules::control::{ReloadModule, ToggleFeatureModule, UpdateConfigModule};
-use apcore::sys_modules::overrides::load_overrides;
+use apcore::sys_modules::overrides::{load_overrides, InMemoryOverridesStore, OverridesStore};
 use apcore::sys_modules::{
     register_sys_modules, register_sys_modules_with_options, SysModuleError, SysModulesContext,
     SysModulesOptions, ToggleState,
 };
+use apcore::{APCore, APCoreOptions, AutoApproveHandler};
 use tokio::sync::Mutex;
 
 // ---------------------------------------------------------------------------
 // Fixture loading (mirrors other conformance tests)
 // ---------------------------------------------------------------------------
 
-use crate::conformance_env::find_fixtures_root;
+use crate::conformance_env::{find_fixtures_root, find_schemas_root};
 
 fn load_fixture() -> Value {
     let path = find_fixtures_root().join("system_modules_hardening.json");
@@ -54,6 +55,165 @@ fn fixture_case<'a>(fixture: &'a Value, id: &str) -> &'a Value {
         .iter()
         .find(|c| c["id"].as_str() == Some(id))
         .unwrap_or_else(|| panic!("fixture case '{id}' not present"))
+}
+
+fn load_response_schema(name: &str) -> Value {
+    let path = find_schemas_root().join(format!("{name}.schema.json"));
+    serde_json::from_slice(&std::fs::read(path).expect("read canonical schema"))
+        .expect("canonical schema parses")
+}
+
+fn assert_wire_response(name: &str, response: &Value) {
+    let schema = load_response_schema(name);
+    let entry = load_response_schema("sys-manifest-module");
+    let entry_uri = entry["$id"].as_str().expect("schema ID").to_owned();
+    let validator = jsonschema::draft202012::options()
+        .with_resource(
+            entry_uri,
+            jsonschema::Resource::from_contents(entry).expect("manifest schema resource"),
+        )
+        .build(&schema)
+        .expect("build canonical validator");
+    let json = serde_json::to_string(response).expect("serialize response");
+    let mut wire = serde_json::from_str::<Value>(&json).expect("deserialize response");
+    validator
+        .validate(&wire)
+        .unwrap_or_else(|err| panic!("{name}: {err} in {wire}"));
+    wire["unexpected"] = json!(true);
+    assert!(!validator.is_valid(&wire), "{name} accepts unknown fields");
+}
+
+#[tokio::test]
+async fn case_manifest_responses_follow_canonical_schema() {
+    let fixture = load_fixture();
+    let case = fixture_case(&fixture, "manifest_responses_follow_canonical_schema");
+    let mut config = Config::default();
+    config.set("sys_modules.enabled", json!(true));
+    let client = APCore::with_config(config);
+    let id = case["setup"]["module_id"].as_str().expect("module id");
+    let descriptor = serde_json::from_value(json!({
+        "module_id": id,
+        "description": "Conformance manifest module",
+        "input_schema": {"type": "object"},
+        "output_schema": {"type": "object"},
+        "dependencies": [case["setup"]["dependency"]]
+    }))
+    .expect("manifest fixture descriptor");
+    client
+        .registry()
+        .register(id, Box::new(DummyModule), descriptor)
+        .expect("register fixture module");
+
+    let single = client
+        .call(
+            "system.manifest.module",
+            json!({"module_id": id}),
+            None,
+            None,
+        )
+        .await
+        .expect("call single manifest");
+    assert_wire_response("sys-manifest-module", &single);
+    let full = client
+        .call(
+            "system.manifest.full",
+            json!({"prefix": id, "include_schemas": false, "include_source_paths": false}),
+            None,
+            None,
+        )
+        .await
+        .expect("call full manifest");
+    assert_wire_response("sys-manifest-full", &full);
+    assert_eq!(full["module_count"], 1);
+    let entry = &full["modules"][0];
+    for (key, value) in case["expected"]["entry"].as_object().unwrap() {
+        assert_eq!(single.get(key), Some(value), "single manifest field {key}");
+        assert_eq!(entry.get(key), Some(value), "full manifest field {key}");
+    }
+    for (key, value) in case["expected"]["suppressed_fields"].as_object().unwrap() {
+        assert_eq!(entry.get(key), Some(value), "suppressed field {key}");
+    }
+}
+
+#[tokio::test]
+async fn case_first_config_update_has_null_old_value() {
+    let fixture = load_fixture();
+    let case = fixture_case(&fixture, "first_config_update_has_null_old_value");
+    let mut config = Config::default();
+    config.set("sys_modules.enabled", json!(true));
+    config.set("sys_modules.events.enabled", json!(true));
+    let client = APCore::try_start(APCoreOptions {
+        config: Some(config),
+        approval_handler: Some(Box::new(AutoApproveHandler)),
+        ..APCoreOptions::default()
+    })
+    .expect("start control modules");
+    let result = client
+        .call(
+            "system.control.update_config",
+            case["action"]["input"].clone(),
+            None,
+            None,
+        )
+        .await
+        .expect("update new config key");
+    assert_wire_response("sys-control-update-config", &result);
+    assert_eq!(result, case["expected"]);
+}
+
+#[derive(Debug)]
+struct ConfigUpdatedCounter(Arc<std::sync::atomic::AtomicUsize>);
+
+#[async_trait::async_trait]
+impl apcore::events::subscribers::EventSubscriber for ConfigUpdatedCounter {
+    fn subscriber_id(&self) -> &'static str {
+        "config-updates"
+    }
+
+    fn event_pattern(&self) -> &'static str {
+        "apcore.config.updated"
+    }
+
+    async fn on_event(
+        &self,
+        _: &apcore::events::emitter::ApCoreEvent,
+    ) -> Result<(), apcore::ModuleError> {
+        self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn case_config_update_rejects_empty_path() {
+    let fixture = load_fixture();
+    let case = fixture_case(&fixture, "config_update_rejects_empty_path");
+    let mut config = Config::default();
+    let input = &case["action"]["input"];
+    let key = input["key"].as_str().unwrap();
+    config.set(key, case["setup"]["initial_root"].clone());
+    let config = Arc::new(Mutex::new(config));
+    let emitter = Arc::new(EventEmitter::new());
+    let events = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    emitter.subscribe(Box::new(ConfigUpdatedCounter(Arc::clone(&events))));
+    let update = UpdateConfigModule::new(Arc::clone(&config), Arc::clone(&emitter));
+
+    let error = update
+        .execute(input.clone(), &make_ctx(None))
+        .await
+        .unwrap_err();
+    assert_eq!(
+        error.wire_code(),
+        case["expected"]["error_code"].as_str().unwrap()
+    );
+    assert_eq!(
+        config.lock().await.get(key),
+        Some(case["expected"]["effective_value"].clone())
+    );
+    emitter.flush_default().await.unwrap();
+    assert_eq!(
+        json!(events.load(std::sync::atomic::Ordering::SeqCst)),
+        case["expected"]["update_events"]
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -109,6 +269,93 @@ fn temp_overrides_path(label: &str) -> PathBuf {
     let pid = std::process::id();
     let nanos = chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0);
     std::env::temp_dir().join(format!("apcore_overrides_{label}_{pid}_{nanos}.yaml"))
+}
+
+#[tokio::test]
+async fn case_config_update_changes_default_execution_timeout() {
+    assert_config_update_changes_default_execution_timeout(false).await;
+}
+
+#[tokio::test]
+async fn supplied_executor_keeps_its_default_until_runtime_update() {
+    assert_config_update_changes_default_execution_timeout(true).await;
+}
+
+async fn assert_config_update_changes_default_execution_timeout(executor_supplied: bool) {
+    let fixture = load_fixture();
+    let case = fixture_case(&fixture, "config_update_changes_default_execution_timeout");
+    let mut config = Config::default();
+    config.set("sys_modules.enabled", json!(true));
+    config.set("sys_modules.events.enabled", json!(true));
+    config.set(
+        "executor.default_timeout",
+        case["setup"]["initial_default_timeout_ms"].clone(),
+    );
+    let executor = executor_supplied.then(|| {
+        let executor = Executor::with_options(
+            Registry::new(),
+            config.clone(),
+            None,
+            None,
+            Some(Box::new(AutoApproveHandler)),
+        );
+        config.set("executor.default_timeout", json!(1));
+        executor
+    });
+    let mut client = APCore::try_with_options(APCoreOptions {
+        config: Some(config),
+        executor,
+        approval_handler: Some(Box::new(AutoApproveHandler)),
+        ..APCoreOptions::default()
+    })
+    .unwrap();
+    let duration =
+        std::time::Duration::from_millis(case["setup"]["probe_duration_ms"].as_u64().unwrap());
+    client
+        .module(
+            "test.timeout_probe",
+            "Wait before returning an empty object",
+            json!({"type": "object"}),
+            json!({"type": "object"}),
+            None,
+            vec![],
+            None,
+            None,
+            vec![],
+            None,
+            move |_, _| {
+                Box::pin(async move {
+                    tokio::time::sleep(duration).await;
+                    Ok(json!({}))
+                })
+            },
+        )
+        .unwrap();
+    if executor_supplied {
+        client
+            .call("test.timeout_probe", json!({}), None, None)
+            .await
+            .expect("the client configuration must not replace the supplied executor's budget");
+    }
+    let updated = client
+        .call(
+            "system.control.update_config",
+            case["action"]["input"].clone(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(updated["success"], case["expected"]["call_success"]);
+
+    let error = client
+        .call("test.timeout_probe", json!({}), None, None)
+        .await
+        .unwrap_err();
+    assert_eq!(
+        error.code.wire_str(),
+        case["expected"]["probe_error_code"].as_str().unwrap()
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -256,6 +503,39 @@ fn case_overrides_loaded_on_startup() {
 // ---------------------------------------------------------------------------
 // §1.2 Contextual Audit Trail
 // ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn case_config_update_redacts_configured_keys() {
+    let fixture = load_fixture();
+    let case = fixture_case(&fixture, "config_update_redacts_configured_keys");
+    let setup = &case["setup"];
+    let inputs = &case["action"]["input"];
+    let expected = &case["expected"];
+    let key = inputs["key"].as_str().expect("config key");
+
+    let mut config = Config::default();
+    config.set(
+        "obs.redaction.sensitive_keys",
+        setup["sensitive_keys"].clone(),
+    );
+    config.set(key, setup["initial_value"].clone());
+    let config = Arc::new(Mutex::new(config));
+    let audit_store = Arc::new(InMemoryAuditStore::new());
+    let module = UpdateConfigModule::new(Arc::clone(&config), Arc::new(EventEmitter::new()))
+        .with_audit_store(Some(audit_store.clone()));
+
+    let result = module
+        .execute(inputs.clone(), &make_ctx(None))
+        .await
+        .unwrap();
+
+    assert_eq!(result["old_value"], expected["old_value"]);
+    assert_eq!(result["new_value"], expected["new_value"]);
+    let entry = serde_json::to_value(&audit_store.entries()[0]).unwrap();
+    assert_eq!(entry["change"]["before"], expected["old_value"]);
+    assert_eq!(entry["change"]["after"], expected["new_value"]);
+    assert_eq!(config.lock().await.get(key), Some(inputs["value"].clone()));
+}
 
 #[tokio::test]
 async fn case_audit_entry_records_actor() {
@@ -693,6 +973,12 @@ async fn case_reload_order_is_topological_not_alphabetical() {
 /// filesystem wiring), so a case added on the spec side would otherwise leave
 /// no trace: `fixture_case` only sees the ids it is asked for.
 const COVERED_CASE_IDS: &[&str] = &[
+    "manifest_responses_follow_canonical_schema",
+    "first_config_update_has_null_old_value",
+    "config_update_rejects_empty_path",
+    "config_update_redacts_configured_keys",
+    "config_update_rejects_persisted_toggle_keys",
+    "config_update_changes_default_execution_timeout",
     "overrides_persisted_on_update",
     "overrides_loaded_on_startup",
     "audit_entry_records_actor",
@@ -1128,6 +1414,74 @@ async fn regression_update_config_redacts_sensitive_keys() {
     // is for egress only, not for runtime state.
     let stored = config.lock().await.get("auth.api_key");
     assert_eq!(stored, Some(json!("NEW_SECRET")));
+}
+
+#[tokio::test]
+async fn config_updates_preserve_restricted_namespaces() {
+    let config = Arc::new(Mutex::new(Config::default()));
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("overrides.yaml");
+    let module = UpdateConfigModule::new(Arc::clone(&config), Arc::new(EventEmitter::new()))
+        .with_overrides_path(Some(path.clone()));
+    for key in ["toggle", "sys_modules", "apcore.sys_modules", "apcore"] {
+        let error = module
+            .execute(
+                json!({"key": key, "value": {}, "reason": "test"}),
+                &make_ctx(None),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, ErrorCode::ConfigKeyRestricted, "{key}");
+    }
+    assert!(!path.exists());
+    assert_eq!(
+        module.input_schema()["properties"]["value"]["x-sensitive"],
+        true
+    );
+}
+
+#[tokio::test]
+async fn case_config_update_rejects_persisted_toggle_keys() {
+    let fixture = load_fixture();
+    let case = fixture_case(&fixture, "config_update_rejects_persisted_toggle_keys");
+    let config = Arc::new(Mutex::new(Config::default()));
+    let store = Arc::new(InMemoryOverridesStore::new());
+    let module = UpdateConfigModule::new(config.clone(), Arc::new(EventEmitter::new()))
+        .with_overrides_store(Some(store.clone()));
+    let input = case["action"]["input"].clone();
+    let error = module
+        .execute(input.clone(), &make_ctx(None))
+        .await
+        .unwrap_err();
+    assert_eq!(json!(error.code), case["expected"]["error_code"]);
+    assert_eq!(
+        json!(store.load().await.unwrap()),
+        case["expected"]["overrides"]
+    );
+    assert!(config
+        .lock()
+        .await
+        .get(input["key"].as_str().unwrap())
+        .is_none());
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn file_overrides_keeps_existing_private_file_permissions() {
+    use apcore::sys_modules::overrides::FileOverridesStore;
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("overrides.yaml");
+    std::fs::write(&path, "{}\n").unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let store = FileOverridesStore::new(path.clone());
+    store
+        .save(&HashMap::from([("test.key".to_string(), json!(true))]))
+        .await
+        .unwrap();
+    let mode = std::fs::metadata(path).unwrap().permissions().mode();
+    assert_eq!(mode & 0o777, 0o600);
 }
 
 /// Same redaction MUST NOT apply to non-sensitive keys.

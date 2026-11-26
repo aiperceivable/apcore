@@ -952,7 +952,7 @@ class TestAddRuleReValidatesTheRuleItIsHanded:
         acl.add_rule(rule)
 
         assert len(acl.rules) == 1
-        assert acl.rules[0] is rule
+        assert acl.rules[0] == rule
         assert acl.check("api.gateway", "executor.email.send") is True
 
     def test_a_rule_mutated_back_into_shape_is_accepted(self) -> None:
@@ -1281,12 +1281,9 @@ class TestPatternArrayArityBackstop:
         # validates every rule it is handed (spec v1.33.0), so a rule built
         # this way would be rejected if mutated before this point.
         acl = ACL(rules=[rule], default_effect=default_effect)
-        # Mutate through the PUBLIC accessor, not the closed-over local `rule`
-        # reference — this is the route a real caller has, and the one
-        # apcore-rust's `&[ACLRule]` (no `rules_mut`) deliberately does not
-        # expose. Mirrors the conformance driver's `_run_backstop` exactly.
-        installed = acl.rules[0]
-        setattr(installed, field, value)
+        # Inject the fault using the supplied rule, as the conformance driver
+        # does. The introspection accessor returns a detached copy.
+        setattr(rule, field, value)
         return acl
 
     @pytest.mark.parametrize("value", [[], ["$or"], ["$not"], ["$not", "a", "b"], [""], ["api.*", "$or"]])

@@ -40,6 +40,34 @@ class TestUsageRecord:
 
 
 class TestUsageCollector:
+    def test_default_storage_follows_bucket_admission_and_expiry(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        current = datetime.now(timezone.utc).replace(minute=30, second=0, microsecond=0)
+
+        class Clock(datetime):
+            @classmethod
+            def now(cls, tz: timezone | None = None) -> datetime:
+                return current
+
+        monkeypatch.setattr("apcore.observability.usage.datetime", Clock)
+        collector = UsageCollector(retention_hours=1, max_records_per_bucket=1)
+        collector.record("mod.a", "admitted", 1, True)
+        collector.record("mod.a", "overflow", 1, True)
+        assert [record["caller_id"] for _, record in collector._storage.list(STORAGE_NAMESPACE_USAGE)] == ["admitted"]
+
+        current += timedelta(hours=2)
+        collector.record("mod.a", "new", 1, True)
+        assert [record["caller_id"] for _, record in collector._storage.list(STORAGE_NAMESPACE_USAGE)] == ["new"]
+        assert collector.get_module("mod.a").call_count == 1
+
+    def test_custom_storage_keeps_records_outside_live_retention(self) -> None:
+        storage = InMemoryStorageBackend()
+        collector = UsageCollector(retention_hours=1, max_records_per_bucket=1, storage=storage)
+        expired = (datetime.now(timezone.utc) - timedelta(hours=3)).isoformat()
+        collector.record("mod.a", "archive.one", 1, True, expired)
+        collector.record("mod.a", "archive.two", 1, True, expired)
+        assert len(storage.list(STORAGE_NAMESPACE_USAGE)) == 2
+        assert collector.get_module("mod.a").call_count == 0
+
     def test_storage_keeps_records_that_share_a_timestamp(self) -> None:
         storage = InMemoryStorageBackend()
         collector = UsageCollector(storage=storage)

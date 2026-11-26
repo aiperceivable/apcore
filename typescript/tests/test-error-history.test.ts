@@ -1,11 +1,45 @@
 import { describe, it, expect, vi } from 'vitest';
 import { computeFingerprint, ErrorHistory } from '../src/observability/error-history.js';
 import { InMemoryStorageBackend, STORAGE_NAMESPACE_ERROR_HISTORY } from '../src/observability/storage.js';
+import { InMemoryObservabilityStore } from '../src/observability/store.js';
 import { ErrorHistoryMiddleware } from '../src/middleware/error-history.js';
 import { ModuleError, ModuleExecuteError } from '../src/errors.js';
 import { Context } from '../src/context.js';
 
 describe('ErrorHistory', () => {
+  it('mirrors only live fingerprints in the default backend and sink', async () => {
+    const history = new ErrorHistory({ maxEntriesPerModule: 1, maxTotalEntries: 2 });
+    const storage = history.storage;
+    const old = new ModuleError('E1', 'old');
+    const repeat = new ModuleError('E2', 'repeat');
+    history.record('mod.a', old);
+    for (let index = 0; index < 40; index++) history.record('mod.a', repeat);
+    history.record('mod.b', new ModuleError('E3', 'second module'));
+    history.record('mod.c', new ModuleError('E4', 'third module'));
+    expect((await storage.list(STORAGE_NAMESPACE_ERROR_HISTORY)).map(([, row]) => row['module_id']).sort())
+      .toEqual(['mod.b', 'mod.c']);
+    expect(history.store.getErrors()).toEqual(history.getAll().reverse());
+
+    history.clearModule('mod.b');
+    expect(await storage.list(STORAGE_NAMESPACE_ERROR_HISTORY)).toHaveLength(1);
+    expect(history.store.getErrors()).toMatchObject([{ moduleId: 'mod.c' }]);
+    history.clear();
+    await Promise.resolve();
+    expect(await storage.list(STORAGE_NAMESPACE_ERROR_HISTORY)).toEqual([]);
+    expect(history.store.getErrors()).toEqual([]);
+  });
+
+  it('leaves retention to an explicitly supplied backend and sink', () => {
+    const storage = new InMemoryStorageBackend();
+    const store = new InMemoryObservabilityStore();
+    const history = new ErrorHistory({ storage, store, maxTotalEntries: 1 });
+    history.record('mod.a', new ModuleError('E1', 'first'));
+    history.record('mod.b', new ModuleError('E2', 'second'));
+    expect(history.getAll()).toHaveLength(1);
+    expect(storage.list(STORAGE_NAMESPACE_ERROR_HISTORY)).toHaveLength(2);
+    expect(store.getErrors()).toHaveLength(2);
+  });
+
   it('records and retrieves errors', () => {
     const history = new ErrorHistory();
     const error = new ModuleError('TEST_ERROR', 'test message');

@@ -185,6 +185,8 @@ export interface PipelineContext {
   moduleId: string;
   inputs: Record<string, unknown>;
   context: Context;
+  /** @internal Observe the derived execution context before any following hook. */
+  onContextReady?: (context: Context) => void;
   module?: unknown | null;
 
   /**
@@ -214,17 +216,6 @@ export interface PipelineContext {
   /** Tracks which middleware ran, enabling on_error recovery chain. */
   executedMiddlewares?: unknown[];
 
-  /**
-   * Whether the `execute` step actually invoked the module (MW-001).
-   *
-   * `output == null` is ambiguous on its own: it means both "the module
-   * returned nothing" and "the step that would have set an output never ran"
-   * (dry run, streaming Phase 1, a `runUntil` that stopped earlier). The
-   * after-middleware chain has to distinguish them — a middleware that
-   * acquired state in `before()` MUST get its matching `after()` — so the
-   * execute step records the fact rather than leaving it to be inferred.
-   */
-  executeStepRan?: boolean;
   /** When set, pipeline halts after the first step where predicate returns true (protocol-spec §5.16 requirement 4). */
   runUntil?: ((state: PipelineState) => boolean) | null;
 
@@ -249,6 +240,8 @@ export interface PipelineContext {
    * override may add a requirement and MUST NOT remove the one recorded here.
    */
   aclApprovalRequired?: boolean;
+  /** @internal Explicit result of the built-in ACL check, when it ran. */
+  aclAllowed?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -543,6 +536,13 @@ export class ExecutionStrategy {
 
   get steps(): readonly Step[] {
     return this._steps;
+  }
+
+  /** @internal Derive a strategy while preserving its seeded capabilities. */
+  mapSteps(mapStep: (step: Step) => Step): ExecutionStrategy {
+    return new ExecutionStrategy(this.name, this._steps.map(mapStep), {
+      seedProvides: [...this._seedProvides],
+    });
   }
 
   /** Return the index of a step by name, or undefined if not found. O(1). */
@@ -879,6 +879,9 @@ export class PipelineStepNotFoundError extends ModuleError {
 // PipelineEngine
 // ---------------------------------------------------------------------------
 
+type StepObserver = (name: string, phase: 'before_hooks' | 'before_execute') => void;
+type PipelineOutcome = [unknown, PipelineTrace];
+
 /** Executes an ExecutionStrategy against a PipelineContext, returning the final output and a complete execution trace. */
 export class PipelineEngine {
   /**
@@ -1028,7 +1031,32 @@ export class PipelineEngine {
   }
 
   /** Run every step in the strategy against ctx, respecting flow-control actions (continue, skip_to, abort). */
-  async run(strategy: ExecutionStrategy, ctx: PipelineContext): Promise<[unknown, PipelineTrace]> {
+  async run(
+    strategy: ExecutionStrategy,
+    ctx: PipelineContext,
+    observeStep?: StepObserver,
+  ): Promise<PipelineOutcome> {
+    const completed = await this._run(strategy, ctx, observeStep).next();
+    if (!completed.done) throw new Error('Pipeline paused without a pause predicate');
+    return completed.value;
+  }
+
+  /** @internal Pause once after a completed step, then resume the same invocation. */
+  runWithPause(
+    strategy: ExecutionStrategy,
+    ctx: PipelineContext,
+    pauseAfterStep: () => boolean,
+    observeStep?: StepObserver,
+  ): AsyncGenerator<void, PipelineOutcome, void> {
+    return this._run(strategy, ctx, observeStep, pauseAfterStep);
+  }
+
+  private async *_run(
+    strategy: ExecutionStrategy,
+    ctx: PipelineContext,
+    observeStep?: StepObserver,
+    pauseAfterStep?: () => boolean,
+  ): AsyncGenerator<void, PipelineOutcome, void> {
     const pipelineStart = performance.now();
     const steps = strategy.steps;
     const trace: PipelineTrace = {
@@ -1042,6 +1070,7 @@ export class PipelineEngine {
 
     const stepOutputs: Record<string, unknown> = {};
     const failedProvides = new Set<string>();
+    let paused = false;
     const completedStep = (stepName: string): boolean => {
       stepOutputs[stepName] = ctx.output != null ? { ...ctx.output } : null;
       if (!ctx.runUntil?.({ stepName, outputs: stepOutputs, context: ctx })) return false;
@@ -1053,6 +1082,7 @@ export class PipelineEngine {
     let idx = 0;
     while (idx < steps.length) {
       const step = steps[idx];
+      observeStep?.(step.name, 'before_hooks');
 
       // Read declarations (optional fields, backward compat via ?? defaults)
       const stepMatchModules = step.matchModules ?? null;
@@ -1186,6 +1216,7 @@ export class PipelineEngine {
 
       let result: StepResult;
       try {
+        observeStep?.(step.name, 'before_execute');
         if (stepTimeoutMs > 0) {
           let timer: ReturnType<typeof setTimeout>;
           const timeoutPromise = new Promise<never>((_, reject) => {
@@ -1217,8 +1248,10 @@ export class PipelineEngine {
         // 3 b onStepError hooks: reverse registration order (onion model),
         //     first non-null recovery wins and short-circuits the rest (§2.2).
         const isGovernanceGate = governanceGateOf(step) !== null;
+        const observedCancellation = observeStep !== undefined &&
+          cause instanceof ModuleError && cause.code === 'EXECUTION_CANCELLED';
         let recovery: unknown;
-        if (isGovernanceGate) {
+        if (isGovernanceGate || observedCancellation) {
           await this._runStepCleanupHooks(step.name, stepState, cause, executedStepMws);
         } else {
           recovery = await this._runStepErrorHooks(step.name, stepState, cause, executedStepMws);
@@ -1260,7 +1293,7 @@ export class PipelineEngine {
         }
 
         // 4 ignore_errors: log and continue
-        if (stepIgnoreErrors && !isGovernanceGate) {
+        if (stepIgnoreErrors && !isGovernanceGate && !observedCancellation) {
           console.warn(`[apcore:pipeline] Step '${step.name}' failed (ignored):`, cause.message);
           trace.steps.push({
             name: step.name,
@@ -1336,8 +1369,10 @@ export class PipelineEngine {
         );
       } else if (result.action === 'skip_to') {
         const target = result.skipTo ?? '';
-        // O(1) step index lookup (protocol-spec §5.16 requirement 2)
-        const targetIdx = strategy.findStepIndex(target);
+        // The strategy may be edited by the host while an invocation is paused.
+        const targetIdx = steps === strategy.steps
+          ? strategy.findStepIndex(target)
+          : steps.findIndex((candidate) => candidate.name === target);
         if (targetIdx === undefined || targetIdx <= idx) {
           throw new StepNotFoundError(
             `skip_to target '${target}' not found after step '${step.name}'`,
@@ -1356,6 +1391,10 @@ export class PipelineEngine {
         idx = targetIdx;
       } else {
         throw new StepNotFoundError(`Unknown step action: '${result.action as string}'`);
+      }
+      if (!paused && pauseAfterStep?.()) {
+        paused = true;
+        yield;
       }
     }
 

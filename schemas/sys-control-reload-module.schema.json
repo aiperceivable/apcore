@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://apcore.dev/schemas/sys-control-reload-module.schema.json",
   "title": "system.control.reload_module Output",
-  "description": "Output schema for the system.control.reload_module module.",
+  "description": "Single-module and bulk reload results, and the Rust configuration-only reload result.",
   "type": "object",
   "required": ["success", "module_id"],
   "additionalProperties": false,
@@ -12,8 +12,8 @@
       "description": "Whether the module reload succeeded."
     },
     "module_id": {
-      "type": "string",
-      "description": "Canonical ID of the reloaded module."
+      "type": ["string", "null"],
+      "description": "Canonical ID for a single-module reload. Null for bulk and configuration-only reloads."
     },
     "previous_version": {
       "type": ["string", "null"],
@@ -26,6 +26,41 @@
     "reload_duration_ms": {
       "type": "number",
       "description": "Time taken for the reload operation in milliseconds."
+    },
+    "reloaded_modules": {
+      "type": "array",
+      "description": "Module IDs reloaded in bulk mode. An empty array means no modules matched.",
+      "items": {"type": "string"}
+    },
+    "config_reloaded": {
+      "type": "boolean",
+      "description": "Whether the Rust SDK reloaded its configuration."
     }
-  }
+  },
+  "oneOf": [
+    {
+      "properties": {
+        "module_id": {"type": "string", "description": "Canonical ID of the single reloaded module."},
+        "reloaded_modules": false
+      }
+    },
+    {
+      "required": ["reloaded_modules"],
+      "properties": {
+        "module_id": {"type": "null", "description": "Bulk reload has no single module ID."},
+        "previous_version": false,
+        "new_version": false
+      }
+    },
+    {
+      "required": ["config_reloaded"],
+      "properties": {
+        "module_id": {"type": "null", "description": "Configuration-only reload has no module ID."},
+        "reloaded_modules": false,
+        "previous_version": false,
+        "new_version": false,
+        "reload_duration_ms": false
+      }
+    }
+  ]
 }

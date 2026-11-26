@@ -12,30 +12,32 @@ import {
   ReloadFailedError,
   ModuleReloadConflictError,
 } from '../errors.js';
-import type { Registry } from '../registry/registry.js';
+import type { RegistrationSnapshot, Registry } from '../registry/registry.js';
 import { resolveDependencies } from '../registry/dependencies.js';
 import { parseDependencies } from '../registry/metadata-pure.js';
 import type { DependencyInfo } from '../registry/types.js';
 import type { EventEmitter } from '../events/emitter.js';
 import { createEvent } from '../events/emitter.js';
-import type { Config } from '../config.js';
-import { CONSTRAINTS, isConfigurationDataPath } from '../config.js';
+import { Config, CONSTRAINTS, isConfigurationDataPath } from '../config.js';
+import { FRAMEWORK_CONFIG_KEYS } from '../config-key-surface.js';
 import type { Context } from '../context.js';
+import { RedactionConfig } from '../observability/context-logger.js';
 import type { AuditStore } from './audit.js';
 import { buildAuditEntry, extractAuditIdentity } from './audit.js';
 import { matchGlob } from '../utils/pattern.js';
 import { REDACTED_VALUE } from '../executor.js';
 import { FileOverridesStore, type OverridesStore } from './overrides.js';
-import { persistOverride } from './override-update.js';
+import { persistOverride, TOGGLE_OVERRIDE_NAMESPACE, TOGGLE_OVERRIDE_PREFIX } from './override-update.js';
 
 const RESTRICTED_KEYS = new Set(['sys_modules.enabled']);
 
 const SENSITIVE_SEGMENTS = ['token', 'secret', 'key', 'password', 'auth', 'credential'] as const;
 
 /** Match exact segments or underscore-compound segments (api_key, auth_token). */
-function isSensitiveKey(key: string): boolean {
-  return key.toLowerCase().split('.').some((seg) =>
-    SENSITIVE_SEGMENTS.some((s) => seg === s || seg.endsWith(`_${s}`) || seg.startsWith(`${s}_`)),
+function isLegacySensitiveField(fieldName: string): boolean {
+  const segment = fieldName.toLowerCase();
+  return SENSITIVE_SEGMENTS.some(
+    (s) => segment === s || segment.endsWith(`_${s}`) || segment.startsWith(`${s}_`),
   );
 }
 
@@ -58,17 +60,18 @@ export class UpdateConfigModule {
     type: 'object' as const,
     properties: {
       key: { type: 'string' as const, description: 'Dot-path config key' },
-      value: { description: 'New value' },
+      value: { description: 'New value', 'x-sensitive': true },
       reason: { type: 'string' as const, description: 'Audit reason' },
     },
     required: ['key', 'value', 'reason'],
   };
   readonly outputSchema = {
     type: 'object' as const,
+    additionalProperties: false,
     properties: {
       success: { type: 'boolean' as const, description: 'Whether the update succeeded' },
       key: { type: 'string' as const, description: 'Updated config key' },
-      old_value: { description: 'Previous value (redacted for sensitive keys)' },
+      old_value: { description: 'Previous value, null if absent, or redacted for sensitive keys' },
       new_value: { description: 'New value (redacted for sensitive keys)' },
     },
     required: ['success', 'key', 'old_value', 'new_value'],
@@ -95,22 +98,25 @@ export class UpdateConfigModule {
     this._checkRestricted(frameworkKey);
     this._validateValue(frameworkKey, value);
 
-    const oldValue = this._config.get(key);
-    this._config.set(key, value);
+    const isFrameworkKey = FRAMEWORK_CONFIG_KEYS.includes(frameworkKey);
+    const settingsKey = isFrameworkKey ? frameworkKey : key;
+    const oldValue = this._config.get(settingsKey) ?? null;
 
-    // SYS-13: mask with the framework's canonical redaction constant, which is
-    // what apcore-python and apcore-rust write. A bespoke `'***'` here meant an
-    // operator grepping an audit trail for the redaction marker found the
-    // config-write events on two SDKs of three, and a consumer matching on the
-    // constant silently classified a redacted value as a real one.
-    const isSensitive = isSensitiveKey(key);
-    const safeOld = isSensitive ? REDACTED_VALUE : oldValue;
-    const safeNew = isSensitive ? REDACTED_VALUE : value;
+    // Resolve the key rules before the update, which may itself replace them.
+    const redaction = RedactionConfig.forSensitiveKeys(this._config, REDACTED_VALUE, isLegacySensitiveField);
+    const redact = (value: unknown): unknown => {
+      const safeValue = redaction.redactConfigValue(settingsKey, value);
+      return isFrameworkKey ? redaction.redactConfigValue(`apcore.${settingsKey}`, safeValue) : safeValue;
+    };
+    const safeOld = redact(oldValue);
+    this._config.set(settingsKey, value);
+    const effectiveValue = this._config.get(settingsKey) ?? null;
+    const safeNew = redact(effectiveValue);
 
     // Store-XOR-path precedence (Python/Rust parity, matches toggle.ts): the
     // pluggable store takes precedence over the legacy YAML path; never both.
     if (this._overridesStore !== null) {
-      persistOverride(this._overridesStore, key, value);
+      persistOverride(this._overridesStore, settingsKey, effectiveValue);
     }
 
     const entry = buildAuditEntry('update_config', 'system.control.update_config', ctx, { before: safeOld, after: safeNew });
@@ -154,7 +160,7 @@ export class UpdateConfigModule {
 
   /** Raise if `key` is in the restricted keys list. Mirrors Python `_check_restricted`. */
   private _checkRestricted(key: string): void {
-    if (key === 'apcore' || [...RESTRICTED_KEYS].some(
+    if (key === 'apcore' || key === TOGGLE_OVERRIDE_NAMESPACE || key.startsWith(TOGGLE_OVERRIDE_PREFIX) || [...RESTRICTED_KEYS].some(
       (restricted) => key === restricted || restricted.startsWith(`${key}.`) || key.startsWith(`${restricted}.`),
     )) {
       throw new ModuleError(
@@ -167,6 +173,11 @@ export class UpdateConfigModule {
 
   /** Check registered constraints before publishing, persisting, or auditing the update. */
   private _validateValue(key: string, value: unknown): void {
+    if (value === '' && Config.pathTypedKeys().includes(key)) {
+      throw new ConfigError(`Invalid value for '${key}': a filesystem path cannot be empty`, {
+        details: { key },
+      });
+    }
     if (!Object.hasOwn(CONSTRAINTS, key)) return;
     const constraint = CONSTRAINTS[key];
     const [checkFn, errMsg] = constraint;
@@ -178,7 +189,7 @@ export class UpdateConfigModule {
   }
 }
 
-/** @internal */
+/** Reload modules through the registry. */
 export class ReloadModule {
   readonly description = 'Hot-reload a module by safe unregister and re-discover';
   // SYS-19: not idempotent — each reload unregisters and re-imports, running
@@ -205,15 +216,30 @@ export class ReloadModule {
   };
   readonly outputSchema = {
     type: 'object' as const,
+    additionalProperties: false,
     properties: {
       success: { type: 'boolean' as const, description: 'Whether the reload succeeded' },
-      module_id: { type: ['string', 'null'], description: 'ID of the reloaded module (single-module mode)' },
-      reloaded_modules: { type: 'array' as const, description: 'IDs of reloaded modules (path_filter mode)' },
-      previous_version: { type: 'string' as const, description: 'Version before reload' },
-      new_version: { type: 'string' as const, description: 'Version after reload' },
+      module_id: { type: ['string', 'null'], description: 'ID of the reloaded module, or null in bulk mode' },
+      reloaded_modules: {
+        type: 'array', items: { type: 'string' }, description: 'IDs of the modules reloaded in bulk mode',
+      },
+      previous_version: { type: ['string', 'null'], description: 'Version before reload' },
+      new_version: { type: ['string', 'null'], description: 'Version after reload' },
       reload_duration_ms: { type: 'number' as const, description: 'Reload duration in milliseconds' },
     },
-    required: ['success'],
+    required: ['success', 'module_id'],
+    oneOf: [
+      { properties: { module_id: { type: 'string' }, reloaded_modules: false } },
+      {
+        required: ['reloaded_modules'],
+        properties: {
+          module_id: { type: 'null' },
+          reloaded_modules: { type: 'array' },
+          previous_version: false,
+          new_version: false,
+        },
+      },
+    ],
   };
 
   private readonly _registry: Registry;
@@ -274,11 +300,11 @@ export class ReloadModule {
   }
 
   private async _reloadSingleModule(moduleId: string, reason: string, ctx: Context | null): Promise<Record<string, unknown>> {
-    const existing = this._registry.get(moduleId);
+    const existing = this._registry.snapshotRegistration(moduleId);
     if (existing === null) {
       throw new ModuleNotFoundError(moduleId);
     }
-    const existingObj = existing as Record<string, unknown>;
+    const existingObj = existing.module as Record<string, unknown>;
     const previousVersion = String(existingObj['version'] ?? '1.0.0');
 
     let suspendedState: Record<string, unknown> | null = null;
@@ -294,15 +320,15 @@ export class ReloadModule {
     await this._registry.safeUnregister(moduleId);
 
     try {
-      await this._registry.discover();
+      await this._registry.discover({ reloadFiles: existing.sourceFile === undefined ? [] : [existing.sourceFile] });
     } catch (err) {
-      this._registry.registerInternal(moduleId, existing);
+      await this._restoreMissingRegistrations([existing]);
       throw new ReloadFailedError(moduleId, String(err));
     }
 
     const reloaded = this._registry.get(moduleId);
     if (reloaded === null) {
-      this._registry.registerInternal(moduleId, existing);
+      await this._registry.restoreRegistration(existing);
       throw new ReloadFailedError(moduleId, `Module '${moduleId}' was not found after re-discovery`);
     }
 
@@ -386,6 +412,19 @@ export class ReloadModule {
     }
   }
 
+  private async _restoreMissingRegistrations(registrations: readonly RegistrationSnapshot[]): Promise<void> {
+    let failure: { error: unknown } | undefined;
+    for (const registration of registrations) {
+      if (this._registry.has(registration.moduleId)) continue;
+      try {
+        await this._registry.restoreRegistration(registration);
+      } catch (error) {
+        failure ??= { error };
+      }
+    }
+    if (failure) throw failure.error;
+  }
+
   private async _reloadWithPathFilter(pathFilter: string, reason: string, ctx: Context | null): Promise<Record<string, unknown>> {
     const started = Date.now();
     const allIds = this._registry.list();
@@ -402,13 +441,13 @@ export class ReloadModule {
     );
 
     // Capture existing modules and versions before unregistering
-    const existingModules = new Map<string, unknown>();
+    const existingModules: RegistrationSnapshot[] = [];
     const previousVersions = new Map<string, string>();
     for (const id of matchingIds) {
-      const mod = this._registry.get(id);
-      if (mod !== null) {
-        existingModules.set(id, mod);
-        previousVersions.set(id, String((mod as Record<string, unknown>)['version'] ?? '1.0.0'));
+      const registration = this._registry.snapshotRegistration(id);
+      if (registration !== null) {
+        existingModules.push(registration);
+        previousVersions.set(id, String((registration.module as Record<string, unknown>)['version'] ?? '1.0.0'));
       }
     }
 
@@ -419,11 +458,11 @@ export class ReloadModule {
 
     // Re-discover
     try {
-      await this._registry.discover();
+      await this._registry.discover({
+        reloadFiles: existingModules.flatMap(({ sourceFile }) => sourceFile === undefined ? [] : [sourceFile]),
+      });
     } catch (err) {
-      for (const [id, mod] of existingModules) {
-        this._registry.registerInternal(id, mod);
-      }
+      await this._restoreMissingRegistrations(existingModules);
       throw new ReloadFailedError(pathFilter, String(err));
     }
 
@@ -436,10 +475,6 @@ export class ReloadModule {
       const reloaded = this._registry.get(id);
       if (reloaded === null) {
         missing.push(id);
-        const orig = existingModules.get(id);
-        if (orig !== undefined) {
-          this._registry.registerInternal(id, orig);
-        }
       } else {
         reloadedModules.push(id);
         // Emit the same event the single-module path emits. The event bus is
@@ -459,6 +494,7 @@ export class ReloadModule {
     }
 
     if (missing.length > 0) {
+      await this._restoreMissingRegistrations(existingModules);
       throw new ReloadFailedError(
         pathFilter,
         `${missing.length} module(s) were not restored by re-discovery and were put back as they were: ${missing.join(', ')}`,

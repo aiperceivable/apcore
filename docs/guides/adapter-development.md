@@ -33,6 +33,7 @@ An adapter:
 3. **Registers** each route as a module at runtime, or **generates** binding YAML files.
 4. **Maps** framework types to JSON Schema.
 5. **Builds the request `Context`** — trace parent, correlation ID and caller identity (section 6).
+6. **Publishes an approved output representation.** Project results to the fields the caller may see, validate that representation, and redact sensitive values before forwarding responses or streaming chunks. See [Publishing module output](../spec/security-considerations.md#publishing-module-output).
 
 An adapter does not:
 

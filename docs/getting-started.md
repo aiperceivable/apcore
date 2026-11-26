@@ -20,25 +20,33 @@ Whether you are building from scratch or upgrading a legacy system, apcore provi
 
 === "TypeScript"
 
+    In a new project, set up ESM and install the SDK and the dependencies used in the example.
+
     ```bash
-    npm install apcore-js
+    npm init -y
+    npm pkg set type=module
+    npm install apcore-js @sinclair/typebox
+    npm install --save-dev 'typescript@^5.5.0' @types/node@20
     ```
 
-    Requires Node.js 18+ and TypeScript 5.5+.
+    Requires Node.js 20+ and TypeScript 5.5+.
 
 === "Rust"
 
     ```bash
-    cargo add apcore
+    cargo add apcore async-trait serde_json
+    cargo add tokio --features macros,rt-multi-thread
     ```
 
-    Requires Rust 1.75+.
+    Requires Rust 1.86+.
 
 ## 2. Your First Module
 
 The `APCore` client is the recommended entry point. It manages Registry and Executor for you.
 
 === "Python"
+
+    <!-- executable-example: quick-start -->
 
     ```python
     from apcore import APCore
@@ -51,6 +59,7 @@ The `APCore` client is the recommended entry point. It manages Registry and Exec
 
     # Call the module
     result = client.call("math.add", {"a": 10, "b": 5})
+    assert result == {"sum": 15}
     print(result)  # {'sum': 15}
     ```
 
@@ -68,13 +77,16 @@ The `APCore` client is the recommended entry point. It manages Registry and Exec
 
 === "TypeScript"
 
+    <!-- executable-example: quick-start -->
+
     ```typescript
+    import assert from 'node:assert/strict';
     import { Type } from '@sinclair/typebox';
     import { APCore } from 'apcore-js';
 
     const client = new APCore();
 
-    client.module({
+    const addition = client.module({
       id: 'math.add',
       description: 'Add two numbers',
       tags: ['math'],
@@ -83,11 +95,22 @@ The `APCore` client is the recommended entry point. It manages Registry and Exec
       execute: (inputs) => ({ sum: (inputs.a as number) + (inputs.b as number) }),
     });
 
+    await addition.registration;
     const result = await client.call('math.add', { a: 10, b: 5 });
+    assert.deepEqual(result, { sum: 15 });
     console.log(result); // { sum: 15 }
     ```
 
+    Save the example as `example.ts`, then compile and run it.
+
+    ```bash
+    npx tsc --strict --module NodeNext --target ES2022 --outDir dist example.ts
+    node dist/example.js
+    ```
+
 === "Rust"
+
+    <!-- executable-example: quick-start -->
 
     ```rust
     use apcore::errors::ModuleError;
@@ -133,10 +156,13 @@ The `APCore` client is the recommended entry point. It manages Registry and Exec
         let result = client
             .call("math.add", json!({"a": 10, "b": 5}), None, None)
             .await?;
+        assert_eq!(result, json!({"sum": 15}));
         println!("{result}"); // {"sum":15}
         Ok(())
     }
     ```
+
+    Save the example as `src/main.rs` in your Cargo project and run `cargo run`.
 
 ## 3. Preflight Validation
 
@@ -389,7 +415,7 @@ All `APCore` client methods are also available as module-level functions via a d
     const client = new APCore();
 
     // Registration
-    client.register("math.add", myModule);
+    await client.register("math.add", myModule);
     await client.discover();
 
     // Execution
@@ -502,6 +528,8 @@ When configured with `sys_modules.enabled: true`, APCore auto-registers built-in
 See [System Modules](features/system-modules.md) for the full module reference.
 
 ## Next Steps
+
+Before exposing modules to external callers, attach an ACL and configure approval enforcement for sensitive operations. Review the [security setup](spec/security-considerations.md#3-operational-guidance) and the [output publication boundary](spec/security-considerations.md#publishing-module-output).
 
 - [APCore Client](features/apcore-client.md) - Complete unified client reference.
 - [Creating Modules Guide](guides/creating-modules.md) - Deep dive into module definition.

@@ -1,7 +1,9 @@
 import { describe, it, expect } from 'vitest';
 import { Type } from '@sinclair/typebox';
+import { Value } from '@sinclair/typebox/value';
 import { Registry } from '../../src/registry/registry.js';
 import { FunctionModule } from '../../src/decorator.js';
+import { Executor } from '../../src/executor.js';
 import { InvalidInputError, ModuleNotFoundError } from '../../src/errors.js';
 import {
   getSchema,
@@ -63,6 +65,58 @@ function makeRegistry(...modules: Array<[string, FunctionModule]>): Registry {
   }
   return registry;
 }
+
+describe('schema snapshots', () => {
+  const schemaReaders = [
+    { name: 'Registry.getDefinition', read: (registry: Registry, id: string) => registry.getDefinition(id)!.inputSchema },
+    { name: 'Registry.exportSchema', read: (registry: Registry, id: string) => registry.exportSchema(id)!['input_schema'] },
+    { name: 'getSchema', read: (registry: Registry, id: string) => getSchema(registry, id)!['input_schema'] },
+    { name: 'getAllSchemas', read: (registry: Registry, id: string) => getAllSchemas(registry)[id]['input_schema'] },
+  ];
+
+  it.each(schemaReaders)('$name returns a detached, usable TypeBox schema', async ({ read }) => {
+    const id = 'test.schema_snapshot';
+    const original = Type.Object({ prompt: Type.String({ minLength: 1 }) });
+    const registry = makeRegistry([id, createModule(id, { inputSchema: original })]);
+    const schema = read(registry, id) as typeof original;
+
+    schema.properties.prompt.minLength = 5;
+
+    expect(Value.Check(schema, { prompt: 'hi' })).toBe(false);
+    expect(original.properties.prompt.minLength).toBe(1);
+    await expect(new Executor({ registry }).call(id, { prompt: 'hi' })).resolves.toEqual({ text: 'hello' });
+  });
+
+  it('keeps strict conversions and their result mutations separate from the original schemas', () => {
+    const id = 'test.strict_snapshot';
+    const original = Type.Object({ prompt: Type.String({ minLength: 1 }) });
+    const registry = makeRegistry([id, createModule(id, { inputSchema: original })]);
+    const strict = registry.exportSchema(id, true)!['input_schema'] as typeof original;
+
+    expect(strict.additionalProperties).toBe(false);
+    strict.properties.prompt.minLength = 5;
+
+    expect(original.properties.prompt.minLength).toBe(1);
+    expect(original.additionalProperties).toBeUndefined();
+  });
+
+  it('detaches descriptor metadata, tags, and examples', () => {
+    const id = 'test.descriptor_snapshot';
+    const labels = ['original'];
+    const registry = new Registry();
+    registry.register(id, createModule(id), undefined, { 'x-policy': { labels } });
+
+    const descriptor = registry.getDefinition(id)!;
+    (descriptor.metadata['x-policy'] as { labels: string[] }).labels.push('edited');
+    descriptor.tags.push('edited');
+    descriptor.examples[0].inputs['prompt'] = 'edited';
+
+    const latest = registry.getDefinition(id)!;
+    expect(latest.metadata['x-policy']).toEqual({ labels: ['original'] });
+    expect(latest.tags).toEqual(['ai', 'test']);
+    expect(latest.examples[0].inputs['prompt']).toBe('hi');
+  });
+});
 
 describe('getSchema', () => {
   it('returns null for unregistered module', () => {

@@ -313,7 +313,7 @@ class BindingLoader:
         if not isinstance(bindings, list):
             raise BindingFileInvalidError(file_path=file_path, reason="'bindings' must be a list")
 
-        results: list[FunctionModule] = []
+        modules: list[FunctionModule] = []
         for entry in bindings:
             if not isinstance(entry, dict):
                 raise BindingFileInvalidError(
@@ -334,6 +334,7 @@ class BindingLoader:
                 "annotations",
                 "resources",
                 "metadata",
+                "display",
             }
             if unknown:
                 raise BindingFileInvalidError(
@@ -350,11 +351,13 @@ class BindingLoader:
                     reason="Binding entry missing 'target'",
                 )
             _validate_binding_limits(entry, config, file_path=file_path)
-            fm = self._create_module_from_binding(entry, binding_file_dir, schema_loader, config, file_path=file_path)
-            registry.register(entry["module_id"], fm)
-            results.append(fm)
+            modules.append(
+                self._create_module_from_binding(entry, binding_file_dir, schema_loader, config, file_path=file_path)
+            )
 
-        return results
+        for module in modules:
+            registry.register(module.module_id, module)
+        return modules
 
     def load_binding_dir(
         self,
@@ -626,6 +629,14 @@ class BindingLoader:
     ) -> FunctionModule:
         """Create a FunctionModule from a single binding entry."""
         module_id = binding["module_id"]
+        display = binding.get("display")
+        metadata = binding.get("metadata")
+        if display is not None:
+            if not isinstance(display, dict):
+                raise BindingFileInvalidError(file_path=file_path, reason="'display' must be a mapping")
+            if metadata is not None and not isinstance(metadata, dict):
+                raise BindingFileInvalidError(file_path=file_path, reason="'metadata' must be a mapping")
+            metadata = {**(metadata or {}), "display": display}
         func = self.resolve_target(binding["target"])
 
         input_schema, output_schema = self._resolve_schema(
@@ -646,8 +657,8 @@ class BindingLoader:
             tags=binding.get("tags"),
             version=binding.get("version", "1.0.0"),
             annotations=binding.get("annotations"),
-            metadata=binding.get("metadata"),
-            display=binding.get("display"),
+            metadata=metadata,
+            display=display,
             input_schema=input_schema,
             output_schema=output_schema,
             resources=binding.get("resources"),

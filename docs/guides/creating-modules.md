@@ -1450,7 +1450,7 @@ Given an ordinary `send_email(to, subject, body)` function, one registration tur
 
     const client = new APCore();
 
-    client.module({
+    const sendEmail = client.module({
       id: 'email.send',
       description: 'Send an email',
       tags: ['email', 'notification'],
@@ -1466,6 +1466,7 @@ Given an ordinary `send_email(to, subject, body)` function, one registration tur
       execute: () => ({ success: true, message_id: 'msg_123' }),
     });
 
+    await sendEmail.registration;
     console.log(await client.call('email.send', { to: 'user@example.com', subject: 'Hi', body: 'Hello' }));
     ```
 

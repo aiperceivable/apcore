@@ -7,6 +7,7 @@ import logging
 import sys
 import threading
 import time
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -177,262 +178,98 @@ class TestOTLPExporter:
             with pytest.raises(ImportError, match="opentelemetry"):
                 OTLPExporter()
 
-    def test_export_converts_span_to_otel_and_calls_end(self):
-        """export() should create an OTel span with matching data and end it."""
-        mock_otel_span = MagicMock()
-        mock_tracer = MagicMock()
-        mock_tracer.start_span.return_value = mock_otel_span
-
+    @staticmethod
+    def _capture_exporter(allowlist=None):
         exporter = object.__new__(OTLPExporter)
-        exporter._tracer = mock_tracer
-        exporter._provider = MagicMock()
-        exporter._attribute_allowlist = None
-        exporter._StatusCode = MagicMock()
-        exporter._StatusCode.ERROR = "ERROR_STATUS"
+        exporter._processor = MagicMock()
+        exporter._attribute_allowlist = allowlist
+        exporter._SpanContext = lambda trace_id, span_id, remote, flags: SimpleNamespace(
+            trace_id=trace_id, span_id=span_id, is_remote=remote, flags=flags
+        )
+        exporter._ReadableSpan = SimpleNamespace
+        exporter._Event = lambda name, attributes: SimpleNamespace(name=name, attributes=attributes)
+        exporter._Status = lambda code: SimpleNamespace(code=code)
+        exporter._StatusCode = SimpleNamespace(ERROR="error", UNSET="unset")
+        exporter._sampled_trace_flags = 1
+        exporter._resource = object()
+        exporter._instrumentation_scope = object()
+        return exporter
 
+    def test_export_constructs_span_with_matching_data(self):
+        exporter = self._capture_exporter()
         span = Span(
-            trace_id="abc123",
-            span_id="def456",
-            parent_span_id="parent789",
+            trace_id="1" * 32,
+            span_id="2" * 16,
+            parent_span_id="3" * 16,
             name="apcore.module.execute",
             start_time=1000.0,
             end_time=1001.5,
-            status="ok",
-            attributes={"module_id": "greet", "success": True},
+            attributes={"module_id": "greet", "success": True, "complex": ["a", "b"]},
+            events=[{"name": "exception", "type": "ValueError", "args": ["bad input"]}],
         )
 
         exporter.export(span)
 
-        mock_tracer.start_span.assert_called_once_with(
-            name="apcore.module.execute",
-            start_time=1000_000_000_000,
-        )
-        mock_otel_span.set_attribute.assert_any_call("apcore.trace_id", "abc123")
-        mock_otel_span.set_attribute.assert_any_call("apcore.span_id", "def456")
-        mock_otel_span.set_attribute.assert_any_call("apcore.parent_span_id", "parent789")
-        mock_otel_span.set_attribute.assert_any_call("module_id", "greet")
-        mock_otel_span.set_attribute.assert_any_call("success", True)
-        mock_otel_span.end.assert_called_once_with(end_time=1001_500_000_000)
+        exporter._processor.on_end.assert_called_once()
+        converted = exporter._processor.on_end.call_args.args[0]
+        assert converted.name == span.name
+        assert converted.context.trace_id == int(span.trace_id, 16)
+        assert converted.context.span_id == int(span.span_id, 16)
+        assert converted.parent.trace_id == converted.context.trace_id
+        assert converted.parent.span_id == int(span.parent_span_id, 16)
+        assert converted.start_time == 1000_000_000_000
+        assert converted.end_time == 1001_500_000_000
+        assert converted.status.code == "unset"
+        assert converted.attributes == {
+            "module_id": "greet",
+            "success": True,
+            "complex": "['a', 'b']",
+            "apcore.trace_id": span.trace_id,
+            "apcore.span_id": span.span_id,
+            "apcore.parent_span_id": span.parent_span_id,
+        }
+        assert converted.events == [
+            SimpleNamespace(name="exception", attributes={"type": "ValueError", "args": "['bad input']"})
+        ]
 
-    def test_export_sets_error_status(self):
-        """export() should set ERROR status for error spans."""
-        mock_otel_span = MagicMock()
-        mock_tracer = MagicMock()
-        mock_tracer.start_span.return_value = mock_otel_span
+    def test_export_without_parent_or_end_time(self, monkeypatch):
+        exporter = self._capture_exporter()
+        monkeypatch.setattr(time, "time_ns", lambda: 1001_000_000_000)
 
-        error_status = object()
-        exporter = object.__new__(OTLPExporter)
-        exporter._tracer = mock_tracer
-        exporter._provider = MagicMock()
-        exporter._attribute_allowlist = None
-        exporter._StatusCode = MagicMock()
-        exporter._StatusCode.ERROR = error_status
+        exporter.export(Span(trace_id="user-defined", name="apcore.module.execute", start_time=1000.0, status="error"))
 
-        span = Span(
-            trace_id="t1",
-            name="apcore.module.execute",
-            start_time=100.0,
-            end_time=101.0,
-            status="error",
-            attributes={"error_code": "ModuleTimeoutError"},
-        )
+        converted = exporter._processor.on_end.call_args.args[0]
+        assert converted.context.trace_id > 0
+        assert converted.attributes["apcore.trace_id"] == "user-defined"
+        assert converted.parent is None
+        assert "apcore.parent_span_id" not in converted.attributes
+        assert converted.end_time == 1001_000_000_000
+        assert converted.status.code == "error"
 
-        exporter.export(span)
-
-        mock_otel_span.set_status.assert_called_once_with(error_status)
-
-    def test_export_does_not_set_error_status_for_ok_spans(self):
-        """export() should not call set_status for ok spans."""
-        mock_otel_span = MagicMock()
-        mock_tracer = MagicMock()
-        mock_tracer.start_span.return_value = mock_otel_span
-
-        exporter = object.__new__(OTLPExporter)
-        exporter._tracer = mock_tracer
-        exporter._provider = MagicMock()
-        exporter._attribute_allowlist = None
-        exporter._StatusCode = MagicMock()
-
-        span = Span(
-            trace_id="t1",
-            name="apcore.module.execute",
-            start_time=100.0,
-            end_time=101.0,
-            status="ok",
-        )
-
-        exporter.export(span)
-
-        mock_otel_span.set_status.assert_not_called()
-
-    def test_export_replays_events(self):
-        """export() should add events from the apcore span."""
-        mock_otel_span = MagicMock()
-        mock_tracer = MagicMock()
-        mock_tracer.start_span.return_value = mock_otel_span
-
-        exporter = object.__new__(OTLPExporter)
-        exporter._tracer = mock_tracer
-        exporter._provider = MagicMock()
-        exporter._attribute_allowlist = None
-        exporter._StatusCode = MagicMock()
-
-        span = Span(
-            trace_id="t1",
-            name="apcore.module.execute",
-            start_time=100.0,
-            end_time=101.0,
-            events=[{"name": "exception", "type": "ValueError", "message": "bad input"}],
-        )
-
-        exporter.export(span)
-
-        mock_otel_span.add_event.assert_called_once_with(
-            "exception",
-            attributes={"type": "ValueError", "message": "bad input"},
-        )
-
-    def test_export_handles_none_end_time(self):
-        """export() should pass None end_time when span has no end_time."""
-        mock_otel_span = MagicMock()
-        mock_tracer = MagicMock()
-        mock_tracer.start_span.return_value = mock_otel_span
-
-        exporter = object.__new__(OTLPExporter)
-        exporter._tracer = mock_tracer
-        exporter._provider = MagicMock()
-        exporter._attribute_allowlist = None
-        exporter._StatusCode = MagicMock()
-
-        span = Span(
-            trace_id="t1",
-            name="apcore.module.execute",
-            start_time=100.0,
-            end_time=None,
-        )
-
-        exporter.export(span)
-
-        mock_otel_span.end.assert_called_once_with(end_time=None)
-
-    def test_export_converts_non_primitive_attributes_to_str(self):
-        """export() should stringify non-primitive attribute values."""
-        mock_otel_span = MagicMock()
-        mock_tracer = MagicMock()
-        mock_tracer.start_span.return_value = mock_otel_span
-
-        exporter = object.__new__(OTLPExporter)
-        exporter._tracer = mock_tracer
-        exporter._provider = MagicMock()
-        exporter._attribute_allowlist = None
-        exporter._StatusCode = MagicMock()
-
-        span = Span(
-            trace_id="t1",
-            name="test",
-            start_time=100.0,
-            end_time=101.0,
-            attributes={"complex": ["a", "b"]},
-        )
-
-        exporter.export(span)
-
-        mock_otel_span.set_attribute.assert_any_call("complex", "['a', 'b']")
-
-    def test_export_skips_none_parent_span_id(self):
-        """export() should not set apcore.parent_span_id when it's None."""
-        mock_otel_span = MagicMock()
-        mock_tracer = MagicMock()
-        mock_tracer.start_span.return_value = mock_otel_span
-
-        exporter = object.__new__(OTLPExporter)
-        exporter._tracer = mock_tracer
-        exporter._provider = MagicMock()
-        exporter._attribute_allowlist = None
-        exporter._StatusCode = MagicMock()
-
-        span = Span(
-            trace_id="t1",
-            name="test",
-            start_time=100.0,
-            end_time=101.0,
-            parent_span_id=None,
-        )
-
-        exporter.export(span)
-
-        attr_calls = [call[0] for call in mock_otel_span.set_attribute.call_args_list]
-        assert not any(k == "apcore.parent_span_id" for k, _ in attr_calls)
-
-    def test_shutdown_calls_provider_shutdown(self):
-        """shutdown() should delegate to the TracerProvider."""
-        exporter = object.__new__(OTLPExporter)
-        exporter._provider = MagicMock()
-
+    def test_shutdown_calls_processor_shutdown(self):
+        exporter = self._capture_exporter()
         exporter.shutdown()
-
-        exporter._provider.shutdown.assert_called_once()
+        exporter._processor.shutdown.assert_called_once()
 
     def test_attribute_allowlist_drops_non_allowed_keys(self):
-        """When an allowlist is provided, only listed keys are forwarded to OTel."""
-        mock_otel_span = MagicMock()
-        mock_tracer = MagicMock()
-        mock_tracer.start_span.return_value = mock_otel_span
-
-        exporter = object.__new__(OTLPExporter)
-        exporter._tracer = mock_tracer
-        exporter._provider = MagicMock()
-        exporter._StatusCode = MagicMock()
-        exporter._StatusCode.ERROR = "ERROR_STATUS"
-        exporter._attribute_allowlist = frozenset({"module_id"})
-
+        exporter = self._capture_exporter(frozenset({"module_id"}))
         span = Span(
-            trace_id="abc",
-            span_id="def",
+            trace_id="1" * 32,
+            span_id="2" * 16,
             name="apcore.module.execute",
             start_time=1.0,
             end_time=2.0,
-            status="ok",
-            attributes={"module_id": "greet", "user_email": "leak@example.com"},
+            attributes={"module_id": "greet", "user_email": "example@example.test"},
         )
 
         exporter.export(span)
 
-        attr_calls = [call[0] for call in mock_otel_span.set_attribute.call_args_list]
-        # Apcore-owned keys always exported.
-        assert any(k == "apcore.trace_id" for k, _ in attr_calls)
-        # Allowed key exported.
-        assert any(k == "module_id" and v == "greet" for k, v in attr_calls)
-        # Non-allowed key dropped.
-        assert not any(k == "user_email" for k, _ in attr_calls)
-
-    def test_no_allowlist_exports_all_attributes(self):
-        """When no allowlist is set (None), all attributes pass through."""
-        mock_otel_span = MagicMock()
-        mock_tracer = MagicMock()
-        mock_tracer.start_span.return_value = mock_otel_span
-
-        exporter = object.__new__(OTLPExporter)
-        exporter._tracer = mock_tracer
-        exporter._provider = MagicMock()
-        exporter._StatusCode = MagicMock()
-        exporter._attribute_allowlist = None
-
-        span = Span(
-            trace_id="abc",
-            span_id="def",
-            name="apcore.module.execute",
-            start_time=1.0,
-            end_time=2.0,
-            status="ok",
-            attributes={"foo": "bar", "baz": "qux"},
-        )
-
-        exporter.export(span)
-
-        attr_calls = [call[0] for call in mock_otel_span.set_attribute.call_args_list]
-        assert any(k == "foo" for k, _ in attr_calls)
-        assert any(k == "baz" for k, _ in attr_calls)
+        converted = exporter._processor.on_end.call_args.args[0]
+        assert converted.attributes == {
+            "module_id": "greet",
+            "apcore.trace_id": span.trace_id,
+            "apcore.span_id": span.span_id,
+        }
 
 
 # --- Section 02: TracingMiddleware Tests ---

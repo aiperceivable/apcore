@@ -112,6 +112,20 @@
       }
     },
     {
+      "id": "inbound_parent_is_used_by_exported_span",
+      "description": "A module called with a valid inbound traceparent exports a local span that is a child of the remote parent. The module injects its own span ID for the next hop.",
+      "input": {
+        "headers": {
+          "traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+        }
+      },
+      "expected": {
+        "span_trace_id": "4bf92f3577b34da6a3ce929d0e0e4736",
+        "span_parent_id": "00f067aa0ba902b7",
+        "injected_parent_is_local_span": true
+      }
+    },
+    {
       "id": "parent_id_override_rejected_malformed",
       "description": "A `parent_id` that does not match `^[0-9a-f]{16}$` MUST be rejected with error code `INVALID_PARENT_ID` (Python ValueError, TS Error, Rust TraceContextError::InvalidParentId).",
       "input": {

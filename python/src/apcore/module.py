@@ -55,6 +55,10 @@ class Module(Protocol):
       Per protocol-spec §5.6.
     - ``stream(inputs, context)`` — async generator variant (streaming mode).
 
+    Set ``native_inputs = True`` on a class with a Pydantic input schema to
+    receive validated Python values keyed by field name in ``execute`` and
+    ``stream``. The ordinary class input is the original wire-value mapping.
+
     Cross-language parity with apcore-typescript Module interface and
     apcore-rust Module trait (sync finding A-017).
     """

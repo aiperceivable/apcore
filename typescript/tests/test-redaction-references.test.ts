@@ -1,9 +1,58 @@
 import { describe, expect, it } from 'vitest';
-import { redactSensitive } from '../src/executor.js';
+import { Executor, redactSensitive } from '../src/executor.js';
+import { Registry } from '../src/registry/registry.js';
+import { Context } from '../src/context.js';
+import { Middleware } from '../src/middleware/base.js';
+import { jsonSchemaToTypeBox } from '../src/schema/loader-pure.js';
 
 const replacement = '***REDACTED***';
 
 describe('local JSON Schema references preserve sensitive redaction', () => {
+  it('rejects a module with a missing reference before execution', async () => {
+    const registry = new Registry();
+    let calls = 0;
+    await registry.register('demo.missing_schema', {
+      description: 'Module whose schema reference is missing',
+      inputSchema: {
+        type: 'object',
+        properties: { value: { $ref: '#/$defs/missing' } },
+      },
+      outputSchema: { type: 'object' },
+      execute: () => { calls++; return {}; },
+    });
+    const executor = new Executor({ registry });
+    await expect(executor.call('demo.missing_schema', { value: 'sample' }))
+      .rejects.toMatchObject({ code: 'SCHEMA_NOT_FOUND' });
+    expect(calls).toBe(0);
+  });
+
+  it.each([false, true])('preserves local references at the execution capture points (converted=%s)', async (convert) => {
+    const schema = {
+      type: 'object',
+      $defs: { code: { type: 'string', 'x-sensitive': true } },
+      properties: { value: { $ref: '#/$defs/code' }, public: { type: 'string' } },
+    };
+    const registry = new Registry();
+    const inputSchema = convert ? jsonSchemaToTypeBox(schema) : schema;
+    await registry.register('demo.echo', {
+      description: 'Echoes a typed object',
+      inputSchema,
+      outputSchema: inputSchema,
+      execute: (input: Record<string, unknown>) => input,
+    });
+    const input = { value: 'private-value', public: 'public-value' };
+    let capture: unknown;
+    const executor = new Executor({ registry, middlewares: [new class extends Middleware {
+      override after(_id: string, _inputs: Record<string, unknown>, _output: Record<string, unknown>, context: Context) {
+        capture = [context.redactedInputs, context.redactedOutput];
+        return null;
+      }
+    }] });
+    await expect(executor.call('demo.echo', input)).resolves.toEqual(input);
+    const redacted = { value: replacement, public: 'public-value' };
+    expect(capture).toEqual([redacted, redacted]);
+  });
+
   it('redacts a referenced scalar without mutating source data or schema', () => {
     const schema = {
       type: 'object',

@@ -14,14 +14,18 @@
  * pipeline that executes.
  */
 
+import { fileURLToPath } from 'node:url';
 import { describe, it, expect, vi } from 'vitest';
 
+import { ACL } from '../src/acl.js';
+import { AlwaysDenyHandler, AutoApproveHandler } from '../src/approval.js';
 import { APCore } from '../src/client.js';
 import { Config } from '../src/config.js';
 import { Executor } from '../src/executor.js';
 import { Registry } from '../src/registry/registry.js';
 import { MiddlewareManager } from '../src/middleware/manager.js';
 import { buildStandardStrategy } from '../src/builtin-steps.js';
+import { buildStrategyFromConfig } from '../src/pipeline-config.js';
 
 const DEFAULT = [
   'context_creation',
@@ -88,6 +92,48 @@ describe('a configured pipeline section is applied', () => {
     });
     expect(executor.currentStrategy.steps.map((s) => s.name)).toContain('acl_check');
   });
+
+  it('rejects a handler step it cannot insert synchronously', () => {
+    expect(() => steps({
+      steps: [{ name: 'late', handler: 'some-module:makeStep', after: 'acl_check' }],
+    })).toThrow(expect.objectContaining({
+      code: 'PIPELINE_CONFIGURATION_ERROR',
+      message: expect.stringMatching(/late.*buildStrategyFromConfig/),
+    }));
+  });
+
+  it('runs the resolved handler once with the prebuilt executor governance', async () => {
+    const registry = new Registry();
+    const config = new Config();
+    const acl = new ACL([
+      { callers: ['@external'], targets: ['demo.target'], effect: 'allow', description: 'Allow test call' },
+    ], 'deny');
+    const fixture = fileURLToPath(new URL('./fixtures/pipeline-step-handlers.ts', import.meta.url));
+    const middlewareManager = new MiddlewareManager();
+    const strategy = await buildStrategyFromConfig({
+      steps: [{ name: 'configured_handler', handler: `${fixture}:createStep`, before: 'execute' }],
+    }, { registry, config, acl: null, approvalHandler: null, middlewareManager });
+    const executor = new Executor({
+      registry, config, strategy, acl, approvalHandler: new AlwaysDenyHandler(),
+    });
+    const app = new APCore({ executor, config });
+    const execute = vi.fn(() => ({ ok: true }));
+    await app.register('demo.target', {
+      description: 'Configured handler target',
+      annotations: { requiresApproval: true },
+      inputSchema: { type: 'object' },
+      outputSchema: { type: 'object' },
+      execute,
+    });
+    await expect(app.call('demo.target')).rejects.toMatchObject({ code: 'APPROVAL_DENIED' });
+    expect(execute).not.toHaveBeenCalled();
+
+    executor.setApprovalHandler(new AutoApproveHandler());
+    const [output, trace] = await app.executor.callWithTrace('demo.target', {});
+    expect(output).toEqual({ ok: true });
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(trace.steps.filter((step) => step.name === 'configured_handler' && !step.skipped)).toHaveLength(1);
+  });
 });
 
 describe('removing a security step warns', () => {
@@ -112,21 +158,5 @@ describe('removing a security step warns', () => {
     const hits = warn.mock.calls.filter((c) => String(c[0]).includes('pipeline.remove'));
     warn.mockRestore();
     expect(hits.length).toBe(0);
-  });
-
-  it('reports a handler step it cannot insert synchronously', () => {
-    // This SDK alone needs `await import()` for a `handler:` target, and the
-    // Executor constructor is synchronous. Reported rather than dropped:
-    // omitting it silently is the defect requirement 6 removes, and throwing
-    // would stop a project from starting over a step that has never once run.
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    const names = steps({
-      steps: [{ name: 'late', handler: 'some-module:makeStep', after: 'acl_check' }],
-    });
-    const hits = warn.mock.calls.filter((c) => String(c[0]).includes("'handler:'"));
-    warn.mockRestore();
-    expect(names).not.toContain('late');
-    expect(hits.length).toBe(1);
-    expect(String(hits[0]?.[0])).toContain('late');
   });
 });

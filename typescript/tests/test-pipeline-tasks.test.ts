@@ -82,7 +82,8 @@ describe('Executor strategy option', () => {
     const deps = makeDeps(registry);
     const strategy = buildStandardStrategy(deps);
     const executor = new Executor({ registry, strategy });
-    expect(executor.currentStrategy).toBe(strategy);
+    expect(executor.currentStrategy).not.toBe(strategy);
+    expect(executor.currentStrategy.stepNames()).toEqual(strategy.stepNames());
     expect(executor.currentStrategy!.name).toBe('standard');
   });
 

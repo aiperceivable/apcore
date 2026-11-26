@@ -2,7 +2,7 @@
 // Validates Step trait, StepResult, PipelineContext, ExecutionStrategy, PipelineEngine, and trace types.
 
 use apcore::context::Context;
-use apcore::errors::ModuleError;
+use apcore::errors::{ErrorCode, ModuleError};
 use apcore::pipeline::{
     ExecutionStrategy, PipelineContext, PipelineEngine, PipelineTrace, Step, StepResult, StepTrace,
     StrategyInfo,
@@ -19,6 +19,7 @@ struct TestStep {
     removable: bool,
     replaceable: bool,
     result: StepResult,
+    requirements: &'static [&'static str],
 }
 
 impl TestStep {
@@ -29,6 +30,7 @@ impl TestStep {
             removable,
             replaceable,
             result: StepResult::continue_step(),
+            requirements: &[],
         }
     }
 
@@ -55,6 +57,9 @@ impl Step for TestStep {
     }
     fn replaceable(&self) -> bool {
         self.replaceable
+    }
+    fn requires(&self) -> &[&str] {
+        self.requirements
     }
     async fn execute(&self, _ctx: &mut PipelineContext) -> Result<StepResult, ModuleError> {
         Ok(self.result.clone())
@@ -219,6 +224,31 @@ fn test_strategy_unknown_anchor_rejected() {
         .is_err());
     assert!(s.remove("z").is_err());
     assert!(s.replace("z", TestStep::boxed("z", true, true)).is_err());
+}
+
+#[test]
+fn test_invalid_step_insertion_preserves_step_order_and_index() {
+    for insert in [
+        ExecutionStrategy::insert_before,
+        ExecutionStrategy::insert_after,
+    ] {
+        let mut strategy =
+            ExecutionStrategy::new("s", vec![TestStep::boxed("anchor", true, true)]).unwrap();
+        let mut invalid = TestStep::new("inserted", true, true);
+        invalid.requirements = &["missing"];
+        let error = insert(&mut strategy, "anchor", Box::new(invalid)).unwrap_err();
+
+        assert_eq!(error.code, ErrorCode::PipelineDependencyError);
+        assert_eq!(strategy.step_names(), ["anchor"]);
+        insert(
+            &mut strategy,
+            "anchor",
+            TestStep::boxed("inserted", true, true),
+        )
+        .unwrap();
+        strategy.remove("inserted").unwrap();
+        assert_eq!(strategy.step_names(), ["anchor"]);
+    }
 }
 
 // ---------------------------------------------------------------------------

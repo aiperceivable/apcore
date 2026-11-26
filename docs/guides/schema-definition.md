@@ -159,8 +159,8 @@ Each SDK uses its language's natural tool: **Pydantic** in Python, **TypeBox** i
     }
     ```
 
-!!! note "Python validates strictly"
-    The Python executor validates inputs with Pydantic in strict mode and passes the inputs **as sent** to `execute()`. Two consequences: a `datetime`, `date`, `time`, or `Enum` field rejects the plain JSON string a caller sends, so declare those fields as `str` (with a `format`) or `Literal[...]` and parse them inside `execute()`; and a validator can reject a value but cannot rewrite what `execute()` receives. See [§3.4](#34-enum-types), [§3.5](#35-date-and-time), and [§7](#7-custom-validation).
+!!! note "Python validation and handler inputs"
+    The executor validates Pydantic input models in strict JSON mode. An ISO 8601 string can satisfy a `datetime` field, and `4.0` can satisfy an integer field. A class module receives the supplied mapping by default. Set `native_inputs = True` on a class with a Pydantic input model to receive the validated values in `execute()` and `stream()`. Typed function modules receive native values from their parameter types. See [Type Mapping §17.3](../spec/type-mapping.md#173-no-type-coercion-at-the-module-boundary).
 
 ### 2.2 In a YAML Schema File (Cross-Language)
 
@@ -168,7 +168,7 @@ A `*.schema.yaml` file under `schema.root` holds a module's schemas so that ever
 
 ```yaml
 # schemas/executor/order/create_order.schema.yaml
-$schema: "https://apcore.dev/schema/v1"
+$schema: "https://apcore.aiperceivable.com/schemas/module-schema.schema.json"
 version: "1.0.0"
 module_id: "executor.order.create_order"
 description: "Create an order for one product and ship it to an address"
@@ -469,7 +469,7 @@ A map is an `object` whose values are described by `additionalProperties`; a lis
         priority: Literal[1, 2, 3] = Field(2, description="Priority: 1 high, 2 medium, 3 low")
     ```
 
-    Use `Literal[...]` rather than an `Enum` class: under strict validation an `Enum` field rejects the plain string a caller sends.
+    Use `Literal[...]` for a fixed set of wire values. A native `Enum` field also accepts its JSON representation and supplies an enum instance to typed functions or class modules with `native_inputs = True`.
 
 === "TypeScript"
 
@@ -1090,7 +1090,7 @@ Reference chains are limited by `schema.max_ref_depth` (see [§8](#8-schema-load
 
 JSON Schema covers structure and simple constraints. Cross-field checks and business rules go in code:
 
-- **Python**: Pydantic `field_validator` / `model_validator` run during input validation. A validator can **reject** a value (the call fails with `SCHEMA_VALIDATION_ERROR`), but `execute()` receives the inputs as sent, so do any normalization (lower-casing, trimming) inside `execute()`.
+- **Python** uses Pydantic `field_validator` and `model_validator` during input validation. A rejected value raises `SCHEMA_VALIDATION_ERROR`. By default a class module receives the supplied mapping, so normalize inside `execute()` or set `native_inputs = True` to receive the validated values.
 - **TypeScript and Rust**: put the check in a plain function and call it at the start of `execute()`, returning a structured error when it fails.
 
 ### 7.1 Field Checks
@@ -1121,7 +1121,7 @@ JSON Schema covers structure and simple constraints. Cross-field checks and busi
 
 
     def normalize(inputs: dict) -> dict:
-        """Call from execute(): validators reject, they do not rewrite inputs."""
+        """Normalize within a class module that receives the supplied mapping."""
         return {**inputs, "email": inputs["email"].lower()}
     ```
 

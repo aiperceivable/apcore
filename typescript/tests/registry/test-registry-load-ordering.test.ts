@@ -253,6 +253,8 @@ describe('Registry on_load ordering (#65)', () => {
     const failingMod = {
       id: 'discover.failload',
       description: 'discover mod whose onLoad throws',
+      inputSchema: {},
+      outputSchema: {},
       onLoad() { throw new Error('discover-boom'); },
       execute() { return {}; },
     };

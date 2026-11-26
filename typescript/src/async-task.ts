@@ -140,8 +140,6 @@ export interface ReaperHandle {
   stop(): Promise<void>;
 }
 
-type MutableTaskInfo = { -readonly [K in keyof TaskInfo]: TaskInfo[K] };
-
 interface InternalTask {
   promise: Promise<void>;
   cancelled: boolean;
@@ -172,6 +170,8 @@ export class AsyncTaskManager {
   private readonly _maxTasks: number;
   private readonly _internal: Map<string, InternalTask> = new Map();
   private readonly _workers: Set<Promise<void>> = new Set();
+  private readonly _taskTransitions = new Map<string, Promise<void>>();
+  private readonly _pendingTerminals = new Map<string, TaskInfo>();
   private _runningCount: number = 0;
   private readonly _waitQueue: Array<() => void> = [];
   private _reaper: ReaperHandle | null = null;
@@ -207,7 +207,7 @@ export class AsyncTaskManager {
   ): Promise<string> {
     const taskId = uuidv4();
     const retry = opts?.retry ?? null;
-    const info: MutableTaskInfo = {
+    const info: TaskInfo = {
       taskId,
       moduleId,
       status: TaskStatus.PENDING,
@@ -265,6 +265,9 @@ export class AsyncTaskManager {
    * Return the TaskInfo for a task, or null if not found.
    */
   async getStatus(taskId: string): Promise<TaskInfo | null> {
+    if (this._pendingTerminals.has(taskId)) {
+      await this._transition(taskId, () => this._flushTerminal(taskId));
+    }
     const info = await this._store.get(taskId);
     return info ? { ...info } : null;
   }
@@ -275,7 +278,7 @@ export class AsyncTaskManager {
    * Throws if the task is not found or not in COMPLETED status.
    */
   async getResult(taskId: string): Promise<Record<string, unknown>> {
-    const info = await this._store.get(taskId);
+    const info = await this.getStatus(taskId);
     if (!info) {
       throw new Error(`Task not found: ${taskId}`);
     }
@@ -295,35 +298,33 @@ export class AsyncTaskManager {
    * Web-API I/O (`fetch`, `setTimeout`, Web Streams) participate in real abort.
    */
   async cancel(taskId: string): Promise<boolean> {
-    const info = await this._store.get(taskId) as MutableTaskInfo | null;
-    if (!info) return false;
+    return this._transition(taskId, async () => {
+      try {
+        await this._flushTerminal(taskId);
+      } catch {
+        // The outcome may still be uncommitted. Read the stored state and
+        // allow cancellation if the store can persist it.
+      }
+      const info = await this._store.get(taskId);
+      if (!info || (info.status !== TaskStatus.PENDING && info.status !== TaskStatus.RUNNING)) {
+        this._pendingTerminals.delete(taskId);
+        return false;
+      }
 
-    if (info.status !== TaskStatus.PENDING && info.status !== TaskStatus.RUNNING) {
-      return false;
-    }
+      // Commit the cancellation before stopping the worker. If the store
+      // rejects the write, the worker can still publish its terminal result.
+      await this._store.save({ ...info, status: TaskStatus.CANCELLED, completedAt: Date.now() / 1000 });
+      this._pendingTerminals.delete(taskId);
 
-    // A task can be active in the store with no in-process handle: a
-    // persistent or shared TaskStore keeps PENDING/RUNNING records written by
-    // another process or by a previous run of this one. A missing handle is
-    // therefore NOT a third "false" case — the cancel Contract defines false
-    // as "the task did not exist or had already reached a terminal state",
-    // both already answered above. Returning false here left every such
-    // record permanently uncancellable and still consuming the maxTasks
-    // budget, and it broke `shutdown()`'s postcondition ("every task that was
-    // PENDING or RUNNING at the time of the call will be in CANCELLED
-    // state"), which is delegated to this method. apcore-rust
-    // (async_task.rs:559) likewise treats the missing handle as a skipped
-    // interrupt, not an early return.
-    const internal = this._internal.get(taskId);
-    if (internal) {
-      internal.cancelled = true;
-      internal.cancelToken.cancel();
-    }
+      // Shared stores can hold active tasks with no local worker to signal.
+      const internal = this._internal.get(taskId);
+      if (internal) {
+        internal.cancelled = true;
+        internal.cancelToken.cancel();
+      }
 
-    info.status = TaskStatus.CANCELLED;
-    info.completedAt = Date.now() / 1000;
-    await this._store.save(info);
-    return true;
+      return true;
+    });
   }
 
   /**
@@ -331,6 +332,7 @@ export class AsyncTaskManager {
    */
   async listTasks(status?: TaskStatus): Promise<TaskInfo[]> {
     const items = await this._store.list(status);
+    this._retryPendingTerminals();
     return items.map(t => ({ ...t }));
   }
 
@@ -343,7 +345,7 @@ export class AsyncTaskManager {
     const threshold = Date.now() / 1000 - maxAgeSeconds;
     let removed = 0;
 
-    for (const task of await this._store.list()) {
+    for (const task of await this.listTasks()) {
       if (!TERMINAL_STATUSES.has(task.status)) continue;
       const refTime = task.completedAt ?? task.submittedAt;
       if (refTime <= threshold) {
@@ -415,61 +417,112 @@ export class AsyncTaskManager {
     return run;
   }
 
-  /**
-   * Re-read the stored record and report whether it has already reached a
-   * terminal status.
-   *
-   * Ports the semantics of apcore-rust's `save_terminal_if_not_cancelled`:
-   * every status write by the runner is preceded by a fresh read, so a
-   * concurrent `cancel()` — including one issued by another process against
-   * a shared store — is never overwritten. The read must happen BEFORE the
-   * caller mutates its own copy: `InMemoryTaskStore` hands out the live
-   * object, so mutating first would destroy the evidence this check needs.
-   *
-   * The read/check/write sequence is not atomic at the store level, so a
-   * perfectly-timed cancel can still slip in between; closing that last
-   * window would need compare-and-set support in the `TaskStore` interface.
-   * The window left here is small and the cost of slipping is one extra
-   * terminal write that the next cancel no-ops against.
-   */
-  private async _isStoredTerminal(taskId: string): Promise<boolean> {
-    const current = await this._store.get(taskId);
-    return current !== null && TERMINAL_STATUSES.has(current.status);
+  /** Serialize read/check/write transitions for one task in this manager. */
+  private _transition<T>(taskId: string, transition: () => Promise<T>): Promise<T> {
+    const run = (this._taskTransitions.get(taskId) ?? Promise.resolve()).then(transition);
+    const release = (): void => {
+      if (this._taskTransitions.get(taskId) === tail) this._taskTransitions.delete(taskId);
+    };
+    const tail = run.then(release, release);
+    this._taskTransitions.set(taskId, tail);
+    return run;
   }
 
   /** Retry a transient write without replaying the module invocation. */
-  private async _saveRunnerState(info: TaskInfo, internal: InternalTask): Promise<boolean> {
-    if (internal.cancelled) return false;
-    try {
-      await this._store.save(info);
-    } catch {
-      const current = await this._store.get(info.taskId);
-      if (internal.cancelled || current === null || TERMINAL_STATUSES.has(current.status)) return false;
-      await this._store.save(info);
-    }
-    return !internal.cancelled;
+  private _saveRunnerState(
+    taskId: string,
+    internal: InternalTask,
+    update: (current: TaskInfo) => TaskInfo,
+  ): Promise<TaskInfo | null> {
+    return this._transition(taskId, async () => {
+      if (internal.cancelled) return null;
+      // Re-read for changes submitted by other managers. A shared backend
+      // would need conditional writes to serialize across manager instances.
+      const current = await this._store.get(taskId);
+      if (internal.cancelled || current === null || TERMINAL_STATUSES.has(current.status)) return null;
+      const info = update(current);
+      try {
+        await this._store.save(info);
+      } catch {
+        const latest = await this._store.get(taskId);
+        if (internal.cancelled || latest === null || TERMINAL_STATUSES.has(latest.status)) return null;
+        await this._store.save(info);
+      }
+      return internal.cancelled ? null : info;
+    });
   }
 
   private async _recordRunnerFailure(taskId: string, internal: InternalTask, error: unknown): Promise<void> {
-    if (internal.cancelled) return;
     try {
-      const current = await this._store.get(taskId);
-      if (current === null || internal.cancelled || TERMINAL_STATUSES.has(current.status)) return;
-      await this._store.save({
+      await this._saveRunnerState(taskId, internal, (current) => ({
         ...current,
         status: TaskStatus.FAILED,
         completedAt: Date.now() / 1000,
         error: error instanceof Error ? error.message : String(error),
-      });
+      }));
     } catch (storeError) {
       console.warn(`[apcore:async-task] Could not persist failure for '${taskId}':`, storeError);
+    }
+  }
+
+  /** Retain a completed attempt's result across store errors. */
+  private async _publishTerminal(info: TaskInfo, internal: InternalTask): Promise<void> {
+    await this._transition(info.taskId, async () => {
+      if (internal.cancelled) return;
+      this._pendingTerminals.set(info.taskId, info);
+      try {
+        try {
+          await this._flushTerminal(info.taskId);
+        } catch {
+          // The write may have committed despite the error. Re-read first.
+          await this._flushTerminal(info.taskId);
+        }
+      } catch {
+        // Keep the terminal snapshot for the next status or admission check.
+        console.warn(`[apcore:async-task] Terminal state for '${info.taskId}' is awaiting persistence`);
+      }
+    });
+  }
+
+  private async _flushTerminal(taskId: string): Promise<void> {
+    const pending = this._pendingTerminals.get(taskId);
+    if (pending === undefined) return;
+    const current = await this._store.get(taskId);
+    if (current !== null && !TERMINAL_STATUSES.has(current.status)) {
+      try {
+        await this._store.save(pending);
+      } catch (error) {
+        if (pending.status === TaskStatus.COMPLETED && error instanceof ModuleError &&
+            error.code === ErrorCodes.TASK_STORE_UNAVAILABLE && error.retryable === false) {
+          // Recheck the stored record on the next flush before publishing the
+          // fallback. A store may have committed despite reporting an error.
+          this._pendingTerminals.set(taskId, {
+            ...pending,
+            status: TaskStatus.FAILED,
+            result: null,
+            error: 'Task result could not be persisted',
+          });
+        }
+        throw error;
+      }
+    }
+    this._pendingTerminals.delete(taskId);
+  }
+
+  private _retryPendingTerminals(): void {
+    for (const taskId of this._pendingTerminals.keys()) {
+      if (!this._taskTransitions.has(taskId)) {
+        // A task's own status request can still observe its persistence
+        // error. Enumeration and admission only depend on their store reads.
+        void this._transition(taskId, () => this._flushTerminal(taskId)).catch(() => undefined);
+      }
     }
   }
 
   /** Count tasks in PENDING or RUNNING state across the store. */
   private async _countActiveTasks(): Promise<number> {
     let count = 0;
-    for (const t of await this._store.list()) {
+    for (const t of await this.listTasks()) {
       if (t.status === TaskStatus.PENDING || t.status === TaskStatus.RUNNING) {
         count++;
       }
@@ -602,29 +655,12 @@ export class AsyncTaskManager {
           await this._acquireSlot();
           slotHeld = true;
 
-          if (internal.cancelled) return;
-
-          const stored = await this._store.get(taskId);
-          if (!stored) return;
-          const info: MutableTaskInfo = { ...stored };
-
-          // The stored record is the authority on whether this task is still
-          // ours to advance. `internal.cancelled` only sees cancels issued
-          // through THIS manager instance; a cancel written by another
-          // process against a shared store, or by a `cancel()` that found no
-          // in-process handle, shows up only here. Overwriting it with
-          // RUNNING would be a cancelled -> running transition, which
-          // protocol-spec.md section 5.8 forbids.
-          if (TERMINAL_STATUSES.has(info.status)) return;
-
-          info.status = TaskStatus.RUNNING;
-          // A-D-AT-08: preserve startedAt across retries (set only on first
-          // attempt). Mirrors Python + Rust semantics — `startedAt` reflects
-          // when the task first started running, not the latest attempt.
-          if (info.startedAt === null) {
-            info.startedAt = Date.now() / 1000;
-          }
-          if (!await this._saveRunnerState({ ...info }, internal)) return;
+          const info = await this._saveRunnerState(taskId, internal, (current) => ({
+            ...current,
+            status: TaskStatus.RUNNING,
+            startedAt: current.startedAt ?? Date.now() / 1000,
+          }));
+          if (info === null || internal.cancelled) return;
 
           let attempt: { result: Record<string, unknown> } | { error: unknown };
           try {
@@ -633,23 +669,20 @@ export class AsyncTaskManager {
             attempt = { error };
           }
 
-          if (internal.cancelled || await this._isStoredTerminal(taskId)) return;
           if ('result' in attempt) {
-            info.status = TaskStatus.COMPLETED;
-            info.completedAt = Date.now() / 1000;
-            info.result = attempt.result;
-            await this._saveRunnerState(info, internal);
+            const { result } = attempt;
+            await this._publishTerminal({
+              ...info, status: TaskStatus.COMPLETED, completedAt: Date.now() / 1000, result,
+            }, internal);
             return;
           }
 
           if (retry && info.retryCount < retry.maxRetries) {
             const delay = retry.computeDelayMs(info.retryCount);
-            info.retryCount += 1;
-            info.status = TaskStatus.PENDING;
-            // Intentionally do NOT reset startedAt / completedAt (A-D-AT-08):
-            // startedAt reflects first-run timestamp; completedAt remains null
-            // because the task has not yet terminated.
-            if (!await this._saveRunnerState(info, internal)) return;
+            const pending = await this._saveRunnerState(taskId, internal, (current) => ({
+              ...current, status: TaskStatus.PENDING, retryCount: current.retryCount + 1,
+            }));
+            if (pending === null) return;
 
             // Publish the logical retry outcome promptly, but do not let a
             // retry or another task overlap this attempt's deferred finalizers.
@@ -667,10 +700,10 @@ export class AsyncTaskManager {
             if (internal.cancelled) return;
             // Loop continues: re-acquire slot and retry
           } else {
-            info.status = TaskStatus.FAILED;
-            info.completedAt = Date.now() / 1000;
-            info.error = attempt.error instanceof Error ? attempt.error.message : String(attempt.error);
-            await this._saveRunnerState(info, internal);
+            const error = attempt.error instanceof Error ? attempt.error.message : String(attempt.error);
+            await this._publishTerminal({
+              ...info, status: TaskStatus.FAILED, completedAt: Date.now() / 1000, error,
+            }, internal);
             return;
           }
         }

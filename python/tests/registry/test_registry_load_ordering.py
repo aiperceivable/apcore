@@ -15,7 +15,15 @@ from apcore.registry import Registry
 from apcore.registry.registry import ErrorCodes
 
 
-class _WarmupModule:
+class _LifecycleModule:
+    input_schema = {"type": "object"}
+    output_schema = {"type": "object"}
+
+    def execute(self, inputs: dict[str, Any], context: Any) -> dict[str, Any]:
+        return {}
+
+
+class _WarmupModule(_LifecycleModule):
     """Module with a 50ms on_load that sets a flag."""
 
     data: dict[str, Any] = {}
@@ -25,14 +33,14 @@ class _WarmupModule:
         _WarmupModule.data["_test.warmed"] = True
 
 
-class _FailingModule:
+class _FailingModule(_LifecycleModule):
     """Module whose on_load raises ConnectionError."""
 
     def on_load(self) -> None:
         raise ConnectionError("Failed to reach upstream during initialization")
 
 
-class _SlowModule:
+class _SlowModule(_LifecycleModule):
     """Module with configurable on_load delay."""
 
     def __init__(self, delay_s: float = 0.05) -> None:
@@ -174,7 +182,7 @@ def test_no_version_module_not_visible_until_on_load_done() -> None:
     reg = Registry()
     mid_result: list[Any] = []
 
-    class _SpyModule:
+    class _SpyModule(_LifecycleModule):
         def on_load(self) -> None:
             time.sleep(0.01)
             mid_result.append(reg.get("executor.test.spy"))

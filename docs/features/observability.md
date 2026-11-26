@@ -209,16 +209,7 @@ When the loaded configuration sets `observability.tracing.enabled: true`, the cl
 
 ### Tracing architecture
 
-`TracingMiddleware` opens a span in `before()` and closes it in `after()` or `on_error()`. Spans for nested module-to-module calls are kept on a per-trace stack, so each child span records its parent:
-
-```text
-TracingMiddleware.before("mod.a")        stack: [a]
-  TracingMiddleware.before("mod.b")      stack: [a, b]    b.parent_span_id = a.span_id
-  TracingMiddleware.after("mod.b")       stack: [a]       b ended, exported if sampled
-TracingMiddleware.after("mod.a")         stack: []        a ended, exported if sampled
-```
-
-Python and TypeScript keep the stack in `context.data["_apcore.mw.tracing.spans"]` and the sampling decision in `context.data["_apcore.mw.tracing.sampled"]`; Rust keeps both inside the middleware, keyed by `trace_id`, and honours a decision already present under that `context.data` key. Either way every child call inherits the root's decision.
+`TracingMiddleware` opens a span in `before()` and closes it in `after()` or `on_error()`. Each invocation has its own span and start time. A child records the calling invocation's span ID as its parent, so two concurrent siblings keep the same parent even if they finish in a different order. The first local span uses the validated remote parent from `Context.create(trace_parent=…)` when present. Child calls inherit the trace's sampling decision.
 
 Every span follows the [§10.8 naming convention](../spec/protocol-spec.md#108-span-naming-convention):
 
@@ -259,7 +250,7 @@ A span exporter receives finished spans. The SDKs ship:
 |---|---|
 | `StdoutExporter` | Writes each span as one JSON line (Python/Rust: stdout; TypeScript: `console.info`). |
 | `InMemoryExporter` | Bounded buffer for tests; `get_spans()` / `getSpans()` and `clear()`. Default capacity 10,000 in Python (`InMemoryExporter(max_spans=…)`) and TypeScript (`new InMemoryExporter(maxSpans)`), 1,000 in Rust (`InMemoryExporter::with_max_spans(n)`). |
-| `OTLPExporter` | OTLP/HTTP. **Python** bridges to the OpenTelemetry SDK — `OTLPExporter(endpoint=None, service_name="apcore", attribute_allowlist=None)`, requires `opentelemetry-sdk` and `opentelemetry-exporter-otlp-proto-http`, and takes the full traces URL. **TypeScript** posts JSON with `fetch` — `new OTLPExporter({ endpoint, serviceName, headers, timeoutMs })`, full traces URL, default `http://localhost:4318/v1/traces`. **Rust** — `OTLPExporter::new(base_url)` appends `/v1/traces` itself and needs the `events` feature; without it every span is discarded with a warning. |
+| `OTLPExporter` | OTLP/HTTP. **Python** bridges to the OpenTelemetry SDK — `OTLPExporter(endpoint=None, service_name="apcore", attribute_allowlist=None)`, requires `opentelemetry-sdk` and `opentelemetry-exporter-otlp-proto-http`, and takes the full traces URL. **TypeScript** posts JSON with `fetch` — `new OTLPExporter({ endpoint, serviceName, headers, timeoutMs })`, full traces URL, default `http://localhost:4318/v1/traces`. **Rust** — `OTLPExporter::new(endpoint)` takes the full traces URL, including `/v1/traces` for a standard OTLP receiver, and needs the `events` feature. Without that feature, the exporter discards spans and logs a warning. |
 | `CompositeExporter` | Rust only: fans each span out to several exporters with per-exporter error isolation. |
 
 A custom exporter implements `export(span)` (Python protocol `SpanExporter`, TypeScript interface `SpanExporter`, Rust async trait `SpanExporter` with `export` and `shutdown`).
@@ -347,7 +338,7 @@ Python passes a processor straight to `TracingMiddleware(processor=…)`. In Rus
 
     #[tokio::main]
     async fn main() -> Result<(), ModuleError> {
-        let processor = BatchSpanProcessor::builder(Arc::new(OTLPExporter::new("http://otel-collector:4318")))
+        let processor = BatchSpanProcessor::builder(Arc::new(OTLPExporter::new("http://otel-collector:4318/v1/traces")))
             .max_queue_size(2048)
             .schedule_delay_ms(5000)
             .max_export_batch_size(512)
@@ -378,8 +369,8 @@ Python passes a processor straight to `TracingMiddleware(processor=…)`. In Rus
 - **Header names are case-insensitive** on extraction (`traceparent`, `Traceparent`, `TRACEPARENT` …); injected headers always use the lowercase names.
 - **`trace_flags` is preserved**: the flags byte extracted from an inbound `traceparent` is what `inject()` emits for that trace. A root context emits `01`.
 - **`tracestate` is kept in order**, capped at 32 entries; malformed entries are dropped without affecting their neighbours; an extract → inject round trip is lossless.
-- **`parent_id` override**: `inject()` accepts an explicit 16-lowercase-hex parent id for callers that manage their own spans. A malformed override fails with `INVALID_PARENT_ID`. Without an override, Python and TypeScript use the span on top of the tracing stack (or a fresh id); Rust generates a fresh id.
-- A missing or malformed inbound `traceparent` — bad syntax, version `ff`, all-zero trace or parent id — extracts as `None` / `null`; `Context.create` then generates a new trace id ([§10.5](../spec/protocol-spec.md#105-trace-id-format)).
+- **`parent_id` override**: `inject()` accepts an explicit 16-lowercase-hex parent ID for callers that manage their own spans. A malformed override fails with `INVALID_PARENT_ID`. Without an override, it uses the active local span ID or generates a fresh ID when there is no active span.
+- The first local span exports the incoming parent ID when `Context.create` accepts the incoming trace. An invalid or absent trace starts a new local trace. The all-zeros trace ID is invalid in W3C Trace Context, and APCore also reserves the all-f trace ID ([§10.5](../spec/protocol-spec.md#105-trace-id-format)).
 
 === "Python"
     ```python

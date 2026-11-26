@@ -35,7 +35,7 @@ For caller-identity semantics see [Identity System](./identity-system.md). For `
 | Almost always needed | `identity` | ACL is first-class; it needs a standardized "who" |
 | Logging safety | `redacted_inputs`, `redacted_output` | Payload copies safe to log |
 | Optional extensions | `cancel_token`, `services`, `global_deadline` | Cooperative cancellation, DI, call-tree budget |
-| Generic bag | `data` | Pipeline state, span stacks, locale, feature flags |
+| Generic bag | `data` | Pipeline state, locale, feature flags |
 
 ### Field Constraints
 
@@ -74,7 +74,7 @@ See [PROTOCOL_SPEC §12.7.2 Context.data Sharing Semantics](../spec/protocol-spe
 
 | Prefix | Owner | Examples |
 |--------|-------|----------|
-| `_apcore.` | The framework: built-in middleware, the executor, `Context.create()` | `_apcore.mw.tracing.spans`, `_apcore.mw.logging.start_time`, `_apcore.trace.flags` |
+| `_apcore.` | The framework: built-in middleware, the executor, `Context.create()` | `_apcore.mw.tracing.sampled`, `_apcore.mw.circuit.state`, `_apcore.trace.flags` |
 | `ext.<vendor>.` | Reusable third-party code: middleware, adapters, integrations shipped as packages | `ext.acme.retry.count`, `ext.acme.tenant` |
 | no prefix | The application's own modules and entry point | `locale`, `raw_records`, `x-correlation-id` |
 
@@ -86,7 +86,7 @@ Framework hierarchy under `_apcore.`:
 
 | Key pattern | Subsystem | Example |
 |-------------|-----------|---------|
-| `_apcore.mw.{middleware}.{field}` | Built-in middleware state | `_apcore.mw.logging.start_time` |
+| `_apcore.mw.{middleware}.{field}` | Built-in middleware state | `_apcore.mw.circuit.state` |
 | `_apcore.mw.{middleware}.{field}.{module_id}` | Per-module middleware state | `_apcore.mw.retry.count.email.send` |
 | `_apcore.trace.{field}` | Inbound W3C trace state from `Context.create(trace_parent=...)` | `_apcore.trace.flags`, `_apcore.trace.state` |
 | `_apcore.executor.{field}` | Executor internals | `_apcore.executor.redacted_output` |
@@ -328,14 +328,14 @@ Each SDK exports these constants (`SCREAMING_SNAKE_CASE` in Python and Rust, exp
 
 | Constant | Identifier | Type | Purpose |
 |----------|------------|------|---------|
-| `TRACING_SPANS` | `_apcore.mw.tracing.spans` | list | Stack of active spans for the current call tree |
+| `TRACING_SPANS` | `_apcore.mw.tracing.spans` | list | Reserved compatibility key. Execution spans are invocation-local. |
 | `TRACING_SAMPLED` | `_apcore.mw.tracing.sampled` | bool | Whether this trace is sampled for export |
-| `METRICS_STARTS` | `_apcore.mw.metrics.starts` | list | Start markers used by `MetricsMiddleware` |
-| `LOGGING_START` | `_apcore.mw.logging.start_time` | float (epoch s) | Start time recorded by `LoggingMiddleware.before()` |
+| `METRICS_STARTS` | `_apcore.mw.metrics.starts` | list | Reserved compatibility key. Metrics timers are invocation-local. |
+| `LOGGING_START` | `_apcore.mw.logging.start_time` | float (epoch s) | Reserved compatibility key. Logging timers are invocation-local. |
 | `REDACTED_OUTPUT` | `_apcore.executor.redacted_output` | map | Executor-redacted snapshot of the call output |
 | `RETRY_COUNT_BASE` | `_apcore.mw.retry.count` | int | Base key for `RetryMiddleware`; scoped per target module |
 
-Python additionally exports `USAGE_STARTS` (`_apcore.mw.usage.starts`) and `LOGGING_STARTS` (`_apcore.mw.logging.starts`). Framework middleware also writes some `_apcore.*` keys by raw string (for example `_apcore.mw.circuit.state`).
+Python additionally reserves `USAGE_STARTS` (`_apcore.mw.usage.starts`) and `LOGGING_STARTS` (`_apcore.mw.logging.starts`) for compatibility. Usage and logging timers are invocation-local.
 
 ## Usage
 
@@ -904,7 +904,7 @@ Per-call middleware state belongs in `context.data` — never on the middleware 
 | Purpose | Example keys | Notes |
 |---------|--------------|-------|
 | Pipeline intermediate state | `raw_records`, `analysis` | AI orchestration across several calls |
-| Observability | `_apcore.mw.tracing.spans`, `_apcore.mw.tracing.sampled` | Written by the framework's `TracingMiddleware` |
+| Observability | `_apcore.trace.flags`, `_apcore.trace.state` | Inbound distributed trace propagation |
 | Internationalization | `locale`, `timezone` | Set at top level, read as needed |
 | Feature flags | `feature_flags` | Set at top level |
 | Request metadata | `x-correlation-id`, `client_ip`, `session_id` | Written at the entry layer |

@@ -30,7 +30,7 @@ from apcore.utils.redaction import (
     compile_value_regexes,
 )
 
-from apcore.context_keys import LOGGING_STARTS
+from apcore.context_keys import LOGGING_STARTS, _middleware_data
 from apcore.middleware.base import Middleware
 
 
@@ -382,7 +382,7 @@ class ObsLoggingMiddleware(Middleware):
 
     Supports ``RedactionConfig`` for runtime-configurable field/value redaction
     applied in addition to schema-level ``x-sensitive`` annotations.
-    Uses stack-based timing in context.data for safe nested call support.
+    Each executor invocation keeps its own timing data.
     """
 
     def __init__(
@@ -410,9 +410,7 @@ class ObsLoggingMiddleware(Middleware):
         return _apply_redaction_config(data, self._redaction_config)
 
     def before(self, module_id: str, inputs: dict[str, Any], context: Any) -> dict[str, Any] | None:
-        starts = LOGGING_STARTS.get(context, default=[])
-        starts.append(time.time())
-        LOGGING_STARTS.set(context, starts)
+        _middleware_data(context).setdefault(LOGGING_STARTS.name, []).append(time.time())
         extra: dict[str, Any] = {
             "module_id": module_id,
             "caller_id": context.caller_id,
@@ -432,7 +430,7 @@ class ObsLoggingMiddleware(Middleware):
         output: dict[str, Any],
         context: Any,
     ) -> dict[str, Any] | None:
-        starts = LOGGING_STARTS.get(context, default=[])
+        starts = _middleware_data(context).get(LOGGING_STARTS.name, [])
         if not starts:
             return None
         start_time = starts.pop()
@@ -450,7 +448,7 @@ class ObsLoggingMiddleware(Middleware):
         return None
 
     def on_error(self, module_id: str, inputs: dict[str, Any], error: Exception, context: Any) -> dict[str, Any] | None:
-        starts = LOGGING_STARTS.get(context, default=[])
+        starts = _middleware_data(context).get(LOGGING_STARTS.name, [])
         if not starts:
             return None
         start_time = starts.pop()

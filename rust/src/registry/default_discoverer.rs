@@ -35,9 +35,11 @@ use std::sync::Arc;
 use async_trait::async_trait;
 
 use crate::errors::{ErrorCode, ModuleError};
-use crate::module::Module;
+use crate::module::{Module, ModuleAnnotations};
 use crate::registry::dependencies::resolve_dependencies;
-use crate::registry::metadata::{load_id_map, load_metadata, parse_dependencies};
+use crate::registry::metadata::{
+    load_id_map, load_metadata, merge_annotation_fields, parse_dependencies,
+};
 use crate::registry::registry::{
     is_ephemeral_module_id, DependencyInfo, DiscoveredModule, Discoverer, ModuleDescriptor,
     EPHEMERAL_NAMESPACE_PREFIX, MAX_MODULE_ID_LENGTH, RESERVED_WORDS,
@@ -498,7 +500,7 @@ impl Discoverer for DefaultDiscoverer {
             };
 
             // Stage 5: build the descriptor from module + metadata (YAML wins).
-            let descriptor = build_descriptor(&file, module.as_ref(), meta, &deps);
+            let descriptor = build_descriptor(&file, module.as_ref(), meta, &deps)?;
 
             pending.push(Pending {
                 file,
@@ -568,7 +570,7 @@ fn build_descriptor(
     module: &dyn Module,
     meta: Option<&HashMap<String, serde_json::Value>>,
     deps: &[DepInfo],
-) -> ModuleDescriptor {
+) -> Result<ModuleDescriptor, ModuleError> {
     let yaml = meta.cloned().unwrap_or_default();
 
     let description = yaml
@@ -598,7 +600,9 @@ fn build_descriptor(
         .and_then(|v| v.as_str())
         .map(String::from);
 
-    ModuleDescriptor {
+    let annotations = discovery_annotations(module, yaml.get("annotations"), file)?;
+
+    Ok(ModuleDescriptor {
         module_id: file.canonical_id.clone(),
         name: yaml.get("name").and_then(|v| v.as_str()).map(String::from),
         description,
@@ -607,14 +611,37 @@ fn build_descriptor(
         output_schema: module.output_schema(),
         version,
         tags,
-        annotations: None,
+        annotations: Some(annotations),
         examples: vec![],
         metadata: yaml,
         display: None,
         sunset_date: None,
         dependencies: deps.iter().cloned().map(DependencyInfo::from).collect(),
         enabled: true,
-    }
+    })
+}
+
+fn discovery_annotations(
+    module: &dyn Module,
+    yaml: Option<&serde_json::Value>,
+    file: &DiscoveredFile,
+) -> Result<ModuleAnnotations, ModuleError> {
+    let code = module.annotations();
+    let Some(yaml) = yaml.filter(|value| !value.is_null()) else {
+        return Ok(code);
+    };
+    let invalid = |error: serde_json::Error| {
+        ModuleError::new(
+            ErrorCode::ConfigInvalid,
+            format!(
+                "Invalid annotations for discovered module '{}': {error}",
+                file.canonical_id
+            ),
+        )
+    };
+    let code = serde_json::to_value(code).map_err(&invalid)?;
+    let merged = merge_annotation_fields(Some(&code), Some(yaml)).unwrap_or(code);
+    serde_json::from_value(merged).map_err(invalid)
 }
 
 #[cfg(test)]
@@ -694,6 +721,34 @@ mod tests {
         assert_eq!(calls.load(Ordering::SeqCst), 1);
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].name, "hello");
+    }
+
+    #[tokio::test]
+    async fn discovered_companion_annotations_reach_the_approval_gate() {
+        let tmp = tempdir().unwrap();
+        std::fs::write(tmp.path().join("hello.rs"), "// stub").unwrap();
+        std::fs::write(
+            tmp.path().join("hello_meta.yaml"),
+            "annotations:\n  requires_approval: true\n",
+        )
+        .unwrap();
+        let factory: ModuleFactory = Arc::new(|_file, _entry| {
+            Ok(Some(Arc::new(TestModule {
+                desc: "test".to_string(),
+            })))
+        });
+        let discoverer = DefaultDiscoverer::new().with_factory(factory);
+        let registry = Arc::new(crate::registry::Registry::default());
+        registry.set_extension_roots(vec![tmp.path().to_string_lossy().into_owned()]);
+        assert_eq!(registry.discover(&discoverer).await.unwrap(), 1);
+
+        let mut executor = crate::Executor::new(registry, crate::Config::default());
+        executor.set_policy(Some(crate::ExecutionPolicy::default().with_strict(true)));
+        let error = executor
+            .call("hello", json!({}), None, None)
+            .await
+            .expect_err("the companion file requires approval");
+        assert_eq!(error.code, ErrorCode::ApprovalDenied);
     }
 
     #[tokio::test]

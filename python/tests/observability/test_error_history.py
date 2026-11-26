@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import threading
+from concurrent.futures import ThreadPoolExecutor
 
 
 from apcore.errors import ModuleError
 from apcore.observability.error_history import ErrorEntry, ErrorHistory
+from apcore.observability.storage import InMemoryStorageBackend
+from apcore.observability.store import InMemoryObservabilityStore
 
 
 class TestErrorEntry:
@@ -131,6 +134,32 @@ class TestErrorHistoryGetAll:
 
 
 class TestErrorHistoryEviction:
+    def test_default_backing_retains_only_live_fingerprints(self) -> None:
+        history = ErrorHistory(max_entries_per_module=1, max_total_entries=1)
+        history.record("mod.a", ModuleError(code="E1", message="first"))
+        duplicate = ModuleError(code="E2", message="second")
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            list(pool.map(lambda _: history.record("mod.a", duplicate), range(40)))
+        live = history.get_all()
+        persisted = history.stored_entries()
+        assert [(key, record["count"]) for key, record in persisted] == [(live[0].fingerprint, 40)]
+        assert [(entry.fingerprint, entry.count) for entry in history.store.get_errors()] == [
+            (live[0].fingerprint, 40)
+        ]
+        history.record("mod.b", ModuleError(code="E3", message="third"))
+        assert [record["module_id"] for _, record in history.stored_entries()] == ["mod.b"]
+        assert [entry.module_id for entry in history.store.get_errors()] == ["mod.b"]
+
+    def test_injected_storage_and_sink_keep_their_recording_policy(self) -> None:
+        storage = InMemoryStorageBackend()
+        sink = InMemoryObservabilityStore()
+        history = ErrorHistory(max_total_entries=1, store=sink, storage=storage)
+        history.record("mod.a", ModuleError(code="E1", message="first"))
+        history.record("mod.b", ModuleError(code="E2", message="second"))
+        assert len(history.get_all()) == 1
+        assert len(history.stored_entries()) == 2
+        assert len(sink.get_errors()) == 2
+
     def test_max_entries_per_module_eviction(self) -> None:
         history = ErrorHistory(max_entries_per_module=3)
         for i in range(5):

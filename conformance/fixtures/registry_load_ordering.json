@@ -123,6 +123,26 @@
         "_note": "Both on_load callbacks enter before either is allowed to finish. Observe callback overlap through synchronization, not a wall-clock performance budget; thread startup and sleep scheduling do not determine conformance.",
         "callbacks_overlap": true
       }
+    },
+    {
+      "id": "discovery_skips_dependents_of_failed_provider",
+      "description": "A failed provider prevents direct and transitive required dependents from starting. Optional and independent modules still load.",
+      "setup": {
+        "modules": [
+          {"id": "provider", "fails": true},
+          {"id": "required", "dependencies": [{"module_id": "provider", "version": "1.0.0"}]},
+          {"id": "transitive", "dependencies": [{"module_id": "required"}]},
+          {"id": "optional", "dependencies": [{"module_id": "provider", "optional": true}]},
+          {"id": "independent"}
+        ]
+      },
+      "expected": {
+        "post_register_count": 2,
+        "published_ids": ["independent", "optional"],
+        "load_hook_ids": ["independent", "optional", "provider"],
+        "blocked_ids": ["required", "transitive"],
+        "dependency_error_code": "MODULE_LOAD_ERROR"
+      }
     }
   ],
   "driver_contract": {

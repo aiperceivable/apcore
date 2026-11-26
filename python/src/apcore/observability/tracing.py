@@ -13,6 +13,7 @@ import threading
 import time
 from typing import Any
 
+from apcore.context_keys import TRACING_SAMPLED, TRACING_SPANS, _current_trace_span, _middleware_data
 from apcore.middleware import Middleware
 from apcore.observability.span import Span, create_span
 
@@ -59,9 +60,8 @@ class InMemoryExporter:
 class OTLPExporter:
     """Exports spans via OpenTelemetry Protocol (requires opentelemetry SDK).
 
-    Bridges apcore ``Span`` instances to OpenTelemetry by creating real OTel
-    spans with matching timestamps, attributes, and status, then exporting them
-    through the OTLP HTTP protocol to any compatible collector.
+    Bridges apcore ``Span`` instances to OpenTelemetry with matching IDs,
+    timestamps, attributes, and status, then exports them through OTLP HTTP.
 
     Args:
         endpoint: OTLP collector endpoint URL. Defaults to OTel SDK default
@@ -80,7 +80,7 @@ class OTLPExporter:
         service_name: str = "apcore",
         attribute_allowlist: set[str] | None = None,
     ) -> None:
-        """Initialize OTLPExporter with an OTel TracerProvider and OTLP exporter.
+        """Initialize the OpenTelemetry span processor and HTTP exporter.
 
         Raises:
             ImportError: If required opentelemetry packages are not installed.
@@ -90,16 +90,22 @@ class OTLPExporter:
                 OTLPSpanExporter as _OTLPSpanExporter,
             )
             from opentelemetry.sdk.resources import Resource  # type: ignore[import-not-found]
-            from opentelemetry.sdk.trace import TracerProvider  # type: ignore[import-not-found]
+            from opentelemetry.sdk.trace import Event, ReadableSpan  # type: ignore[import-not-found]
             from opentelemetry.sdk.trace.export import SimpleSpanProcessor as _OtelSimpleSpanProcessor  # type: ignore[import-not-found]
-            from opentelemetry.trace import StatusCode  # type: ignore[import-not-found]
+            from opentelemetry.sdk.util.instrumentation import InstrumentationScope  # type: ignore[import-not-found]
+            from opentelemetry.trace import SpanContext, Status, StatusCode, TraceFlags  # type: ignore[import-not-found]
         except ImportError:
             raise ImportError(
                 "opentelemetry packages are required for OTLPExporter. "
                 "Install with: pip install opentelemetry-sdk opentelemetry-exporter-otlp-proto-http"
             ) from None
 
+        self._SpanContext = SpanContext
+        self._ReadableSpan = ReadableSpan
+        self._Event = Event
+        self._Status = Status
         self._StatusCode = StatusCode
+        self._sampled_trace_flags = TraceFlags(TraceFlags.SAMPLED)
         #: The collector this exporter targets. Retained because
         #: PROTOCOL_SPEC §10.1.1 requirement 3 makes it configurable through
         #: `observability.tracing.otlp_endpoint`, and a value that reaches the
@@ -110,52 +116,66 @@ class OTLPExporter:
             frozenset(attribute_allowlist) if attribute_allowlist is not None else None
         )
 
-        resource = Resource.create({"service.name": service_name})
-        self._provider = TracerProvider(resource=resource)
+        self._resource = Resource.create({"service.name": service_name})
+        self._instrumentation_scope = InstrumentationScope("apcore.tracing")
 
         exporter_kwargs: dict[str, Any] = {}
         if endpoint is not None:
             exporter_kwargs["endpoint"] = endpoint
 
-        otlp_exporter = _OTLPSpanExporter(**exporter_kwargs)
-        self._provider.add_span_processor(_OtelSimpleSpanProcessor(otlp_exporter))
-        self._tracer = self._provider.get_tracer("apcore.tracing")
+        self._processor = _OtelSimpleSpanProcessor(_OTLPSpanExporter(**exporter_kwargs))
 
     def export(self, span: Span) -> None:
-        """Convert an apcore Span to an OpenTelemetry span and export via OTLP."""
-        start_ns = int(span.start_time * 1e9)
-
-        otel_span = self._tracer.start_span(name=span.name, start_time=start_ns)
-
-        otel_span.set_attribute("apcore.trace_id", span.trace_id)
-        otel_span.set_attribute("apcore.span_id", span.span_id)
+        """Export an OpenTelemetry span with the APCore trace and parent IDs."""
+        attributes = {
+            key: value if isinstance(value, (str, int, float, bool)) else str(value)
+            for key, value in span.attributes.items()
+            if value is not None and (self._attribute_allowlist is None or key in self._attribute_allowlist)
+        }
+        attributes["apcore.trace_id"] = span.trace_id
+        attributes["apcore.span_id"] = span.span_id
         if span.parent_span_id:
-            otel_span.set_attribute("apcore.parent_span_id", span.parent_span_id)
+            attributes["apcore.parent_span_id"] = span.parent_span_id
 
-        for key, value in span.attributes.items():
-            if value is None:
-                continue
-            if self._attribute_allowlist is not None and key not in self._attribute_allowlist:
-                continue
-            if isinstance(value, (str, int, float, bool)):
-                otel_span.set_attribute(key, value)
-            else:
-                otel_span.set_attribute(key, str(value))
+        trace_id = _otel_id(span.trace_id, 32) or _new_otel_id(16)
+        span_id = _otel_id(span.span_id, 16) or _new_otel_id(8)
+        context = self._SpanContext(trace_id, span_id, False, self._sampled_trace_flags)
+        parent_id = _otel_id(span.parent_span_id, 16)
+        parent = self._SpanContext(trace_id, parent_id, False, self._sampled_trace_flags) if parent_id else None
+        status = self._StatusCode.ERROR if span.status == "error" else self._StatusCode.UNSET
 
-        if span.status == "error":
-            otel_span.set_status(self._StatusCode.ERROR)
-
-        for event in span.events:
-            event_name = event.get("name", "event")
-            event_attrs = {k: str(v) for k, v in event.items() if k != "name"}
-            otel_span.add_event(event_name, attributes=event_attrs)
-
-        end_ns = int(span.end_time * 1e9) if span.end_time else None
-        otel_span.end(end_time=end_ns)
+        self._processor.on_end(
+            self._ReadableSpan(
+                name=span.name,
+                context=context,
+                parent=parent,
+                resource=self._resource,
+                attributes=attributes,
+                events=[
+                    self._Event(event.get("name", "event"), {k: str(v) for k, v in event.items() if k != "name"})
+                    for event in span.events
+                ],
+                instrumentation_scope=self._instrumentation_scope,
+                status=self._Status(status),
+                start_time=int(span.start_time * 1e9),
+                end_time=int(span.end_time * 1e9) if span.end_time is not None else time.time_ns(),
+            )
+        )
 
     def shutdown(self) -> None:
-        """Flush pending spans and shut down the underlying TracerProvider."""
-        self._provider.shutdown()
+        """Shut down the underlying OpenTelemetry span processor."""
+        self._processor.shutdown()
+
+
+def _otel_id(value: str | None, digits: int) -> int | None:
+    if value and len(value) == digits and all(digit in "0123456789abcdef" for digit in value):
+        return int(value, 16) or None
+    return None
+
+
+def _new_otel_id(size: int) -> int:
+    """Retain support for manually exported spans without canonical APCore IDs."""
+    return int.from_bytes(os.urandom(size), "big") or 1
 
 
 # ---------------------------------------------------------------------------
@@ -189,8 +209,8 @@ class TracingMiddleware(Middleware):
     ``processor`` directly.  When ``exporter`` is supplied, backward-compatible
     behavior is preserved.
 
-    Uses stack-based context.data storage to correctly handle nested
-    module-to-module call chains.
+    Executor calls keep spans and sampling decisions on the invocation
+    context, with the parent's span captured when a child call starts.
     """
 
     def __init__(
@@ -236,8 +256,13 @@ class TracingMiddleware(Middleware):
 
     def _should_sample(self, context: Any) -> bool:
         """Make or inherit sampling decision."""
-        existing = context.data.get("_apcore.mw.tracing.sampled")
+        data = _middleware_data(context)
+        inherited = getattr(context, "_parent_sampled", None)
+        existing = data.get(TRACING_SAMPLED.name, inherited)
+        if existing is None:
+            existing = TRACING_SAMPLED.get(context)
         if isinstance(existing, bool):
+            data[TRACING_SAMPLED.name] = existing
             return existing
 
         if self._sampling_strategy == "full":
@@ -247,15 +272,18 @@ class TracingMiddleware(Middleware):
         else:  # proportional or error_first
             decision = random.random() < self._sampling_rate
 
-        context.data["_apcore.mw.tracing.sampled"] = decision
+        data[TRACING_SAMPLED.name] = decision
         return decision
 
     def before(self, module_id: str, inputs: dict[str, Any], context: Any) -> dict[str, Any] | None:
         """Create a span, push to stack, make/inherit sampling decision."""
         self._should_sample(context)
 
-        spans_stack = context.data.setdefault("_apcore.mw.tracing.spans", [])
-        parent_span_id = spans_stack[-1].span_id if spans_stack else None
+        parent = _current_trace_span(context, include_parent=True)
+        parent_span_id = parent.span_id if parent is not None else None
+        remote_parent = getattr(context, "_inbound_trace_parent", None)
+        if parent_span_id is None and remote_parent is not None and remote_parent.trace_id == context.trace_id:
+            parent_span_id = remote_parent.parent_id
 
         span = Span(
             trace_id=context.trace_id,
@@ -269,7 +297,7 @@ class TracingMiddleware(Middleware):
                 "caller_id": context.caller_id,
             },
         )
-        spans_stack.append(span)
+        _middleware_data(context).setdefault(TRACING_SPANS.name, []).append(span)
         return None
 
     def after(
@@ -280,7 +308,8 @@ class TracingMiddleware(Middleware):
         context: Any,
     ) -> dict[str, Any] | None:
         """Pop span, finalize with success status, export if sampled."""
-        spans_stack = context.data.get("_apcore.mw.tracing.spans", [])
+        data = _middleware_data(context)
+        spans_stack = data.get(TRACING_SPANS.name, [])
         if not spans_stack:
             _tracing_logger.warning(
                 "TracingMiddleware.after() called with empty span stack for %s",
@@ -293,13 +322,14 @@ class TracingMiddleware(Middleware):
         span.attributes["duration_ms"] = (span.end_time - span.start_time) * 1000
         span.attributes["success"] = True
 
-        if context.data.get("_apcore.mw.tracing.sampled"):
+        if data.get(TRACING_SAMPLED.name):
             self._processor.on_span_end(span)
         return None
 
     def on_error(self, module_id: str, inputs: dict[str, Any], error: Exception, context: Any) -> dict[str, Any] | None:
         """Pop span, finalize with error status, always export for error_first. Return None."""
-        spans_stack = context.data.get("_apcore.mw.tracing.spans", [])
+        data = _middleware_data(context)
+        spans_stack = data.get(TRACING_SPANS.name, [])
         if not spans_stack:
             _tracing_logger.warning(
                 "TracingMiddleware.on_error() called with empty span stack for %s",
@@ -313,7 +343,7 @@ class TracingMiddleware(Middleware):
         span.attributes["success"] = False
         span.attributes["error_code"] = getattr(error, "code", type(error).__name__)
 
-        should_export = self._sampling_strategy == "error_first" or context.data.get("_apcore.mw.tracing.sampled")
+        should_export = self._sampling_strategy == "error_first" or data.get(TRACING_SAMPLED.name)
         if should_export:
             self._processor.on_span_end(span)
         return None

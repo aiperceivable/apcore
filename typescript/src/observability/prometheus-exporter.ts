@@ -53,10 +53,10 @@ export class PrometheusExporter {
     if (summaries.length === 0) return '';
 
     // Build per-metric-family lines so HELP/TYPE immediately precede each family's data.
-    const callsLines: string[] = [
-      '# HELP apcore_usage_calls_total Total usage calls by module and status',
-      '# TYPE apcore_usage_calls_total counter',
-    ];
+    const callFamilies = [
+      { name: 'apcore_usage_calls_24h', help: 'Module calls in the last 24 hours by status' },
+      { name: 'apcore_usage_calls_total', help: 'Deprecated alias of apcore_usage_calls_24h' },
+    ].map(({ name, help }) => ({ name, lines: [`# HELP ${name} ${help}`, `# TYPE ${name} gauge`] }));
     const errorRateLines: string[] = [
       '# HELP apcore_usage_error_rate Module error rate (0.0-1.0)',
       '# TYPE apcore_usage_error_rate gauge',
@@ -79,8 +79,10 @@ export class PrometheusExporter {
       const successCount = callCount - errorCount;
       const errorRate = callCount > 0 ? errorCount / callCount : 0;
 
-      callsLines.push(`apcore_usage_calls_total{module_id="${moduleId}",status="success"} ${successCount}`);
-      callsLines.push(`apcore_usage_calls_total{module_id="${moduleId}",status="error"} ${errorCount}`);
+      for (const { name, lines } of callFamilies) {
+        lines.push(`${name}{module_id="${moduleId}",status="success"} ${successCount}`);
+        lines.push(`${name}{module_id="${moduleId}",status="error"} ${errorCount}`);
+      }
       errorRateLines.push(`apcore_usage_error_rate{module_id="${moduleId}"} ${errorRate}`);
 
       const latencies = this._usageCollector!.getLatencies(moduleId);
@@ -90,7 +92,8 @@ export class PrometheusExporter {
       p99Lines.push(`apcore_usage_p99_latency_ms{module_id="${moduleId}"} ${p99}`);
     }
 
-    return [...callsLines, ...errorRateLines, ...p50Lines, ...p95Lines, ...p99Lines].join('\n') + '\n';
+    return [...callFamilies.flatMap(({ lines }) => lines), ...errorRateLines, ...p50Lines, ...p95Lines, ...p99Lines]
+      .join('\n') + '\n';
   }
 
   /** Signal that the application is ready to serve traffic (/readyz → 200). */
@@ -108,18 +111,18 @@ export class PrometheusExporter {
     }
 
     this._server = createServer((req, res) => {
-      const url = req.url ?? '/';
-      if (url === metricsPath) {
+      const pathname = (req.url ?? '/').split('?', 1)[0];
+      if (pathname === metricsPath) {
         const body = Buffer.from(this.export(), 'utf-8');
         res.writeHead(200, {
           'Content-Type': 'text/plain; version=0.0.4; charset=utf-8',
           'Content-Length': String(body.length),
         });
         res.end(body);
-      } else if (url === '/healthz') {
+      } else if (pathname === '/healthz') {
         res.writeHead(200);
         res.end('OK');
-      } else if (url === '/readyz') {
+      } else if (pathname === '/readyz') {
         if (this._ready) {
           res.writeHead(200);
           res.end('OK');

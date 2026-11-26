@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import json
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -25,6 +27,57 @@ def fixture_data() -> dict:
     return _load_fixture()
 
 
+class _LifecycleModule:
+    input_schema = {"type": "object"}
+    output_schema = {"type": "object"}
+
+    def execute(self, inputs: dict[str, Any], context: Any) -> dict[str, Any]:
+        return {}
+
+
+def test_discovery_skips_dependents_of_failed_provider(
+    fixture_data: dict[str, Any], tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    case = next(c for c in fixture_data["test_cases"] if c["id"] == "discovery_skips_dependents_of_failed_provider")
+    expected = case["expected"]
+    marker = tmp_path / "load.log"
+    for module in case["setup"]["modules"]:
+        module_id = module["id"]
+        failure = '        raise RuntimeError("provider unavailable")\n' if module.get("fails") else ""
+        (tmp_path / f"{module_id}.py").write_text(
+            "from pathlib import Path\n"
+            "from pydantic import BaseModel\n\n"
+            "class Example:\n"
+            "    input_schema = BaseModel\n"
+            "    output_schema = BaseModel\n"
+            "    description = 'Discovery test module'\n\n"
+            "    def execute(self, inputs, context):\n"
+            "        return {}\n\n"
+            "    def on_load(self):\n"
+            f"        with Path({str(marker)!r}).open('a') as log:\n"
+            f"            print({module_id!r}, file=log)\n"
+            f"{failure}"
+        )
+        meta = {
+            "entry_point": f"{module_id}:Example",
+            "version": "1.0.0",
+            "dependencies": module.get("dependencies", []),
+        }
+        (tmp_path / f"{module_id}_meta.yaml").write_text(json.dumps(meta))
+
+    registry = Registry(extensions_dir=str(tmp_path))
+    published: list[str] = []
+    registry.on("register", lambda module_id, _module: published.append(module_id))
+
+    count = registry.discover()
+    assert count == expected["post_register_count"]
+    assert sorted(registry.list()) == sorted(published) == expected["published_ids"]
+    assert sorted(marker.read_text().splitlines()) == expected["load_hook_ids"]
+    for blocked in expected["blocked_ids"]:
+        assert f"module_id={blocked} error_type=ModuleLoadError" in caplog.text
+    assert any("optional" in log.message and "provider" in log.message for log in caplog.records)
+
+
 def test_fixture_visibility_after_successful_on_load(fixture_data: dict) -> None:
     """Case: visibility_after_successful_on_load."""
     case = next(c for c in fixture_data["test_cases"] if c["id"] == "visibility_after_successful_on_load")
@@ -39,7 +92,7 @@ def test_fixture_visibility_after_successful_on_load(fixture_data: dict) -> None
     concurrent_list_result: list[bool] = []
     concurrent_get_result: list[Any] = []
 
-    class _SpyModule:
+    class _SpyModule(_LifecycleModule):
         data: dict[str, Any] = {}
 
         def on_load(self) -> None:
@@ -97,7 +150,7 @@ def test_fixture_callback_failure_blocks_visibility(fixture_data: dict) -> None:
 
     emitter.subscribe(_DLQRecorder())
 
-    class _FailingModule:
+    class _FailingModule(_LifecycleModule):
         def on_load(self) -> None:
             raise ConnectionError(error_cfg["message"])
 
@@ -147,7 +200,7 @@ def test_fixture_concurrent_same_id_rejects_duplicate(fixture_data: dict) -> Non
     lock = threading.Lock()
     delay_ms = setup["module_a"].get("on_load_delay_ms", 0)
 
-    class _SlowModule:
+    class _SlowModule(_LifecycleModule):
         def on_load(self) -> None:
             time.sleep(delay_ms / 1000)
 
@@ -201,7 +254,7 @@ def test_fixture_concurrent_distinct_ids_run_in_parallel(fixture_data: dict[str,
     gate = threading.Barrier(2, timeout=5.0)
     callbacks_overlap = threading.Event()
 
-    class _OverlapModule:
+    class _OverlapModule(_LifecycleModule):
         def __init__(self, delay_ms: int) -> None:
             self.delay_ms = delay_ms
 

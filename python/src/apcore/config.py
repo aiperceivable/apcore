@@ -1607,9 +1607,12 @@ class Config:
         namespace prefix is resolved first.
         """
         with self._lock:
-            if self._mode == "namespace":
-                return self._get_namespace_mode(key, default)
-            return _get_nested(self._data, key, default)
+            return self._read_value(key, default)
+
+    def _read_value(self, key: str, default: Any = None) -> Any:
+        if self._mode == "namespace":
+            return self._get_namespace_mode(key, default)
+        return _get_nested(self._data, key, default)
 
     def _get_namespace_mode(self, key: str, default: Any) -> Any:
         """Resolve a dot-path key in namespace mode."""
@@ -1688,22 +1691,49 @@ class Config:
         ``my`` -> ``app`` where get() reads the whole ``my.app`` key.
         """
         with self._lock:
-            path_key = key.removeprefix("apcore.") if self._mode == "namespace" else key
-            if path_key in _SCALAR_PATH_TYPED_CONFIG_KEYS and _is_empty_path_value(value):
-                return
-            if self._mode == "namespace":
-                namespace, remainder = self._split_namespace_key(key)
-                if namespace is not None:
-                    if remainder is None:
-                        self._data[namespace] = value
-                        return
-                    ns_data = self._data.get(namespace)
-                    if not isinstance(ns_data, dict):
-                        ns_data = {}
-                        self._data[namespace] = ns_data
-                    _set_nested(ns_data, remainder, value)
+            if not self._ignores_empty_path(key, value):
+                self._write_value(key, value)
+
+    def _ignores_empty_path(self, key: str, value: Any) -> bool:
+        path_key = key.removeprefix("apcore.") if self._mode == "namespace" else key
+        return path_key in _SCALAR_PATH_TYPED_CONFIG_KEYS and _is_empty_path_value(value)
+
+    def _write_value(self, key: str, value: Any) -> None:
+        if self._mode == "namespace":
+            namespace, remainder = self._split_namespace_key(key)
+            if namespace is not None:
+                if remainder is None:
+                    self._data[namespace] = value
                     return
-            _set_nested(self._data, key, value)
+                ns_data = self._data.get(namespace)
+                if not isinstance(ns_data, dict):
+                    ns_data = {}
+                    self._data[namespace] = ns_data
+                _set_nested(ns_data, remainder, value)
+                return
+        _set_nested(self._data, key, value)
+
+    def _runtime_storage_key(self, key: str) -> str:
+        """Select the branch that SDK readers use for a framework setting."""
+        framework_key = key.removeprefix("apcore.")
+        if framework_key not in _FRAMEWORK_CONFIG_KEYS:
+            return key
+        if self._mode == "namespace":
+            namespace, _ = self._split_namespace_key(framework_key)
+            if namespace is not None and self._data.get(namespace) is None:
+                # Keep sibling settings visible through the implicit namespace.
+                return f"apcore.{framework_key}"
+        return framework_key
+
+    def _update_runtime_value(self, key: str, value: Any) -> tuple[str, Any, Any]:
+        """Commit a control update and capture its storage key and before/after values."""
+        with self._lock:
+            storage_key = self._runtime_storage_key(key)
+            if self._ignores_empty_path(storage_key, value):
+                raise ConfigError(message=f"Invalid value for '{key}': must be a non-empty path", details={"key": key})
+            previous = copy.deepcopy(self._read_value(storage_key))
+            self._write_value(storage_key, value)
+            return storage_key, previous, copy.deepcopy(self._read_value(storage_key))
 
     @property
     def data(self) -> dict[str, Any]:

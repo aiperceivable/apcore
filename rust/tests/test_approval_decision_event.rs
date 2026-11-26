@@ -121,3 +121,49 @@ async fn test_approval_gate_emits_approval_decision_span_event() {
     assert_eq!(decision["reason"], json!(""));
     assert_eq!(decision["approval_id"], json!(""));
 }
+
+#[tokio::test]
+async fn pending_approval_publishes_only_the_audit_identifier() {
+    use apcore::{
+        ApprovalRequest, ApprovalResult, CallbackApprovalHandler, Config, ErrorCode, Executor,
+    };
+
+    let registry = Arc::new(Registry::new());
+    let module_id = "needs.approval";
+    registry
+        .register(
+            module_id,
+            Box::new(NoopModule),
+            descriptor_requiring_approval(module_id, &NoopModule),
+        )
+        .unwrap();
+    let ctx = Context::<Value>::anonymous();
+    TRACING_SPANS.set(&ctx, vec![json!({"events": []})]);
+    let mut executor = Executor::new(registry, Config::default());
+    executor.set_approval_handler(Box::new(CallbackApprovalHandler::new_sync(
+        |_request: &ApprovalRequest| {
+            let mut result = ApprovalResult::default();
+            result.status = "pending".to_owned();
+            result.approval_id = Some("test-resume-credential".to_owned());
+            result.audit_id = Some("review-correlation".to_owned());
+            Ok(result)
+        },
+    )));
+
+    let error = executor
+        .call(module_id, json!({}), Some(&ctx), None)
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, ErrorCode::ApprovalPending);
+    assert_eq!(
+        error.details["approval_id"],
+        json!("test-resume-credential")
+    );
+    let spans = TRACING_SPANS.get(&ctx).unwrap();
+    let events = spans[0]["events"].as_array().unwrap();
+    let event = events
+        .iter()
+        .find(|event| event["name"] == "approval_decision")
+        .unwrap();
+    assert_eq!(event["approval_id"], json!("review-correlation"));
+}

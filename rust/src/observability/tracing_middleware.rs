@@ -30,8 +30,7 @@ pub enum SamplingStrategy {
     Never,
 }
 
-/// Combined state for span stacks and sampling decisions, protected by a single mutex
-/// to avoid TOCTOU races during cleanup.
+/// Standalone middleware hooks can be called without an executor scope.
 #[derive(Debug, Default)]
 struct TraceState {
     spans: HashMap<String, Vec<Span>>,
@@ -40,12 +39,8 @@ struct TraceState {
 
 /// Middleware that creates tracing spans around module execution.
 ///
-/// Uses a stack-based approach (Vec of Spans per `trace_id`) to correctly
-/// handle nested module-to-module calls with proper parent-child span
-/// relationships.
-///
-/// Lock ordering: always acquire `ctx.data` before `self.state` to prevent
-/// deadlocks.
+/// Executor calls keep spans with the invocation and capture the parent link
+/// before entering a child. Independent branches may finish in any order.
 #[derive(Debug)]
 pub struct TracingMiddleware {
     /// The active span exporter. Wrapped in a `Mutex<Arc<…>>` for interior
@@ -56,7 +51,7 @@ pub struct TracingMiddleware {
     exporter: Mutex<Arc<dyn SpanExporter>>,
     pub sampling_strategy: SamplingStrategy,
     pub sampling_rate: f64,
-    /// Combined span stacks and sampling decisions, protected by a single mutex.
+    /// Direct hook invocations without a cancellation scope keep their legacy behavior.
     state: Mutex<TraceState>,
 }
 
@@ -111,24 +106,8 @@ impl TracingMiddleware {
         Arc::clone(&self.exporter.lock())
     }
 
-    /// Determine if this request should be sampled, inheriting from parent if available.
-    fn should_sample(&self, ctx: &Context<serde_json::Value>) -> bool {
-        // Check for inherited decision first (from context.data)
-        if let Some(sampled) = ctx.data.read().get("_apcore.mw.tracing.sampled").cloned() {
-            if let Some(b) = sampled.as_bool() {
-                return b;
-            }
-        }
-
-        let mut state = self.state.lock();
-
-        // Check cached decision for this trace
-        if let Some(&decision) = state.sampling.get(&ctx.trace_id) {
-            return decision;
-        }
-
-        // Make a new decision
-        let decision = match self.sampling_strategy {
+    fn sample_root(&self) -> bool {
+        match self.sampling_strategy {
             SamplingStrategy::Always => true,
             SamplingStrategy::Never => false,
             SamplingStrategy::Probabilistic | SamplingStrategy::ErrorFirst => {
@@ -137,20 +116,58 @@ impl TracingMiddleware {
                 let random_val = uuid::Uuid::new_v4().as_u128() as f64 / u128::MAX as f64;
                 random_val < self.sampling_rate
             }
+        }
+    }
+
+    fn timing_key(&self) -> usize {
+        std::ptr::from_ref(self) as usize
+    }
+
+    fn take_span(&self, ctx: &Context<serde_json::Value>) -> Option<(Span, bool)> {
+        if let Some(token) = ctx.cancel_token.as_ref() {
+            return token.take_span(self.timing_key());
+        }
+
+        let (span, sampled, remaining) = {
+            let mut state = self.state.lock();
+            let stack = state.spans.get_mut(&ctx.trace_id)?;
+            let span = stack.pop()?;
+            let remaining = stack.clone();
+            let sampled = state.sampling.get(&ctx.trace_id).copied().unwrap_or(false);
+            if remaining.is_empty() {
+                state.spans.remove(&ctx.trace_id);
+                state.sampling.remove(&ctx.trace_id);
+            }
+            (span, sampled, remaining)
         };
+        publish_span_stack(ctx, &remaining);
+        Some((span, sampled))
+    }
 
-        // Cache the decision
-        state.sampling.insert(ctx.trace_id.clone(), decision);
-
-        decision
+    async fn finish_span(&self, ctx: &Context<serde_json::Value>, error: Option<&ModuleError>) {
+        let Some((mut span, sampled)) = self.take_span(ctx) else {
+            return;
+        };
+        span.end();
+        let duration_ms = span
+            .end_time
+            .map_or(0.0, |end| (end - span.start_time) * 1000.0);
+        span.set_attribute("duration_ms", serde_json::json!(duration_ms));
+        span.set_attribute("success", serde_json::json!(error.is_none()));
+        span.status = SpanStatus::Ok;
+        if let Some(error) = error {
+            span.status = SpanStatus::Error;
+            span.set_attribute("error_code", serde_json::json!(error.wire_code()));
+            span.set_attribute("error.message", serde_json::json!(error.message));
+            span.add_event("exception");
+        }
+        if sampled || (error.is_some() && self.sampling_strategy == SamplingStrategy::ErrorFirst) {
+            let _ = self.exporter_handle().export(&span).await;
+        }
     }
 }
 
-/// Mirror the span stack into `context.data` under `_apcore.mw.tracing.spans`,
-/// the key apcore-python and apcore-typescript keep their stack under, so
-/// [`TraceContext::inject`](crate::trace_context::TraceContext::inject) takes
-/// the current span as the outbound parent. The context's data map is shared
-/// by the whole call tree, as the stack is.
+/// Preserve the context-data view for standalone hooks.
 fn publish_span_stack(ctx: &Context<serde_json::Value>, stack: &[Span]) {
     if stack.is_empty() {
         crate::context_keys::TRACING_SPANS.delete(ctx);
@@ -161,6 +178,46 @@ fn publish_span_stack(ctx: &Context<serde_json::Value>, stack: &[Span]) {
         .filter_map(|span| serde_json::to_value(span).ok())
         .collect();
     crate::context_keys::TRACING_SPANS.set(ctx, spans);
+}
+
+pub(crate) fn add_context_span_event(
+    ctx: &Context<serde_json::Value>,
+    name: &str,
+    attributes: serde_json::Value,
+) {
+    let serde_json::Value::Object(attributes) = attributes else {
+        return;
+    };
+    if ctx.cancel_token.as_ref().is_some_and(|token| {
+        token.with_active_span(&ctx.trace_id, |span| {
+            span.add_event_with_attributes(
+                name,
+                attributes
+                    .iter()
+                    .map(|(key, value)| (key.clone(), value.clone()))
+                    .collect(),
+            );
+        })
+    }) {
+        return;
+    }
+
+    let mut data = ctx.data.write();
+    let events = data
+        .get_mut(crate::context_keys::TRACING_SPANS.name.as_ref())
+        .and_then(serde_json::Value::as_array_mut)
+        .and_then(|spans| spans.last_mut())
+        .and_then(serde_json::Value::as_object_mut)
+        .and_then(|span| {
+            span.entry("events")
+                .or_insert_with(|| serde_json::json!([]))
+                .as_array_mut()
+        });
+    if let Some(events) = events {
+        let mut event = attributes;
+        event.insert("name".to_owned(), serde_json::json!(name));
+        events.push(serde_json::Value::Object(event));
+    }
 }
 
 #[async_trait]
@@ -179,8 +236,6 @@ impl Middleware for TracingMiddleware {
         _inputs: serde_json::Value,
         ctx: &Context<serde_json::Value>,
     ) -> Result<Option<serde_json::Value>, ModuleError> {
-        self.should_sample(ctx);
-
         let mut span = Span::new("apcore.module.execute", &ctx.trace_id);
 
         span.set_attribute("module_id".to_string(), serde_json::json!(module_id));
@@ -189,13 +244,29 @@ impl Middleware for TracingMiddleware {
             span.set_attribute("caller_id".to_string(), serde_json::json!(caller_id));
         }
 
-        // Single lock scope: read parent span_id and push the new span
+        let sampling_override = crate::context_keys::TRACING_SAMPLED.get(ctx);
+        let remote_parent = crate::trace_context::inbound_parent_id(ctx);
+        if let Some(token) = ctx.cancel_token.as_ref() {
+            let parent = token.span_link(&ctx.trace_id);
+            let sampled = sampling_override
+                .or_else(|| parent.as_ref().map(|link| link.sampled))
+                .unwrap_or_else(|| self.sample_root());
+            span.parent_span_id = parent.map(|link| link.span_id).or(remote_parent);
+            token.begin_span(self.timing_key(), span, sampled);
+            return Ok(None);
+        }
+
         let snapshot = {
             let mut state = self.state.lock();
+            state
+                .sampling
+                .entry(ctx.trace_id.clone())
+                .or_insert_with(|| sampling_override.unwrap_or_else(|| self.sample_root()));
             let stack = state.spans.entry(ctx.trace_id.clone()).or_default();
-            if let Some(parent) = stack.last() {
-                span.parent_span_id = Some(parent.span_id.clone());
-            }
+            span.parent_span_id = stack
+                .last()
+                .map(|parent| parent.span_id.clone())
+                .or(remote_parent);
             stack.push(span);
             stack.clone()
         };
@@ -211,52 +282,7 @@ impl Middleware for TracingMiddleware {
         _output: serde_json::Value,
         ctx: &Context<serde_json::Value>,
     ) -> Result<Option<serde_json::Value>, ModuleError> {
-        // Single lock scope: pop span and clean up empty stacks
-        let (span, should_clean_sampling, remaining) = {
-            let mut state = self.state.lock();
-            let popped = state
-                .spans
-                .get_mut(&ctx.trace_id)
-                .and_then(std::vec::Vec::pop);
-
-            let should_clean = if let Some(stack) = state.spans.get(&ctx.trace_id) {
-                if stack.is_empty() {
-                    state.spans.remove(&ctx.trace_id);
-                    true
-                } else {
-                    false
-                }
-            } else {
-                false
-            };
-            let remaining = state.spans.get(&ctx.trace_id).cloned().unwrap_or_default();
-
-            (popped, should_clean, remaining)
-        };
-        publish_span_stack(ctx, &remaining);
-
-        if let Some(mut span) = span {
-            span.status = SpanStatus::Ok;
-            span.end();
-            let duration_ms = span
-                .end_time
-                .map_or(0.0, |e| (e - span.start_time) * 1000.0);
-            span.set_attribute("duration_ms".to_string(), serde_json::json!(duration_ms));
-            span.set_attribute("success".to_string(), serde_json::json!(true));
-
-            if self.should_sample(ctx) {
-                let exporter = self.exporter_handle();
-                let _ = exporter.export(&span).await;
-            }
-        }
-
-        // Clean up sampling decision after export (needs separate lock since
-        // should_sample/export happened between the two lock scopes)
-        if should_clean_sampling {
-            let mut state = self.state.lock();
-            state.sampling.remove(&ctx.trace_id);
-        }
-
+        self.finish_span(ctx, None).await;
         Ok(None)
     }
 
@@ -267,72 +293,7 @@ impl Middleware for TracingMiddleware {
         error: &ModuleError,
         ctx: &Context<serde_json::Value>,
     ) -> Result<Option<serde_json::Value>, ModuleError> {
-        // Single lock scope: pop span and clean up empty stacks
-        let (span, should_clean_sampling, remaining) = {
-            let mut state = self.state.lock();
-            let popped = state
-                .spans
-                .get_mut(&ctx.trace_id)
-                .and_then(std::vec::Vec::pop);
-
-            let should_clean = if let Some(stack) = state.spans.get(&ctx.trace_id) {
-                if stack.is_empty() {
-                    state.spans.remove(&ctx.trace_id);
-                    true
-                } else {
-                    false
-                }
-            } else {
-                false
-            };
-            let remaining = state.spans.get(&ctx.trace_id).cloned().unwrap_or_default();
-
-            (popped, should_clean, remaining)
-        };
-        publish_span_stack(ctx, &remaining);
-
-        if let Some(mut span) = span {
-            span.status = SpanStatus::Error;
-            span.end();
-            let duration_ms = span
-                .end_time
-                .map_or(0.0, |e| (e - span.start_time) * 1000.0);
-            span.set_attribute("duration_ms".to_string(), serde_json::json!(duration_ms));
-            span.set_attribute("success".to_string(), serde_json::json!(false));
-            // ERR-001: the canonical SCREAMING_SNAKE wire code, never the Rust
-            // enum's PascalCase `Debug` name. apcore-python (`tracing.py`:
-            // `getattr(error, "code", ...)`) and apcore-typescript
-            // (`tracing.ts`: `error['code']`) both write the protocol code
-            // here, so an OTLP query or alert rule keyed on it matched two SDKs
-            // and never this one.
-            span.set_attribute(
-                "error_code".to_string(),
-                serde_json::json!(error.code.wire_str()),
-            );
-            span.set_attribute(
-                "error.message".to_string(),
-                serde_json::json!(error.message),
-            );
-            span.add_event("exception");
-
-            // For ErrorFirst strategy, always export errors regardless of sampling decision
-            let should_export = match self.sampling_strategy {
-                SamplingStrategy::ErrorFirst => true,
-                _ => self.should_sample(ctx),
-            };
-
-            if should_export {
-                let exporter = self.exporter_handle();
-                let _ = exporter.export(&span).await;
-            }
-        }
-
-        // Clean up sampling decision after export
-        if should_clean_sampling {
-            let mut state = self.state.lock();
-            state.sampling.remove(&ctx.trace_id);
-        }
-
+        self.finish_span(ctx, Some(error)).await;
         Ok(None)
     }
 }

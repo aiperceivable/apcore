@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
-from typing import Any
+from functools import lru_cache
+from inspect import signature
+from typing import Any, NamedTuple, cast
 
 from pydantic import BaseModel, ValidationError as PydanticValidationError
+from pydantic_core import SchemaValidator as CoreSchemaValidator, core_schema
 
-from apcore.schema.types import SchemaValidationErrorDetail, SchemaValidationResult
+from apcore.schema.types import SchemaValidationErrorDetail, SchemaValidationResult, _validation_failure_message
 
 __all__ = ["SchemaValidator", "coerce_value"]
 
@@ -108,6 +111,91 @@ def _declared_types(schema: dict[str, Any]) -> tuple[str, ...]:
     if isinstance(declared, list):
         return tuple(t for t in declared if isinstance(t, str))
     return ()
+
+
+def _narrow_integral_float(value: Any) -> Any:
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    return value
+
+
+class _NativeIntegerValidator(NamedTuple):
+    validator: CoreSchemaValidator
+    has_union: bool
+
+
+# These entries hold user data and serialization instructions, not validators.
+_CORE_SCHEMA_PAYLOAD_KEYS = frozenset({"config", "default", "expected", "metadata", "serialization"})
+_CAN_DISABLE_PREBUILT = "_use_prebuilt" in signature(CoreSchemaValidator).parameters
+
+
+@lru_cache(maxsize=128)
+def _native_integer_validator(model: type[BaseModel], _revision: object) -> _NativeIntegerValidator | None:
+    """Compile a copy of the native validator with JSON integers at its int nodes."""
+    if isinstance(getattr(model, "__apcore_source_schema__", None), dict):
+        return None
+
+    has_integer = False
+    has_union = False
+
+    def adapt(node: Any) -> Any:
+        nonlocal has_integer, has_union
+        if isinstance(node, (list, tuple)):
+            return type(node)(adapt(child) for child in node)
+        if not isinstance(node, dict):
+            return node
+        kind = node.get("type")
+        if kind == "int":
+            has_integer = True
+            integer = cast(core_schema.IntSchema, dict(node))
+            return core_schema.no_info_before_validator_function(
+                _narrow_integral_float, integer, ref=integer.pop("ref", None)
+            )
+        if kind in ("union", "tagged-union"):
+            has_union = True
+        return {
+            key: value if isinstance(kind, str) and key in _CORE_SCHEMA_PAYLOAD_KEYS else adapt(value)
+            for key, value in node.items()
+        }
+
+    adapted = adapt(model.__pydantic_core_schema__)
+    if not has_integer:
+        return None
+    # Newer pydantic-core versions otherwise reuse the original validator
+    # carried by every model class, skipping the adapted field nodes.
+    options: dict[str, Any] = {"_use_prebuilt": False} if _CAN_DISABLE_PREBUILT else {}
+    return _NativeIntegerValidator(CoreSchemaValidator(adapted, **options), has_union)
+
+
+def _validate_strict_model(model: type[BaseModel], data: Any, *, json_mode: bool) -> Any:
+    """Validate in the caller's mode without general type coercion."""
+    original = model.model_validate_json if json_mode else model.model_validate
+    if not isinstance(model, type) or not issubclass(model, BaseModel):
+        return original(data, strict=True)
+
+    default = BaseModel.model_validate_json if json_mode else BaseModel.model_validate
+    revision = model.__pydantic_validator__
+    if getattr(original, "__func__", None) is not getattr(default, "__func__", None) or not isinstance(
+        revision, CoreSchemaValidator
+    ):
+        # Preserve custom entry points, validation plugins, and deferred builds.
+        return original(data, strict=True)
+    compiled = _native_integer_validator(model, revision)
+    if compiled is None:
+        return original(data, strict=True)
+    adjusted = compiled.validator.validate_json if json_mode else compiled.validator.validate_python
+    if compiled.has_union:
+        # A raw float may already match an exact branch in a smart union.
+        # Keep the native choice for previously valid payloads.
+        try:
+            return original(data, strict=True)
+        except PydanticValidationError as error:
+            if not any(
+                item["type"] == "int_type" and isinstance(value := item["input"], float) and value.is_integer()
+                for item in error.errors(include_context=False, include_url=False)
+            ):
+                raise
+    return adjusted(data, strict=True)
 
 
 class SchemaValidator:
@@ -247,7 +335,7 @@ class SchemaValidator:
             return instance.model_dump(exclude_unset=generated)
         except PydanticValidationError as e:
             result = SchemaValidationResult(valid=False, errors=self._pydantic_error_to_details(e))
-            raise result.to_error() from e
+        raise result.to_error()
 
     def _pydantic_error_to_details(self, error: PydanticValidationError) -> list[SchemaValidationErrorDetail]:
         """Convert Pydantic v2 ValidationError to apcore error details."""
@@ -259,8 +347,6 @@ class SchemaValidator:
                 loc = loc[:-1]
             path = "".join("/" + str(segment).replace("~", "~0").replace("/", "~1") for segment in loc)
             constraint = _PYDANTIC_TO_CONSTRAINT.get(pydantic_type, pydantic_type)
-
-            message = err.get("msg", "")
 
             ctx = err.get("ctx", {})
             expected: Any = None
@@ -277,7 +363,7 @@ class SchemaValidator:
             details.append(
                 SchemaValidationErrorDetail(
                     path=path,
-                    message=message,
+                    message=_validation_failure_message(constraint or "type", pydantic_type),
                     constraint=constraint,
                     expected=expected,
                     actual=actual,

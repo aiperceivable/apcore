@@ -62,6 +62,50 @@ impl Module for Echo {
     }
 }
 
+struct SensitiveOutput;
+
+#[async_trait]
+impl Module for SensitiveOutput {
+    fn input_schema(&self) -> Value {
+        json!({"type": "object"})
+    }
+    fn output_schema(&self) -> Value {
+        json!({"type": "object", "properties": {"note": {"x-sensitive": true}}})
+    }
+    fn description(&self) -> &'static str {
+        "Module with schema-sensitive output"
+    }
+    async fn execute(&self, _inputs: Value, _ctx: &Context<Value>) -> Result<Value, ModuleError> {
+        Ok(json!({"note": SECRET}))
+    }
+}
+
+#[tokio::test]
+async fn output_capture_redacts_schema_sensitive_fields_when_validation_is_removed() {
+    let registry = Registry::new();
+    registry
+        .register_module(MODULE_ID, Box::new(SensitiveOutput))
+        .unwrap();
+    let mut config = Config::default();
+    config.set("pipeline.remove", json!(["output_validation"]));
+    let executor = Executor::new(registry, config);
+    let seen = Arc::new(Capture::default());
+    executor
+        .use_middleware(Box::new(CaptureHandle(seen.clone())))
+        .unwrap();
+
+    let output = executor
+        .call(MODULE_ID, json!({}), None, None)
+        .await
+        .unwrap();
+    assert_eq!(output["note"], SECRET);
+    let capture = seen.output.lock();
+    assert_eq!(
+        capture.as_ref().and_then(|value| value.get("note")),
+        Some(&json!(apcore::REDACTED_VALUE)),
+    );
+}
+
 #[derive(Debug, Default)]
 struct Capture {
     inputs: Mutex<Option<HashMap<String, Value>>>,

@@ -23,7 +23,7 @@ use crate::policy::ExecutionPolicy;
 use crate::registry::registry::{ModuleDescriptor, Registry, DEFAULT_MODULE_VERSION};
 use crate::sys_modules::{SysModuleError, SysModulesContext, SysModulesStartup, ToggleState};
 
-/// Options for [`APCore::try_with_options`].
+/// Options for [`APCore::try_start`] and [`APCore::try_with_options`].
 #[derive(Default)]
 pub struct APCoreOptions {
     pub registry: Option<Registry>,
@@ -36,6 +36,24 @@ pub struct APCoreOptions {
     pub approval_handler: Option<Box<dyn ApprovalHandler>>,
     /// Execution policy for the Executor built by the client.
     pub policy: Option<ExecutionPolicy>,
+}
+
+/// Failure to initialize a client with [`APCore::try_start`].
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
+pub enum APCoreStartupError {
+    #[error("ACL configuration failed to load: {source}")]
+    AclLoadFailed {
+        #[source]
+        source: ModuleError,
+    },
+    #[error("pipeline configuration failed to load: {source}")]
+    PipelineLoadFailed {
+        #[source]
+        source: ModuleError,
+    },
+    #[error(transparent)]
+    SystemModule(#[from] SysModuleError),
 }
 
 /// Optional module metadata for [`APCore::typed_module`].
@@ -112,6 +130,8 @@ impl APCore {
     /// When `sys_modules.enabled` is true in the config (default: false; system
     /// modules are opt-in), built-in system modules are automatically
     /// registered into the executor pipeline.
+    /// If a discovered ACL cannot be loaded, invocations fail with
+    /// `CONFIG_INVALID`. Use [`Self::try_start`] for the startup error.
     /// This registration is now fully synchronous and runtime-agnostic because
     /// `Registry` uses `parking_lot::RwLock` for interior mutability.
     pub fn with_options(
@@ -137,18 +157,43 @@ impl APCore {
     /// # Errors
     ///
     /// Returns the first system-module registration failure when
-    /// [`APCoreOptions::fail_on_error`] is set. Otherwise startup continues and
-    /// recovered errors are available through [`Self::sys_modules_errors`].
-    /// A supplied Registry can retain modules registered before the failure.
+    /// [`APCoreOptions::fail_on_error`] is set. Recovered registration failures
+    /// are available through [`Self::sys_modules_errors`]. If ACL or pipeline
+    /// configuration cannot load, invocations fail with the configuration
+    /// error. Use [`Self::try_start`] to report it during construction.
     pub fn try_with_options(options: APCoreOptions) -> Result<Self, SysModuleError> {
         let fail_on_error = options.fail_on_error;
         let mut client = Self::build(options);
-        if fail_on_error {
-            if let Some(error) = client.sys_modules_errors.pop() {
-                return Err(error);
-            }
-        }
+        client.check_system_registration(fail_on_error)?;
         Ok(client)
+    }
+
+    /// Create a client and report configuration errors before its first invocation.
+    ///
+    /// Reports invalid pipeline or ACL configuration, and honours
+    /// [`APCoreOptions::fail_on_error`] for system-module registration.
+    pub fn try_start(options: APCoreOptions) -> Result<Self, APCoreStartupError> {
+        let fail_on_error = options.fail_on_error;
+        let mut client = Self::build(options);
+        if let Some(source) = &client.executor.pipeline_load_error {
+            return Err(APCoreStartupError::PipelineLoadFailed {
+                source: source.clone(),
+            });
+        }
+        if let Some(source) = &client.executor.acl_load_error {
+            return Err(APCoreStartupError::AclLoadFailed {
+                source: source.clone(),
+            });
+        }
+        client.check_system_registration(fail_on_error)?;
+        Ok(client)
+    }
+
+    fn check_system_registration(&mut self, fail_on_error: bool) -> Result<(), SysModuleError> {
+        if fail_on_error {
+            return self.sys_modules_errors.pop().map_or(Ok(()), Err);
+        }
+        Ok(())
     }
 
     fn build(options: APCoreOptions) -> Self {
@@ -211,7 +256,8 @@ impl APCore {
                 Ok(Some(acl)) => executor.set_acl(acl),
                 Ok(None) => {}
                 Err(e) => {
-                    tracing::error!(error = %e, "ACL discovery failed; continuing without ACL");
+                    tracing::error!(error = %e, "ACL discovery failed; module execution is disabled");
+                    executor.acl_load_error = Some(e);
                 }
             }
         }
@@ -248,7 +294,10 @@ impl APCore {
         }
 
         let mut startup = SysModulesStartup::default();
-        let sys_modules_context = if Self::sys_modules_enabled(&config) {
+        let enable_sys_modules = executor.pipeline_load_error.is_none()
+            && executor.acl_load_error.is_none()
+            && Self::sys_modules_enabled(&config);
+        let sys_modules_context = if enable_sys_modules {
             match crate::sys_modules::register_sys_modules_for_client(
                 Arc::clone(&registry),
                 &executor,
@@ -260,6 +309,7 @@ impl APCore {
                     ..Default::default()
                 },
                 &mut startup,
+                executor_supplied,
             ) {
                 Ok(ctx) => Some(ctx),
                 Err(e) => {
@@ -349,7 +399,16 @@ impl APCore {
     /// Create a new `APCore` client from a configuration file path.
     pub fn from_path(path: impl AsRef<std::path::Path>) -> Result<Self, ModuleError> {
         let config = Config::load(path.as_ref())?;
-        Ok(Self::with_config(config))
+        let client = Self::with_config(config);
+        if let Some(error) = client
+            .executor
+            .pipeline_load_error
+            .as_ref()
+            .or(client.executor.acl_load_error.as_ref())
+        {
+            return Err(error.clone());
+        }
+        Ok(client)
     }
 
     /// Register a function as a module — convenience wrapper that creates a
@@ -530,24 +589,7 @@ impl APCore {
         module_id: &str,
         module: Box<dyn crate::module::Module>,
     ) -> Result<(), ModuleError> {
-        let descriptor = ModuleDescriptor {
-            module_id: module_id.to_string(),
-            name: None,
-            description: module.description().to_string(),
-            documentation: None,
-            input_schema: module.input_schema(),
-            output_schema: module.output_schema(),
-            version: "1.0.0".to_string(),
-            tags: vec![],
-            annotations: Some(ModuleAnnotations::default()),
-            examples: vec![],
-            metadata: std::collections::HashMap::new(),
-            display: None,
-            sunset_date: None,
-            dependencies: vec![],
-            enabled: true,
-        };
-        self.registry.register(module_id, module, descriptor)
+        self.registry.register_module(module_id, module)
     }
 
     /// Trigger module discovery from configured extension directories.
@@ -940,6 +982,24 @@ impl APCore {
         let resolved_inputs = inputs.into().unwrap_or_else(|| serde_json::json!({}));
         self.executor
             .stream(module_id, resolved_inputs, ctx, version_hint)
+    }
+
+    /// Stream an invocation and receive its separate completion result.
+    /// Drain, close or drop the chunks before awaiting the completion handle.
+    /// See [`Executor::stream_with_completion`] for lifecycle semantics.
+    pub fn stream_with_completion<'a>(
+        &'a self,
+        module_id: &str,
+        inputs: impl Into<Option<Value>>,
+        ctx: Option<&Context<Value>>,
+        version_hint: Option<&str>,
+    ) -> (
+        crate::stream_completion::StreamChunks<'a>,
+        crate::stream_completion::StreamCompletionHandle,
+    ) {
+        let resolved_inputs = inputs.into().unwrap_or_else(|| serde_json::json!({}));
+        self.executor
+            .stream_with_completion(module_id, resolved_inputs, ctx, version_hint)
     }
 
     /// Describe a module by ID.

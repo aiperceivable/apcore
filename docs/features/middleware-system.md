@@ -107,9 +107,9 @@ Rules:
 
 ### Context Namespacing
 
-Middleware keeps per-call state in `context.data`, which the framework, third-party packages and the application share. The key space is partitioned:
+The framework, third-party packages and the application share `context.data` across a call tree. Built-in tracing and timing state belongs to each invocation. The shared key space is partitioned:
 
-- Framework-owned keys use the `_apcore.` prefix (`_apcore.mw.logging.start_time`, `_apcore.mw.tracing.spans`, `_apcore.mw.circuit.state`).
+- Framework-owned keys use the `_apcore.` prefix (`_apcore.mw.tracing.sampled`, `_apcore.mw.circuit.state`).
 - Third-party middleware — anything shipped for reuse — uses `ext.<vendor>.` (`ext.acme.request_id`).
 - Unprefixed keys belong to the application's own code (`locale`, `x-correlation-id`).
 - The framework MUST NOT write `ext.*` keys; user and third-party code MUST NOT write `_apcore.*` keys.
@@ -120,8 +120,6 @@ Framework-owned middleware keys:
 
 | Key | Set by | Value |
 |-----|--------|-------|
-| `_apcore.mw.logging.start_time` | `LoggingMiddleware.before()` | Wall-clock start time (epoch seconds) |
-| `_apcore.mw.tracing.spans` | `TracingMiddleware.before()` | Stack of active spans; each entry links `parent_span_id` to the one below, so nested calls do not overwrite each other |
 | `_apcore.mw.tracing.sampled` | `TracingMiddleware.before()` | The sampling decision for this trace |
 | `_apcore.mw.circuit.state` | `CircuitBreakerMiddleware.before()` | `CLOSED`, `OPEN` or `HALF_OPEN` |
 | `_apcore.mw.retry.count.{module_id}` | `RetryMiddleware.on_error()` | Retries attempted for that module in this call tree |

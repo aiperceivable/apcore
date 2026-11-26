@@ -16,6 +16,9 @@ export function normalizeResult(result: unknown): Record<string, unknown> {
   return { result };
 }
 
+const registrationByModule = new WeakMap<FunctionModule, Promise<void>>();
+const completedRegistration = Promise.resolve();
+
 export class FunctionModule {
   readonly moduleId: string;
   readonly inputSchema: TSchema;
@@ -64,6 +67,11 @@ export class FunctionModule {
     this.display = options.display ?? null;
     this.resources = options.resources ?? null;
     this._executeFn = options.execute;
+  }
+
+  /** Resolves after factory registration completes and rejects if it fails asynchronously. */
+  get registration(): Promise<void> {
+    return registrationByModule.get(this) ?? completedRegistration;
   }
 
   async execute(inputs: Record<string, unknown>, context: Context): Promise<Record<string, unknown>> {
@@ -133,6 +141,7 @@ function warnOnUnknownModuleOptions(moduleId: string, options: Record<string, un
 
 /**
  * Create a FunctionModule using explicit schemas or the build-time transformer.
+ * Await the returned module's `registration` when the supplied registry performs asynchronous work.
  */
 export function module<Input extends object = Record<string, unknown>>(options: {
   id?: string;
@@ -187,7 +196,10 @@ export function module<Input extends object = Record<string, unknown>>(options: 
   });
 
   if (options.registry) {
-    options.registry.register(fm.moduleId, fm);
+    const registration = Promise.resolve(options.registry.register(fm.moduleId, fm)).then(() => undefined);
+    // Mark the rejection handled while preserving it for callers who await registration.
+    void registration.catch(() => undefined);
+    registrationByModule.set(fm, registration);
   }
 
   return fm;

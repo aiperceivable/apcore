@@ -280,14 +280,20 @@ Inside a running Python event loop, synchronous accessors support the bundled in
 1. `submit()` checks the active-task count against `max_tasks` and saves a `pending` record, atomically with respect to other submissions, then schedules the task and returns its ID.
 2. The task waits for one of `max_concurrent` slots.
 3. Before running, the runner re-reads the stored record; a task that is already terminal (for example, cancelled while waiting) is not run. Otherwise it becomes `running` and the module is invoked through the Executor (`call_async` / `call`) with the submitted context.
-4. On success the record becomes `completed` with the result; on failure it is retried (see [Retry with Backoff](#retry-with-backoff)) or becomes `failed` with `error` set. Every status write is preceded by a fresh read, so a concurrent `cancel()` — including one from another process sharing the store — is never overwritten.
+4. On success the record becomes `completed` with the result. A module failure is retried under its [retry policy](#retry-with-backoff) or recorded as `failed` with `error` set. Runners read the current stored status before writing. Rust and TypeScript serialize cancellation and status writes for each task within one manager. Coordinating writes across managers requires atomic conditional updates in the shared store.
 5. The slot is released and the next waiting task proceeds.
 
 A module that is not registered does not fail `submit()`: the task is accepted and ends `failed`.
 
+Terminal publication can be retried independently of module execution. The manager keeps the outcome in memory and reads the current record before retrying so an existing terminal record or deletion remains authoritative. When the store rejects the result with a non-retryable task-store error, the manager attempts to record `failed` with a message and an empty result. If the store also refuses that record, the last persisted state can stay active. The process-local pending outcome requires a running manager.
+
+In Rust, the runner releases its execution slot while retrying storage access before an attempt starts. The module runs after the runner can read the eligible record and persist its running state.
+
+In TypeScript, a status or result request can retry publication of its own pending outcome and surface a store error from that attempt. Listing and admission use the current stored state even when a different task's terminal write keeps failing. Shutdown enumerates active records and attempts their cancellations independently.
+
 ### Cancellation
 
-`cancel(task_id)` returns `false` if the task does not exist or is already terminal. Otherwise it interrupts the in-flight execution and writes the record as `cancelled` (D-18):
+`cancel(task_id)` returns `false` if the task does not exist or is already terminal. On success, it interrupts the in-flight execution and records `cancelled` (D-18). TypeScript writes the terminal state before signaling the local worker.
 
 | SDK | How the running task is interrupted |
 |-----|-------------------------------------|

@@ -65,6 +65,7 @@ dev = [
     "pytest>=7.0",
     "pytest-asyncio>=0.23",
     "pytest-cov>=4.0",
+    "watchdog>=3.0",  # Type-check and exercise the optional file watcher.
     # Bound the minor: ruff 0.x treats the minor as its major, and each minor can
     # change lint defaults and formatter output. Raise deliberately.
     "ruff>=0.15.0,<0.17",

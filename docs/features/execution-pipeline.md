@@ -647,18 +647,24 @@ A `type` names a factory registered in code before the executor is built. `handl
 The entry's `name`, `match_modules`, `ignore_errors`, `pure` and `timeout_ms` override what the
 factory's step declares. An omitted metadata field keeps the step's own value in TypeScript but
 resets to the default (all modules, `false`, `0`) in Python and Rust, so declare every field the
-step relies on. What each SDK does with the resolution fields:
+step relies on. The configuration Schema requires exactly one of `type` and `handler` and
+exactly one of `after` and `before`. Passing a raw mapping directly to an SDK builder can bypass
+Schema validation. The builders resolve those inputs as follows:
 
 | Entry | Python | TypeScript | Rust |
 |---|---|---|---|
 | `type` only | registry lookup | registry lookup | registry lookup |
-| `handler` only | `importlib` import; the target is called with `config` as keyword arguments | ESM `import()`; the export is called as `factory(config)`. **Not inserted** when the `Executor` constructor applies the section — it warns and skips the step; build with `await buildStrategyFromConfig()` and pass the strategy explicitly | `PIPELINE_HANDLER_NOT_SUPPORTED` |
+| `handler` only | `importlib` import; the target is called with `config` as keyword arguments | The synchronous `Executor` constructor raises `PIPELINE_CONFIGURATION_ERROR`. The async builder loads the ESM export and calls `factory(config)`. | `PIPELINE_HANDLER_NOT_SUPPORTED` |
 | `type` and `handler` | `type` if registered, else `handler` | `type` if registered, else `handler` | `PIPELINE_HANDLER_NOT_SUPPORTED` |
 | `after` and `before` | `after` wins | `after` wins | `after` wins |
 
-The schema requires exactly one of `type` / `handler` and exactly one of `after` / `before`
-([protocol-spec §5.16.1](../spec/protocol-spec.md#5161-declarative-pipeline-configuration-pipeline)); write
-entries that way so the same file loads identically in every SDK.
+For portable configuration, use one factory field and one anchor. To insert a step instance you
+already constructed, call the strategy's `insert_before` / `insert_after` methods directly. See
+[protocol-spec §5.16.1](../spec/protocol-spec.md#5161-declarative-pipeline-configuration-pipeline).
+
+In TypeScript, await `buildStrategyFromConfig()` before constructing the `Executor` with the
+result as its `strategy`. To use that executor with `APCore`, pass it as the `executor` option.
+Configure the ACL, approval handler, and tracing explicitly when assembling a prebuilt executor.
 
 When the section fails to build, Python and TypeScript raise from the `Executor` constructor. The
 Rust constructors that apply the section (`Executor::new`, `Executor::with_options`) are
@@ -856,8 +862,9 @@ Each pure step that ran becomes one entry in `PreflightResult.checks`. Built-in 
 check names `context` (`context_creation`), `call_chain`, `module_lookup`, `acl` (`acl_check`)
 and `schema` (`input_validation`); `output_validation` and `return_result` also run, and pass,
 because there is no output yet; a custom step's check carries its step name. A `module_id` format
-check runs before the pipeline. The engine is still fail-fast in a dry run, so steps after a
-failing one report nothing.
+check runs before the pipeline. A failing check leaves later evaluable checks in the report. A
+failed lookup suppresses checks that need the module, and a failed ACL check suppresses
+module-level preflight and preview.
 
 - **Approval is reported, not requested.** `approval_gate` does not run and the `ApprovalHandler`
   is never invoked. `requires_approval` is computed from the same governance union the gate
@@ -874,15 +881,15 @@ failing one report nothing.
 
 `Executor.stream()` runs the same strategy in three phases, fully implemented in all three SDKs:
 
-1. **Before the module** — steps 1–7 run as for `call()`; any failure is raised before a chunk
-   is produced. Python and TypeScript run the strategy with `stream` set so the `execute` step
-   captures the module's stream; Rust runs the strategy up to `execute` and calls the module's
-   `stream()` itself.
+1. **Before the module** — steps 1–7 run as for `call()`. A failure is raised before any chunk
+   arrives. The configured `execute` step runs with its scope and hooks and the built-in step
+   prepares the native producer when the module supports streaming.
 2. **Chunks** — each chunk is yielded as it arrives and deep-merged into an accumulated output.
 3. **After the stream** — the strategy's `output_validation`, `middleware_after` and
-   `return_result` steps (whichever are present) run once on the merged output. Chunks have
-   already been delivered, so a failure here is not raised: it is logged and emitted as an
-   `apcore.stream.post_validation_failed` event.
+   `return_result` steps (whichever are present) run on the merged output. TypeScript resumes
+   the same invocation, with its trace and prior step outputs, at the next configured step.
+   Ordinary post-processing failures are logged and emitted as `apcore.stream.post_validation_failed`.
+   Cancellation and deadline expiry reach the consumer.
 
 A module without `stream()` yields a single chunk produced by the full pipeline, with ordinary
 error behaviour. See [Streaming](./streaming.md).

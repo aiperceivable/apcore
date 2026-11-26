@@ -3,7 +3,7 @@
  */
 
 import { statSync, readdirSync, lstatSync, realpathSync } from 'node:fs';
-import { resolve, relative, extname, basename, isAbsolute, sep } from 'node:path';
+import { resolve, relative, extname, basename, dirname, isAbsolute, sep } from 'node:path';
 import { ConfigError, ConfigNotFoundError } from '../errors.js';
 import type { DiscoveredModule } from './types.js';
 import { appendFilesystemPath } from '../utils/filesystem-path.js';
@@ -178,20 +178,20 @@ export function scanExtensions(
           console.warn(`[apcore:scanner] Case collision: '${canonicalId}' vs '${seenIdsLower.get(lowerId)}'`);
         }
 
-        // Check for companion metadata file
-        const stem = basename(entryPath, ext);
-        const metaPath = appendFilesystemPath(dirPath, stem + '_meta.yaml');
+        // The canonical file owns the metadata regardless of which alias led here.
+        const stem = basename(realFile, extname(realFile));
+        const canonicalMetaPath = appendFilesystemPath(dirname(realFile), stem + '_meta.yaml');
         let metaPathResult: string | null = null;
         try {
-          const metadataEntry = lstatSync(metaPath);
+          const metadataEntry = lstatSync(canonicalMetaPath);
           const isMetadataSymlink = metadataEntry.isSymbolicLink();
           if (isMetadataSymlink && followSymlinks) {
-            const realMetadata = realpathSync.native(metaPath);
+            const realMetadata = realpathSync.native(canonicalMetaPath);
             if (realMetadata.startsWith(rootReal + sep) && statSync(realMetadata).isFile()) {
               metaPathResult = realMetadata;
             }
           } else if (metadataEntry.isFile()) {
-            metaPathResult = metaPath;
+            metaPathResult = appendFilesystemPath(rootResolved, relative(rootReal, canonicalMetaPath));
           }
         } catch {
           // no meta file

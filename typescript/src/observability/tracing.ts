@@ -3,6 +3,7 @@
  */
 
 import type { Context } from '../context.js';
+import { removeSpan, spanParentId, startSpan } from '../execution-lifetime.js';
 import { Middleware } from '../middleware/base.js';
 import { randomHex } from '../utils/index.js';
 
@@ -198,15 +199,11 @@ export class TracingMiddleware extends Middleware {
   ): null {
     this._shouldSample(context);
 
-    const spansStack = (context.data['_apcore.mw.tracing.spans'] as Span[]) ?? [];
-    context.data['_apcore.mw.tracing.spans'] = spansStack;
-    const parentSpanId = spansStack.length > 0 ? spansStack[spansStack.length - 1].spanId : null;
-
     const span = createSpan({
       traceId: context.traceId,
       name: 'apcore.module.execute',
       startTime: Date.now() / 1000,
-      parentSpanId,
+      parentSpanId: spanParentId(context),
       // OBS-003: the attribute map is a WIRE payload, not a
       // language-idiomatic object, so the correlation fields are spelled
       // snake_case — as observability.md names them, as apcore-python and
@@ -219,7 +216,7 @@ export class TracingMiddleware extends Middleware {
         caller_id: context.callerId,
       },
     });
-    spansStack.push(span);
+    startSpan(context, this, span);
     return null;
   }
 
@@ -229,10 +226,8 @@ export class TracingMiddleware extends Middleware {
     _output: Record<string, unknown>,
     context: Context,
   ): null {
-    const spansStack = (context.data['_apcore.mw.tracing.spans'] as Span[]) ?? [];
-    if (spansStack.length === 0) return null;
-
-    const span = spansStack.pop()!;
+    const span = removeSpan(context, this);
+    if (!span) return null;
     span.endTime = Date.now() / 1000;
     span.status = 'ok';
     span.attributes['duration_ms'] = (span.endTime - span.startTime) * 1000;
@@ -250,10 +245,8 @@ export class TracingMiddleware extends Middleware {
     error: Error,
     context: Context,
   ): null {
-    const spansStack = (context.data['_apcore.mw.tracing.spans'] as Span[]) ?? [];
-    if (spansStack.length === 0) return null;
-
-    const span = spansStack.pop()!;
+    const span = removeSpan(context, this);
+    if (!span) return null;
     span.endTime = Date.now() / 1000;
     span.status = 'error';
     span.attributes['duration_ms'] = (span.endTime - span.startTime) * 1000;

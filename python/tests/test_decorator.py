@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import inspect
+from datetime import datetime, timezone
+from enum import Enum
 from typing import Annotated, Any, Literal, Optional
+from uuid import UUID
 
 import pytest
 from pydantic import BaseModel, Field, ValidationError
@@ -31,6 +34,15 @@ from apcore.errors import (
 )
 from apcore.executor import Executor
 from apcore.registry import Registry
+
+
+class _OrderState(Enum):
+    READY = "ready"
+
+
+class _OrderInput(BaseModel):
+    id: UUID
+    quantity: int
 
 
 class TestFuncMissingTypeHintError:
@@ -1224,6 +1236,26 @@ class TestDecoratorExecutorIntegration:
         # Valid inputs
         result = executor.call("test.typed", {"name": "Alice", "age": 30})
         assert result == {"name": "Alice", "age": 30}
+
+    def test_wrapped_function_receives_native_values_from_json_inputs(self) -> None:
+        registry = Registry()
+
+        @module(id="orders.process", registry=registry)
+        def process(orders: list[_OrderInput], at: datetime, state: _OrderState, **kwargs: Any) -> int:
+            assert at == datetime(2026, 11, 25, tzinfo=timezone.utc)
+            assert state is _OrderState.READY
+            assert orders[0].id == UUID("23416db0-3d95-44b0-8072-578bed43391a")
+            assert kwargs == {"note": {"text": "keep as JSON"}}
+            return orders[0].quantity
+
+        inputs = {
+            "orders": [{"id": "23416db0-3d95-44b0-8072-578bed43391a", "quantity": 3}],
+            "at": "2026-11-25T00:00:00Z",
+            "state": "ready",
+            "note": {"text": "keep as JSON"},
+        }
+        assert Executor(registry=registry).call("orders.process", inputs) == {"result": 3}
+        assert inputs["orders"] == [{"id": "23416db0-3d95-44b0-8072-578bed43391a", "quantity": 3}]
 
     def test_bare_decorator_through_executor(self):
         """Bare @module (no parens) -> manual register -> Executor flow."""

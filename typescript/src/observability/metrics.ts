@@ -4,6 +4,7 @@
 
 import type { Context } from '../context.js';
 import { ModuleError } from '../errors.js';
+import { startMiddlewareTiming, takeMiddlewareTiming } from '../execution-lifetime.js';
 import { Middleware } from '../middleware/base.js';
 import { InMemoryObservabilityStore, type ObservabilityStore } from './store.js';
 import {
@@ -59,6 +60,7 @@ export class MetricsCollector {
   ];
 
   private _buckets: number[];
+  private readonly _explicitStore: ObservabilityStore | undefined;
   private readonly _store: ObservabilityStore;
   private readonly _storage: StorageBackend;
   private _counters: Map<string, number> = new Map();
@@ -85,7 +87,8 @@ export class MetricsCollector {
     } else {
       const buckets = optionsOrBuckets?.buckets;
       this._buckets = buckets ? [...buckets].sort((a, b) => a - b) : [...MetricsCollector.DEFAULT_BUCKETS];
-      this._store = optionsOrBuckets?.store ?? new InMemoryObservabilityStore();
+      this._explicitStore = optionsOrBuckets?.store;
+      this._store = this._explicitStore ?? new InMemoryObservabilityStore();
       this._storage = optionsOrBuckets?.storage ?? new InMemoryStorageBackend();
     }
   }
@@ -107,6 +110,7 @@ export class MetricsCollector {
     const key = `${name}|${labelsKey(labels)}`;
     this._rememberLabels(key, labels);
     this._counters.set(key, (this._counters.get(key) ?? 0) + amount);
+    this._notifyStore(name, labels, amount);
   }
 
   observe(name: string, labels: Record<string, string>, value: number): void {
@@ -127,15 +131,38 @@ export class MetricsCollector {
     const infKey = `${name}|${lk}|Inf`;
     this._histogramBuckets.set(infKey, (this._histogramBuckets.get(infKey) ?? 0) + 1);
 
-    // D-113: persist under the canonical `metrics` namespace. The backend was
-    // constructed here and written to by nothing. Not awaited — `observe` is
-    // synchronous and a backend failure must not break the in-memory snapshot,
-    // which is what every reader uses.
-    void this._storage.save(STORAGE_NAMESPACE_METRICS, key, {
-      name,
-      labels: { ...labels },
-      value,
-    });
+    this._notifyStore(name, labels, value);
+
+    // D-113: persistence is best-effort; observations remain available in memory.
+    try {
+      void Promise.resolve(this._storage.save(STORAGE_NAMESPACE_METRICS, key, {
+        name,
+        labels: { ...labels },
+        value,
+      })).catch((error: unknown) => {
+        console.warn('[apcore:metrics] Storage write failed', error);
+      });
+    } catch (error) {
+      console.warn('[apcore:metrics] Storage write failed', error);
+    }
+  }
+
+  private _notifyStore(name: string, labels: Record<string, string>, value: number): void {
+    if (this._explicitStore == null) return;
+
+    try {
+      void Promise.resolve(this._explicitStore.recordMetric({
+        name,
+        value,
+        moduleId: labels.module_id ?? null,
+        labels: { ...labels },
+        timestamp: new Date().toISOString(),
+      })).catch((error: unknown) => {
+        console.warn('[apcore:metrics] Observability store write failed', error);
+      });
+    } catch (error) {
+      console.warn('[apcore:metrics] Observability store write failed', error);
+    }
   }
 
   snapshot(): Record<string, unknown> {
@@ -271,9 +298,7 @@ export class MetricsMiddleware extends Middleware {
     _inputs: Record<string, unknown>,
     context: Context,
   ): null {
-    const starts = (context.data['_apcore.mw.metrics.starts'] as number[]) ?? [];
-    starts.push(performance.now());
-    context.data['_apcore.mw.metrics.starts'] = starts;
+    startMiddlewareTiming(context, this, performance.now());
     return null;
   }
 
@@ -283,9 +308,8 @@ export class MetricsMiddleware extends Middleware {
     _output: Record<string, unknown>,
     context: Context,
   ): null {
-    const starts = context.data['_apcore.mw.metrics.starts'] as number[] | undefined;
-    if (!starts || starts.length === 0) return null;
-    const startTime = starts.pop()!;
+    const startTime = takeMiddlewareTiming(context, this);
+    if (startTime === undefined) return null;
     const durationS = (performance.now() - startTime) / 1000;
     this._collector.incrementCalls(moduleId, 'success');
     this._collector.observeDuration(moduleId, durationS);
@@ -298,9 +322,8 @@ export class MetricsMiddleware extends Middleware {
     error: Error,
     context: Context,
   ): null {
-    const starts = context.data['_apcore.mw.metrics.starts'] as number[] | undefined;
-    if (!starts || starts.length === 0) return null;
-    const startTime = starts.pop()!;
+    const startTime = takeMiddlewareTiming(context, this);
+    if (startTime === undefined) return null;
     const durationS = (performance.now() - startTime) / 1000;
     const errorCode = error instanceof ModuleError ? error.code : error.constructor.name;
     this._collector.incrementCalls(moduleId, 'error');

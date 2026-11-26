@@ -82,11 +82,20 @@ pub struct ApprovalResult {
     pub reason: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub approval_id: Option<String>,
+    /// An optional, non-secret identifier for approval telemetry.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub audit_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub metadata: Option<HashMap<String, serde_json::Value>>,
 }
 
 impl ApprovalResult {
+    pub(crate) fn observable_id(&self, resume_credential: Option<&str>) -> Option<&str> {
+        self.audit_id
+            .as_deref()
+            .filter(|id| Some(*id) != self.approval_id.as_deref() && Some(*id) != resume_credential)
+    }
+
     /// An `"approved"` result attributed to `by`.
     ///
     /// ```
@@ -103,6 +112,7 @@ impl ApprovalResult {
             approved_by: Some(by.into()),
             reason: None,
             approval_id: None,
+            audit_id: None,
             metadata: None,
         }
     }
@@ -123,6 +133,7 @@ impl ApprovalResult {
             approved_by: None,
             reason: Some(reason.into()),
             approval_id: None,
+            audit_id: None,
             metadata: None,
         }
     }
@@ -139,6 +150,17 @@ pub trait ApprovalHandler: Send + Sync + std::fmt::Debug {
 
     /// Check the current status of a pending approval by ID.
     async fn check_approval(&self, approval_id: &str) -> Result<ApprovalResult, ModuleError>;
+
+    /// Validate the current call's identity, target and arguments, then consume the approval.
+    async fn check_approval_for_call(
+        &self,
+        _approval_id: &str,
+        _request: &ApprovalRequest,
+    ) -> Result<ApprovalResult, ModuleError> {
+        Ok(ApprovalResult::rejected(
+            "The approval handler does not support scoped resumption",
+        ))
+    }
 }
 
 /// An approval handler that automatically approves all requests.

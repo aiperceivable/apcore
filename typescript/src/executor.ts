@@ -11,7 +11,7 @@ import {
   resolveRedactionReference,
   type RedactionReferenceContext,
 } from './utils/redaction-references.js';
-import type { ApprovalHandler } from './approval.js';
+import { type ApprovalHandler, discardApprovalToken, prepareApprovalInputs, stripApprovalToken } from './approval.js';
 import type { ExecutionPolicy } from './policy.js';
 import {
   BuiltinACLCheck,
@@ -24,16 +24,17 @@ import {
   buildTestingStrategy,
 } from './builtin-steps.js';
 import type { StandardStrategyDeps } from './builtin-steps.js';
-import { awaitExecution, ExecutionCancelledError } from './cancel.js';
+import { awaitExecution, CancelToken, ExecutionCancelledError } from './cancel.js';
 import { finishCall, trackExecution } from './execution-lifetime.js';
 import type { Config } from './config.js';
-import { buildStrategyFromConfigSync } from './pipeline-config.js';
+import { buildStrategyFromConfigSync, ConfigurationError } from './pipeline-config.js';
 // Import directly from emitter.js (browser-safe) — NOT events/index.js, which
 // re-exports subscribers.ts (Node-only: node:fs, process) and would drag
 // Node-only code into the browser dependency graph.
 import { type EventEmitter, createEvent } from './events/emitter.js';
 import { Context } from './context.js';
 import { governanceUnion } from './schema/annotations.js';
+import { sourceSchemaFor } from './schema/loader-pure.js';
 import { RedactionConfig } from './observability/context-logger.js';
 import {
   ContextBindingError,
@@ -74,6 +75,7 @@ import {
 } from './pipeline.js';
 import { MAX_MODULE_ID_LENGTH, MODULE_ID_PATTERN } from './registry/registry.js';
 import type { Registry } from './registry/registry.js';
+import { createStreamExecution, StreamCompletionTracker, type StreamExecution } from './stream-completion.js';
 import { DEFAULT_TOGGLE_STATE, type ToggleState } from './sys-modules/toggle.js';
 import { propagateError } from './utils/error-propagation.js';
 import { normalizeModuleObject } from './utils/module-output.js';
@@ -180,7 +182,8 @@ export function redactSensitive(
   rules?: RedactionConfig | null,
 ): Record<string, unknown> {
   const redacted = (captureRedactableValue(data, new Set()) ?? {}) as Record<string, unknown>;
-  redactFields(redacted, schemaDict, createRedactionReferenceContext(schemaDict));
+  const sourceSchema = sourceSchemaFor(schemaDict);
+  redactFields(redacted, sourceSchema, createRedactionReferenceContext(sourceSchema));
   redactSecretPrefix(redacted);
   const configured = rules ?? RedactionConfig.default();
   return configured.redact(redacted) as Record<string, unknown>;
@@ -437,6 +440,31 @@ function bindExecutorToCtx<C>(ctx: C, executor: unknown): C {
     : c._withExecutor(executor)) as C;
 }
 
+/** Bound a stream operation, preserving ownership of work that outlives interruption. */
+async function awaitStreamOperation<T>(
+  start: () => Promise<T>,
+  context: Context,
+  moduleId: string,
+  retryable: boolean,
+): Promise<T> {
+  const token = context.cancelToken;
+  const deadline = context.globalDeadline;
+  const checkInterruption = (): number => {
+    if (context.signal.aborted) throw new ExecutionCancelledError();
+    const remainingMs = deadline === null ? 0 : deadline * 1000 - Date.now();
+    if (deadline !== null && remainingMs <= 0) {
+      token?.cancel();
+      throw new ModuleTimeoutError(moduleId, 0, { retryable });
+    }
+    return Math.ceil(remainingMs);
+  };
+
+  const timeoutMs = checkInterruption();
+  const result = await awaitExecution(start(), token, moduleId, timeoutMs, retryable);
+  checkInterruption();
+  return result;
+}
+
 /** Bound each pull while retaining the physical producer until its queued close settles. */
 async function* streamWithinDeadline(
   stream: AsyncGenerator<Record<string, unknown>>,
@@ -449,16 +477,7 @@ async function* streamWithinDeadline(
   let interrupted = false;
   try {
     for (;;) {
-      const deadline = context.globalDeadline;
-      const remaining = deadline === null ? 0 : deadline * 1000 - Date.now();
-      if (context.signal.aborted) throw new ExecutionCancelledError();
-      if (deadline !== null && remaining <= 0) {
-        token?.cancel();
-        throw new ModuleTimeoutError(moduleId, 0, { retryable });
-      }
-      const next = await awaitExecution(
-        stream.next(), token, moduleId, Math.ceil(remaining), retryable,
-      );
+      const next = await awaitStreamOperation(() => stream.next(), context, moduleId, retryable);
       if (next.done) {
         complete = true;
         return;
@@ -544,17 +563,9 @@ export class Executor {
           this._buildStrategyDeps(),
         );
         if (deferred.length > 0) {
-          // A `handler:` step is an ESM specifier and needs `await import()`,
-          // which a synchronous constructor cannot do. Reported rather than
-          // dropped: omitting it silently is the defect §5.16 requirement 6
-          // exists to remove, and throwing would stop a project from starting
-          // over a step that has never once run.
-          console.warn(
-            `[apcore] ${deferred.length} pipeline step(s) declare a 'handler:' target and ` +
-              `were NOT inserted: ${deferred.join(', ')}. Handler targets are ESM specifiers ` +
-              `and need an await, which the Executor constructor cannot do — build the ` +
-              `strategy with the async buildStrategyFromConfig() and pass it as ` +
-              `options.strategy. Steps declared with 'type:' were inserted normally.`,
+          throw new ConfigurationError(
+            `The Executor cannot load asynchronous pipeline handlers during construction: ${deferred.join(', ')}. ` +
+              'Use await buildStrategyFromConfig() and pass the completed strategy as options.strategy.',
           );
         }
         this._strategy = strategy;
@@ -594,7 +605,7 @@ export class Executor {
     // The instance and registered-name branches above never passed them, so a
     // deny-all ACL given here let every call through while governanceState()
     // reported the gate as configured and wired.
-    this._bindProviders();
+    this._strategy = this._bindProviders(this._strategy);
 
     this._pipelineEngine = new PipelineEngine();
   }
@@ -609,22 +620,29 @@ export class Executor {
    * hold leaves the step's provider untouched, so a strategy built with its
    * own ACL keeps enforcing it.
    *
-   * Mutates the step objects of the strategy it is given. A strategy instance
-   * shared between executors therefore carries the providers of the executor
-   * that bound it last — the same effect `setAcl()` has always had.
+   * Copy built-in gates before attaching providers. A named strategy or a
+   * caller-supplied strategy can be reused by independent executors.
    */
-  private _bindProviders(strategy: ExecutionStrategy = this._strategy): void {
-    for (const step of strategy.steps) {
-      if (this._eventEmitterConfigured && (step instanceof BuiltinACLCheck || step instanceof BuiltinApprovalGate)) {
-        step.setEventEmitter(this._eventEmitter);
-      }
-      if (step instanceof BuiltinACLCheck) {
-        if (this._acl !== null) step.setAcl(this._acl);
-      } else if (step instanceof BuiltinApprovalGate) {
-        if (this._approvalHandler !== null) step.setApprovalHandler(this._approvalHandler);
-        if (this._policy !== null) step.setPolicy(this._policy);
-      }
+  private _bindProviders(strategy: ExecutionStrategy): ExecutionStrategy {
+    if (!strategy.steps.some((step) => step instanceof BuiltinACLCheck || step instanceof BuiltinApprovalGate)) {
+      return strategy;
     }
+    return strategy.mapSteps((step) => {
+      if (step instanceof BuiltinACLCheck) {
+        const gate = step.copy();
+        if (this._eventEmitterConfigured) gate.setEventEmitter(this._eventEmitter);
+        if (this._acl !== null) gate.setAcl(this._acl);
+        return gate;
+      }
+      if (step instanceof BuiltinApprovalGate) {
+        const gate = step.copy();
+        if (this._eventEmitterConfigured) gate.setEventEmitter(this._eventEmitter);
+        if (this._approvalHandler !== null) gate.setApprovalHandler(this._approvalHandler);
+        if (this._policy !== null) gate.setPolicy(this._policy);
+        return gate;
+      }
+      return step;
+    });
   }
 
   /** Build the dependency bag for strategy factories. */
@@ -992,7 +1010,7 @@ export class Executor {
   ): Promise<[Record<string, unknown>, PipelineTrace]> {
     this._validateModuleId(moduleId);
     // Per-call strategies use the providers owned by this executor (D-129).
-    if (strategy !== this._strategy) this._bindProviders(strategy);
+    if (strategy !== this._strategy) strategy = this._bindProviders(strategy);
 
     // Issue #66: auto-bind executor to context on every entry. withExecutor
     // is idempotent for the same instance and raises ContextBindingError on
@@ -1021,6 +1039,7 @@ export class Executor {
     try {
       while (true) {
         try {
+          prepareApprovalInputs(pipeCtx);
           const [output, trace] = await this._pipelineEngine.run(strategy, pipeCtx);
           return [(output ?? {}) as Record<string, unknown>, trace];
         } catch (exc) {
@@ -1061,11 +1080,14 @@ export class Executor {
         }
       }
     } finally {
+      discardApprovalToken(pipeCtx);
       this._finishCallContext(pipeCtx.context, ctx);
     }
   }
 
   private _finishCallContext(context: Context, parent: Context): void {
+    // A pipeline can stop before creating its invocation context.
+    if (context === parent) return;
     finishCall(context);
     if (context.cancelToken !== parent.cancelToken) context.cancelToken?.dispose();
   }
@@ -1087,6 +1109,8 @@ export class Executor {
     pipeCtx.output = null;
     pipeCtx.validatedOutput = null;
     pipeCtx.executedMiddlewares = [];
+    pipeCtx.aclAllowed = undefined;
+    pipeCtx.aclApprovalRequired = undefined;
   }
 
   /**
@@ -1144,6 +1168,30 @@ export class Executor {
     context?: Context | null,
     versionHint?: string | null,
   ): AsyncGenerator<Record<string, unknown>> {
+    yield* this._stream(moduleId, inputs, context, versionHint);
+  }
+
+  /** Open a lazy, single-invocation stream and its independent completion receipt. */
+  streamWithCompletion(
+    moduleId: string,
+    inputs?: Record<string, unknown> | null,
+    context?: Context | null,
+    versionHint?: string | null,
+  ): StreamExecution {
+    const parent = context ?? Context.create();
+    const token = new CancelToken(parent.cancelToken);
+    const tracker = new StreamCompletionTracker(this._strategy.steps.map((step) => step.name));
+    const chunks = this._stream(moduleId, inputs, parent._withCancellationScope(token), versionHint, tracker);
+    return createStreamExecution(chunks, token, moduleId, tracker, parent.globalDeadline);
+  }
+
+  private async *_stream(
+    moduleId: string,
+    inputs?: Record<string, unknown> | null,
+    context?: Context | null,
+    versionHint?: string | null,
+    tracker?: StreamCompletionTracker,
+  ): AsyncGenerator<Record<string, unknown>> {
     this._validateModuleId(moduleId);
 
     // Issue #66: auto-bind executor (see call() for rationale).
@@ -1162,12 +1210,33 @@ export class Executor {
       strategy: this._strategy,
       trace: null,
       versionHint: versionHint ?? null,
+      ...(tracker && { onContextReady: (context: Context) => tracker.armDeadline?.(context.globalDeadline) }),
     };
+    if (tracker) tracker.context = pipeCtx;
+    const observeStep = (name: string, phase: 'before_hooks' | 'before_execute'): void => {
+      if (tracker || pipeCtx.outputStream != null) pipeCtx.context.cancelToken?.check();
+      if (!tracker) return;
+      if (phase === 'before_hooks') {
+        if (tracker.inPostProcessing || name === 'output_validation' || name === 'middleware_after' || name === 'return_result') {
+          tracker.watchPostCancellation?.(pipeCtx.context.cancelToken);
+        }
+        return;
+      }
+      if (name === 'output_validation' ||
+          (tracker.output === null && (name === 'middleware_after' || name === 'return_result'))) {
+        const output = pipeCtx.output;
+        if (output !== null) tracker.output = copyChunkValue(output) as Record<string, unknown>;
+      }
+    };
+    const pipeline = this._pipelineEngine.runWithPause(
+      this._strategy, pipeCtx, () => pipeCtx.outputStream != null, observeStep,
+    );
 
     try {
-      // Phase 1: Run the full pipeline. BuiltinExecute detects ctx.stream=true.
+      // Run through producer creation, or finish the unary fallback.
       try {
-        await this._pipelineEngine.run(this._strategy, pipeCtx);
+        prepareApprovalInputs(pipeCtx);
+        await pipeline.next();
       } catch (exc) {
         if (exc instanceof ExecutionCancelledError) throw exc;
         const ctxObj = pipeCtx.context;
@@ -1193,6 +1262,10 @@ export class Executor {
           // mid-flight is not well-defined. Fall through to throwing the wrapped
           // error so the caller sees a normal failure (sync finding A-D-017).
           if (recovery !== null && !(recovery instanceof RetrySignal)) {
+            if (tracker) {
+              tracker.terminalErrorCode = wrapped.code;
+              tracker.output = null;
+            }
             yield recovery;
             return;
           }
@@ -1201,8 +1274,11 @@ export class Executor {
       }
 
       // If no outputStream, pipeline already executed normally — yield single result
+      if (tracker) pipeCtx.context.cancelToken?.check();
       if (pipeCtx.outputStream == null) {
-        yield (pipeCtx.output ?? {}) as Record<string, unknown>;
+        const output = pipeCtx.output ?? {};
+        if (tracker && tracker.output === null) tracker.output = copyChunkValue(output) as Record<string, unknown>;
+        yield output;
         return;
       }
 
@@ -1260,6 +1336,7 @@ export class Executor {
           );
           // RetrySignal not supported mid-stream (sync finding A-D-017).
           if (recovery !== null && !(recovery instanceof RetrySignal)) {
+            if (tracker) tracker.terminalErrorCode = wrapped.code;
             yield recovery;
             return;
           }
@@ -1267,69 +1344,76 @@ export class Executor {
         throw wrapped;
       }
 
-      // Phase 3: Output validation + middleware_after on accumulated result
+      // Resume the configured pipeline with the merged result and original trace.
+      if (tracker) tracker.inPostProcessing = true;
       pipeCtx.output = accumulated;
-      const postSteps = this._strategy.steps.filter(
-        (s) =>
-          s.name === 'output_validation' ||
-          s.name === 'middleware_after' ||
-          s.name === 'return_result',
-      );
-      if (postSteps.length > 0) {
-        // The post-stream sub-strategy starts with module + output already
-        // populated on pipeCtx (set by Phase 1 / Phase 2 above), so seed those
-        // names into the dependency check (§2.1).
-        const postStrategy = new ExecutionStrategy('post_stream', postSteps, {
-          seedProvides: ['module', 'output'],
-        });
-        try {
-          await this._pipelineEngine.run(postStrategy, pipeCtx);
-        } catch (exc) {
-          // Chunks are already delivered to the caller and cannot be recalled.
-          // Swallow the phase-3 error and log a warning — matches apcore-python
-          // executor.py which emits an ApCoreEvent("apcore.stream.post_validation_failed")
-          // and does NOT re-raise (sync finding A-D-012 / A-D-006).
-          //
-          // STR-4 / CAN-002: cancellation is the ONE exception (D-20 — a
-          // cancellation must never be swallowed), and the check has to run on
-          // the UNWRAPPED error. The engine wraps every step failure in
-          // `PipelineStepError` (pipeline.ts:1109), so an
-          // `ExecutionCancelledError` raised inside a phase-3 step arrived here
-          // already wrapped and the guard — which used to sit above this unwrap
-          // — never matched. The one error that must always reach the caller was
-          // being swallowed with all the others, invisibly, because the guard
-          // that says otherwise was still right there in the source.
-          const ctxObj = pipeCtx.context;
-          const unwrappedPost =
-            exc instanceof PipelineStepError ? (exc.cause instanceof Error ? exc.cause : exc) : exc;
-          if (unwrappedPost instanceof ExecutionCancelledError) throw unwrappedPost;
-          const wrapped = propagateError(unwrappedPost as Error, moduleId, ctxObj);
-          // A-D-006: when an EventEmitter is wired, emit the post-validation-failed
-          // event so observers/trace exporters surface the failure (mirrors
-          // apcore-python executor.py:1096).
-          if (this._eventEmitter !== null) {
-            const cause = unwrappedPost instanceof Error ? unwrappedPost : (wrapped as Error);
-            this._eventEmitter.emit(
-              createEvent('apcore.stream.post_validation_failed', moduleId, 'error', {
-                error_type: cause.constructor?.name ?? 'Error',
-                message: cause.message,
-                trace_id: ctxObj?.traceId ?? null,
-              }),
-            );
-          }
-          // Sync finding A-D-011: phase-3 errors must NOT invoke middleware
-          // `on_error` once chunks have already been yielded. The middleware
-          // recovery contract is "produce a recovery output before any output is
-          // visible"; running on_error after partial-output emission breaks that
-          // contract. apcore-python and apcore-rust only log/emit at this point;
-          // TS now matches.
-          console.warn(
-            `[apcore:executor] stream phase-3 failure for '${moduleId}' (chunks already delivered): ${wrapped.message}`,
+      let postProcessingFailed = false;
+      try {
+        if (tracker) {
+          await pipeline.next();
+        } else {
+          const context = pipeCtx.context;
+          await awaitStreamOperation(
+            () => pipeline.next(),
+            context, moduleId, isModuleIdempotent(pipeCtx.module),
           );
-          // Do not rethrow — phase-3 errors are swallowed per spec.
+        }
+      } catch (exc) {
+        postProcessingFailed = true;
+        if (exc instanceof ModuleTimeoutError) throw exc;
+        // Chunks are already delivered to the caller and cannot be recalled.
+        // Swallow the phase-3 error and log a warning — matches apcore-python
+        // executor.py which emits an ApCoreEvent("apcore.stream.post_validation_failed")
+        // and does NOT re-raise (sync finding A-D-012 / A-D-006).
+        //
+        // D-20: step- and middleware-wrapped cancellations also reach the caller.
+        const ctxObj = pipeCtx.context;
+        const unwrapped =
+          exc instanceof PipelineStepError ? (exc.cause instanceof Error ? exc.cause : exc) : exc;
+        const underlying = unwrapped instanceof MiddlewareChainError ? unwrapped.original : unwrapped;
+        if (underlying instanceof ModuleError && underlying.code === 'EXECUTION_CANCELLED') {
+          throw underlying;
+        }
+        const unwrappedPost = tracker ? underlying : unwrapped;
+        const wrapped = propagateError(unwrappedPost as Error, moduleId, ctxObj);
+        if (tracker) {
+          const failed = tracker.context?.trace?.steps.at(-1);
+          const reportedStep = failed?.result.action === 'abort' &&
+            (failed.name === 'output_validation' || failed.name === 'middleware_after');
+          if (!reportedStep) tracker.terminalErrorCode = wrapped.code;
+        }
+        // A-D-006: when an EventEmitter is wired, emit the post-validation-failed
+        // event so observers/trace exporters surface the failure (mirrors
+        // apcore-python executor.py:1096).
+        if (this._eventEmitter !== null) {
+          const cause = unwrappedPost instanceof Error ? unwrappedPost : (wrapped as Error);
+          this._eventEmitter.emit(
+            createEvent('apcore.stream.post_validation_failed', moduleId, 'error', {
+              error_type: cause.constructor?.name ?? 'Error',
+              message: cause.message,
+              trace_id: ctxObj?.traceId ?? null,
+            }),
+          );
+        }
+        // Sync finding A-D-011: phase-3 errors must NOT invoke middleware
+        // `on_error` once chunks have already been yielded. The middleware
+        // recovery contract is "produce a recovery output before any output is
+        // visible"; running on_error after partial-output emission breaks that
+        // contract. apcore-python and apcore-rust only log/emit at this point;
+        // TS now matches.
+        console.warn(
+          `[apcore:executor] stream phase-3 failure for '${moduleId}' (chunks already delivered): ${wrapped.message}`,
+        );
+        // Do not rethrow — phase-3 errors are swallowed per spec.
+      }
+      if (tracker) {
+        pipeCtx.context.cancelToken?.check();
+        if (!postProcessingFailed && tracker.output === null) {
+          tracker.output = copyChunkValue(accumulated) as Record<string, unknown>;
         }
       }
     } finally {
+      discardApprovalToken(pipeCtx);
       this._finishCallContext(pipeCtx.context, ctx);
     }
   }
@@ -1346,7 +1430,7 @@ export class Executor {
     inputs?: Record<string, unknown> | null,
     context?: Context | null,
   ): Promise<PreflightResult> {
-    const effectiveInputs = inputs ?? {};
+    const effectiveInputs = stripApprovalToken(inputs ?? {});
     const checks: PreflightCheckResult[] = [];
 
     // Check 0: module_id format (before pipeline)
@@ -1455,23 +1539,16 @@ export class Executor {
         // declared in a `*_meta.yaml` / `metadata` source — and the gate, now
         // reading the union, would stop the call the preflight waved through.
         // That disagreement is the one thing this method exists to prevent.
-        const governance = governanceUnion(
-          mod['annotations'],
-          this._registry.getDeclaredAnnotations(moduleId),
-        );
-        if (this._policy !== null) {
+        const governance = governanceUnion(mod['annotations'], pipeCtx.declaredAnnotations);
+        const gate = this._strategy.steps.find((step) => step instanceof BuiltinApprovalGate);
+        const policy = gate instanceof BuiltinApprovalGate ? gate.policy : this._policy;
+        if (policy !== null) {
           // Policy overrides win over declared annotations (apcore#76), so
           // preflight reports the same verdict the gate will enforce.
-          // §7.9.6 rule 5: `_approval_token` is a protocol-level key, not caller
-          // input, and MUST be stripped BEFORE policy resolution — §7.4's
-          // "before passing to subsequent steps" does not reach a decision made
-          // inside Step 5. Leaving it in place puts a token into the audit trail
-          // and the apcore.policy.override payload.
-          const { _approval_token: _policyToken, ...policyArguments } = effectiveInputs;
-          requiresApproval = this._policy.resolve(moduleId, governance, {
+          requiresApproval = policy.resolve(moduleId, governance, {
             // §7.9.6: preflight resolves against the same call site the gate
             // will see, so the reported verdict matches the enforced one.
-            arguments: policyArguments,
+            arguments: effectiveInputs,
             context: validateCtx,
           }).needsApproval;
         } else {
@@ -1505,7 +1582,9 @@ export class Executor {
       // suppress introspection, because a caller the ACL permits is entitled to
       // the module's account of what would happen even when its inputs are
       // malformed.
-      const aclDenied = checks.some((c) => c.check === Executor.ACL_CHECK && !c.passed);
+      const aclEnforced = this._strategy.steps.some((step) => step instanceof BuiltinACLCheck && step.acl !== null);
+      const aclDenied = (aclEnforced && pipeCtx.aclAllowed !== true)
+        || checks.some((c) => c.check === Executor.ACL_CHECK && !c.passed);
 
       // Module-level preflight (optional)
       if (!aclDenied && pipeCtx.module != null) {

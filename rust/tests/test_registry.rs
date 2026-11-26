@@ -1296,6 +1296,89 @@ async fn watch_re_runs_discover_on_file_change() {
 }
 
 #[tokio::test]
+async fn watch_loads_new_dependency_before_replacing_module() {
+    use apcore::registry::registry::{DependencyInfo, DiscoveredModule, Discoverer};
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    struct UpdatedDiscoverer(Vec<DiscoveredModule>);
+
+    #[async_trait]
+    impl Discoverer for UpdatedDiscoverer {
+        async fn discover(&self, _: &[String]) -> Result<Vec<DiscoveredModule>, ModuleError> {
+            Ok(self.0.clone())
+        }
+    }
+
+    let tmp = tempfile::tempdir().unwrap();
+    let dependent_path = tmp.path().join("dependent.txt");
+    let registry = Arc::new(Registry::new());
+    registry
+        .register(
+            "executor.dependent",
+            Box::new(StubModule),
+            make_descriptor("executor.dependent"),
+        )
+        .unwrap();
+
+    let mut updated = make_descriptor("executor.dependent");
+    updated.version = "2.0.0".to_owned();
+    updated.dependencies.push(DependencyInfo {
+        module_id: "common.provider".to_owned(),
+        version_constraint: ">=1.0.0".to_owned(),
+        optional: false,
+    });
+    registry.set_extension_roots(vec![tmp.path().to_string_lossy().into_owned()]);
+    registry.set_discoverer(Box::new(UpdatedDiscoverer(vec![
+        DiscoveredModule {
+            name: "common.provider".to_owned(),
+            source: tmp
+                .path()
+                .join("provider.txt")
+                .to_string_lossy()
+                .into_owned(),
+            descriptor: make_descriptor("common.provider"),
+            module: Arc::new(StubModule),
+        },
+        DiscoveredModule {
+            name: "executor.dependent".to_owned(),
+            source: dependent_path.to_string_lossy().into_owned(),
+            descriptor: updated,
+            module: Arc::new(StubModule),
+        },
+    ])));
+
+    let (published, mut events) = tokio::sync::mpsc::unbounded_channel();
+    registry
+        .on(
+            "register",
+            Box::new(move |id, _| {
+                let _ = published.send(id.to_owned());
+            }),
+        )
+        .unwrap();
+    registry.watch().await.unwrap();
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    std::fs::write(dependent_path, "updated").unwrap();
+
+    let actual = tokio::time::timeout(Duration::from_secs(3), async {
+        [events.recv().await.unwrap(), events.recv().await.unwrap()]
+    })
+    .await
+    .expect("watch must publish both the new provider and the updated dependent");
+    assert_eq!(actual, ["common.provider", "executor.dependent"]);
+    assert_eq!(
+        registry
+            .get_definition("executor.dependent")
+            .unwrap()
+            .unwrap()
+            .version,
+        "2.0.0"
+    );
+    registry.unwatch();
+}
+
+#[tokio::test]
 async fn safe_unregister_waits_for_acquire_drain() {
     use std::sync::Arc;
     use std::time::Duration;

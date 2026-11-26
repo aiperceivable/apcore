@@ -34,6 +34,7 @@ pub use yaml_config::{
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use parking_lot::Mutex;
 
@@ -45,6 +46,44 @@ use crate::events::emitter::{ApCoreEvent, EventEmitter};
 use crate::observability::metrics::{
     extract_module_call_counts, extract_module_latency_stats, MetricsCollector,
 };
+
+/// Monotonic middleware timing owned by the invocation. Standalone hooks can
+/// still record elapsed time when called with an unbound context.
+#[derive(Debug, Default)]
+pub(crate) struct CallTimer {
+    standalone: Mutex<HashMap<(usize, String), Instant>>,
+}
+
+impl CallTimer {
+    pub(crate) fn start(&self, module_id: &str, context: &Context<serde_json::Value>) {
+        if let Some(token) = context.cancel_token.as_ref() {
+            token.start_middleware_timing(std::ptr::from_ref(self) as usize);
+        } else {
+            self.standalone.lock().insert(
+                (std::ptr::from_ref(context) as usize, module_id.to_owned()),
+                Instant::now(),
+            );
+        }
+    }
+
+    pub(crate) fn finish(
+        &self,
+        module_id: &str,
+        context: &Context<serde_json::Value>,
+    ) -> Option<Duration> {
+        if let Some(token) = context.cancel_token.as_ref() {
+            return token
+                .take_middleware_timing(std::ptr::from_ref(self) as usize)
+                .map(|start| start.elapsed());
+        }
+        Some(
+            self.standalone
+                .lock()
+                .remove(&(std::ptr::from_ref(context) as usize, module_id.to_owned()))
+                .map_or(Duration::ZERO, |start| start.elapsed()),
+        )
+    }
+}
 
 /// Platform notification middleware — monitors error rates and latency,
 /// emits threshold events with hysteresis.

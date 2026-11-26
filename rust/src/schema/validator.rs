@@ -6,12 +6,17 @@
 // the canonical-JSON form of the schema so repeated validation against the same
 // schema (or two byte-equivalent copies) only pays the compile cost once.
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use jsonschema::{error::ValidationErrorKind, Retrieve, Uri, Validator};
+use jsonschema::{
+    error::ValidationErrorKind,
+    paths::{LazyLocation, Location},
+    Keyword, Retrieve, Uri, ValidationError, Validator,
+};
 use parking_lot::Mutex;
-use serde_json::Value;
+use serde_json::{Map, Number, Value};
 
 use crate::errors::{ErrorCode, ModuleError, SchemaValidationError};
 use crate::module::{ValidationErrorDetail, ValidationResult};
@@ -300,9 +305,121 @@ pub(crate) fn build_validator(schema: &Value) -> Result<Validator, String> {
         // SchemaLoader owns the only filesystem-reference boundary. A host
         // enabling jsonschema's default Cargo features cannot add I/O here.
         .with_retriever(LocalSchemaOnly)
+        .with_keyword("multipleOf", DecimalMultipleOf::compile)
         .should_validate_formats(false)
         .build(&normalised)
         .map_err(|e| e.to_string())
+}
+
+struct DecimalNumber {
+    coefficient: u128,
+    exponent: i32,
+}
+
+impl DecimalNumber {
+    fn from_number(number: &Number) -> Option<Self> {
+        let text = number.to_string();
+        let magnitude = text.strip_prefix('-').unwrap_or(&text);
+        let (mantissa, power) = magnitude.split_once(['e', 'E']).unwrap_or((magnitude, "0"));
+        let (integer, fraction) = mantissa.split_once('.').unwrap_or((mantissa, ""));
+        let mut coefficient: u128 = format!("{integer}{fraction}").parse().ok()?;
+        let mut exponent = power
+            .parse::<i32>()
+            .ok()?
+            .checked_sub(i32::try_from(fraction.len()).ok()?)?;
+        while coefficient != 0 && coefficient % 10 == 0 {
+            coefficient /= 10;
+            exponent = exponent.checked_add(1)?;
+        }
+        Some(Self {
+            coefficient,
+            exponent,
+        })
+    }
+
+    fn is_multiple_of(&self, divisor: &Self) -> bool {
+        if self.coefficient == 0 {
+            return true;
+        }
+        let exponent_difference = i64::from(self.exponent) - i64::from(divisor.exponent);
+        // Normalized coefficients have no trailing zero, so the numerator
+        // cannot supply an extra factor of ten when its exponent is smaller.
+        if exponent_difference < 0 {
+            return false;
+        }
+        let mut denominator = divisor.coefficient;
+        // Cancel powers of ten from the numerator against prime factors of
+        // the denominator. This avoids constructing a large scaled integer.
+        for prime in [2, 5] {
+            let mut remaining = exponent_difference;
+            while remaining > 0 && denominator % prime == 0 {
+                denominator /= prime;
+                remaining -= 1;
+            }
+        }
+        self.coefficient % denominator == 0
+    }
+}
+
+struct DecimalMultipleOf {
+    divisor: DecimalNumber,
+    expected: f64,
+    schema_path: Location,
+}
+
+impl DecimalMultipleOf {
+    fn compile<'a>(
+        _: &'a Map<String, Value>,
+        schema: &'a Value,
+        schema_path: Location,
+    ) -> Result<Box<dyn Keyword>, ValidationError<'a>> {
+        if let Value::Number(number) = schema {
+            if let (Some(divisor), Some(expected)) = (
+                DecimalNumber::from_number(number),
+                number.as_f64().filter(|value| *value > 0.0),
+            ) {
+                return Ok(Box::new(Self {
+                    divisor,
+                    expected,
+                    schema_path,
+                }));
+            }
+        }
+        Err(ValidationError::custom(
+            schema_path,
+            Location::new(),
+            schema,
+            "multipleOf must be a positive number",
+        ))
+    }
+}
+
+impl Keyword for DecimalMultipleOf {
+    fn is_valid(&self, instance: &Value) -> bool {
+        match instance {
+            Value::Number(number) => DecimalNumber::from_number(number)
+                .is_some_and(|value| value.is_multiple_of(&self.divisor)),
+            _ => true,
+        }
+    }
+
+    fn validate<'i>(
+        &self,
+        instance: &'i Value,
+        location: &LazyLocation,
+    ) -> Result<(), ValidationError<'i>> {
+        if self.is_valid(instance) {
+            return Ok(());
+        }
+        Err(ValidationError {
+            instance: Cow::Borrowed(instance),
+            instance_path: location.into(),
+            kind: ValidationErrorKind::MultipleOf {
+                multiple_of: self.expected,
+            },
+            schema_path: self.schema_path.clone(),
+        })
+    }
 }
 
 struct LocalSchemaOnly;
@@ -547,12 +664,35 @@ pub(crate) fn constraint_name(kind: &ValidationErrorKind) -> Option<String> {
         ValidationErrorKind::Maximum { .. } => "maximum",
         ValidationErrorKind::ExclusiveMinimum { .. } => "exclusiveMinimum",
         ValidationErrorKind::ExclusiveMaximum { .. } => "exclusiveMaximum",
+        ValidationErrorKind::MultipleOf { .. } => "multipleOf",
         ValidationErrorKind::OneOfMultipleValid | ValidationErrorKind::OneOfNotValid => "oneOf",
         ValidationErrorKind::AnyOf => "anyOf",
         ValidationErrorKind::Not { .. } => "not",
         _ => return None,
     };
     Some(name.to_string())
+}
+
+/// Describe a validation failure without rendering the submitted value.
+pub(crate) fn safe_validation_message(error: &jsonschema::ValidationError<'_>) -> String {
+    match &error.kind {
+        ValidationErrorKind::PropertyNames { .. } => {
+            "A property name does not satisfy its schema".to_string()
+        }
+        ValidationErrorKind::BacktrackLimitExceeded { .. } => {
+            "The pattern match exceeded its evaluation limit".to_string()
+        }
+        ValidationErrorKind::FromUtf8 { .. } => "Value is not valid UTF-8".to_string(),
+        ValidationErrorKind::Custom { .. } => "Value failed a custom schema check".to_string(),
+        ValidationErrorKind::Constant { .. } => {
+            "Value does not match the required constant".to_string()
+        }
+        ValidationErrorKind::Enum { .. } => {
+            "Value is not one of the allowed enum values".to_string()
+        }
+        ValidationErrorKind::Not { .. } => "Value matched the negated schema".to_string(),
+        _ => error.masked().to_string(),
+    }
 }
 
 /// Render a single validator error as the legacy substring-friendly message format.
@@ -595,25 +735,10 @@ fn format_error_message(error: &jsonschema::ValidationError<'_>) -> String {
             msgs.join("; ")
         }
         ValidationErrorKind::Type { kind } => {
-            format!(
-                "{display_path}: expected type {kind:?}, got {}",
-                error.instance
-            )
+            format!("{display_path}: expected type {kind:?}")
         }
         ValidationErrorKind::Pattern { pattern } => {
             format!("{display_path}: value does not match pattern {pattern:?}")
-        }
-        ValidationErrorKind::Enum { .. } => {
-            format!(
-                "{display_path}: value {} is not one of the allowed enum values",
-                error.instance
-            )
-        }
-        ValidationErrorKind::Constant { expected_value } => {
-            format!(
-                "{display_path}: expected const {expected_value}, got {}",
-                error.instance
-            )
         }
         ValidationErrorKind::MinLength { limit } => {
             format!("{display_path}: minLength {limit} not satisfied")
@@ -645,7 +770,7 @@ fn format_error_message(error: &jsonschema::ValidationError<'_>) -> String {
         ValidationErrorKind::Not { schema: _ } => {
             format!("{display_path}: not — input matched the negated schema")
         }
-        _ => format!("{display_path}: {error}"),
+        _ => format!("{display_path}: {}", safe_validation_message(error)),
     }
 }
 

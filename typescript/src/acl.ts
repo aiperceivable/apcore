@@ -1583,12 +1583,11 @@ export class ACL {
    * The current rule list in definition order — the order `check()` evaluates
    * it in (PROTOCOL_SPEC §6.8).
    *
-   * Returns a frozen snapshot, never the ACL's own array: §6.8 rule 3 forbids
-   * handing out a reference through which a caller could mutate the enforced
-   * policy. Use {@link ACL.addRule} / {@link ACL.removeRule} to change it.
+   * The frozen array contains detached rules, including patterns and nested
+   * conditions. Use {@link ACL.addRule} / {@link ACL.removeRule} to change policy.
    */
   get rules(): readonly ACLRule[] {
-    return Object.freeze(this._rules.slice());
+    return Object.freeze(structuredClone(this._rules));
   }
 
   /**

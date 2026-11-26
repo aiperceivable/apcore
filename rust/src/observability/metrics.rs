@@ -616,17 +616,10 @@ impl Default for MetricsCollector {
 }
 
 /// Middleware that records execution metrics.
-///
-/// Per-trace start times are kept as a **stack** (`Vec<Instant>`) so a nested
-/// call sharing the same `trace_id` pushes its own start without clobbering the
-/// outer call's. `after`/`on_error` pop the innermost start (LIFO), so each
-/// frame records its own duration. Mirrors the per-context stack used by
-/// apcore-python / apcore-typescript (sync finding [obs-nested-timing]); before
-/// this fix a single-slot map made the parent record a 0ms duration.
 #[derive(Debug)]
 pub struct MetricsMiddleware {
     collector: MetricsCollector,
-    starts: Mutex<HashMap<String, Vec<std::time::Instant>>>,
+    timer: crate::middleware::CallTimer,
 }
 
 impl MetricsMiddleware {
@@ -635,28 +628,13 @@ impl MetricsMiddleware {
     pub fn new(collector: MetricsCollector) -> Self {
         Self {
             collector,
-            starts: Mutex::new(HashMap::new()),
+            timer: crate::middleware::CallTimer::default(),
         }
     }
 
     /// Get a reference to the underlying collector.
     pub fn collector(&self) -> &MetricsCollector {
         &self.collector
-    }
-
-    /// Pop the innermost (LIFO) start time for `trace_id` and return its elapsed
-    /// duration in seconds, or 0.0 if no matching start was recorded. Empty
-    /// stacks are removed to avoid unbounded growth of the map.
-    fn pop_duration_secs(&self, trace_id: &str) -> f64 {
-        let mut starts = self.starts.lock();
-        let Some(stack) = starts.get_mut(trace_id) else {
-            return 0.0;
-        };
-        let duration = stack.pop().map_or(0.0, |s| s.elapsed().as_secs_f64());
-        if stack.is_empty() {
-            starts.remove(trace_id);
-        }
-        duration
     }
 }
 
@@ -668,15 +646,11 @@ impl Middleware for MetricsMiddleware {
 
     async fn before(
         &self,
-        _module_id: &str,
+        module_id: &str,
         _inputs: serde_json::Value,
-        _ctx: &Context<serde_json::Value>,
+        ctx: &Context<serde_json::Value>,
     ) -> Result<Option<serde_json::Value>, ModuleError> {
-        let mut starts = self.starts.lock();
-        starts
-            .entry(_ctx.trace_id.clone())
-            .or_default()
-            .push(std::time::Instant::now());
+        self.timer.start(module_id, ctx);
         Ok(None)
     }
 
@@ -685,9 +659,12 @@ impl Middleware for MetricsMiddleware {
         module_id: &str,
         _inputs: serde_json::Value,
         _output: serde_json::Value,
-        _ctx: &Context<serde_json::Value>,
+        ctx: &Context<serde_json::Value>,
     ) -> Result<Option<serde_json::Value>, ModuleError> {
-        let duration_secs = self.pop_duration_secs(&_ctx.trace_id);
+        let Some(duration) = self.timer.finish(module_id, ctx) else {
+            return Ok(None);
+        };
+        let duration_secs = duration.as_secs_f64();
 
         self.collector.increment_calls(module_id, "success");
         self.collector.observe_duration(module_id, duration_secs);
@@ -699,15 +676,18 @@ impl Middleware for MetricsMiddleware {
         &self,
         module_id: &str,
         _inputs: serde_json::Value,
-        _error: &ModuleError,
-        _ctx: &Context<serde_json::Value>,
+        error: &ModuleError,
+        ctx: &Context<serde_json::Value>,
     ) -> Result<Option<serde_json::Value>, ModuleError> {
-        let duration_secs = self.pop_duration_secs(&_ctx.trace_id);
+        let Some(duration) = self.timer.finish(module_id, ctx) else {
+            return Ok(None);
+        };
+        let duration_secs = duration.as_secs_f64();
 
         // Use the canonical wire code (SCREAMING_SNAKE_CASE) for the metric
         // label, not Debug (PascalCase), for cross-language parity (sync
         // finding A-D-14).
-        let error_code = _error.code.wire_str();
+        let error_code = error.wire_code();
         self.collector.increment_calls(module_id, "error");
         self.collector.increment_errors(module_id, &error_code);
         self.collector.observe_duration(module_id, duration_secs);

@@ -1,7 +1,7 @@
 {
   "description": "Cross-language parity for JSON Schema keyword handling at the validation boundary (spec §4.15, JSON Schema 2020-12 §6 validation keywords, §10.2/§10.3 applicators and §11 unevaluated locations).",
   "driver_contract": {
-    "path": "MUST drive the same code path module invocation uses, i.e. the SDK's schema-to-native conversion followed by its validator — apcore-python generate_model() + model_validate(strict=True), apcore-typescript jsonSchemaToTypeBox() + SchemaValidator.validate(), apcore-rust validate_against_schema().",
+    "path": "MUST drive the module validation path. Exercise schema-to-native conversion and validation with apcore-python generate_model() + model_validate(strict=True), apcore-typescript jsonSchemaToTypeBox() + SchemaValidator.validate(), and apcore-rust validate_against_schema(). Cases marked exercise_module_boundary also drive public module calls in both directions with a directly declared JSON Schema. Assert payload preservation on success, error code and any expected_keyword on failure, and that rejected input prevents module execution.",
     "rationale": "An earlier generation of these fixtures drove only the raw-JSON-Schema validator (validate_schema_dict / Draft202012Validator). That path is not what a module call goes through, so an entire class of converter defects — dropped type members, discarded combinator siblings, vanished array constraints — was invisible to conformance for several releases. Driving the conversion is the whole point of this file.",
     "coercion": "The module-invocation boundary performs NO type coercion, in any SDK, under any host configuration (TYPE_MAPPING §17.3): a contract that declares `integer` receives an integer, and `\"42\"` is a type error. Drivers MUST run the boundary in that mode — apcore-python `model_validate(strict=True)`, apcore-typescript `new SchemaValidator(false)`, apcore-rust `validate_against_schema()`. \"No coercion\" is about instance TYPES, not renderings: `4.0` still satisfies `integer` (§6.1.1 — any number with a zero fractional part) and `42` still satisfies `number`. An SDK that exposes a `coerce_types` library knob may keep it, but it MUST NOT reach this path, and it is NOT a configuration-file setting. Cases that deliberately exercise the opt-in coercing mode live in schema_validation.json."
   },
@@ -3250,6 +3250,431 @@
         "xs": "nope"
       },
       "expected_valid": false
+    },
+    {
+      "id": "required_only_rejects_missing_key",
+      "schema": {
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "additionalProperties": {
+          "type": "string"
+        }
+      },
+      "input": {},
+      "expected_valid": false,
+      "exercise_module_boundary": true,
+      "expected_keyword": "required"
+    },
+    {
+      "id": "required_only_applies_additional_property_type",
+      "schema": {
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "additionalProperties": {
+          "type": "string"
+        }
+      },
+      "input": {
+        "name": 1
+      },
+      "expected_valid": false,
+      "exercise_module_boundary": true
+    },
+    {
+      "id": "required_only_accepts_typed_additional_property",
+      "schema": {
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "additionalProperties": {
+          "type": "string"
+        }
+      },
+      "input": {
+        "name": "sample"
+      },
+      "expected_valid": true,
+      "exercise_module_boundary": true
+    },
+    {
+      "id": "required_only_applies_closed_object",
+      "schema": {
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "additionalProperties": false
+      },
+      "input": {
+        "name": "sample"
+      },
+      "expected_valid": false,
+      "exercise_module_boundary": true,
+      "expected_keyword": "additionalProperties"
+    },
+    {
+      "id": "nested_required_only_rejects_missing_key",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "value": {
+            "type": "object",
+            "required": [
+              "name"
+            ],
+            "additionalProperties": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "value"
+        ]
+      },
+      "input": {
+        "value": {}
+      },
+      "expected_valid": false,
+      "exercise_module_boundary": true,
+      "expected_keyword": "required"
+    },
+    {
+      "id": "nested_required_only_applies_closed_object",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "value": {
+            "type": "object",
+            "required": [
+              "name"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "value"
+        ]
+      },
+      "input": {
+        "value": {
+          "name": "sample"
+        }
+      },
+      "expected_valid": false,
+      "exercise_module_boundary": true
+    },
+    {
+      "id": "contains_false_never_has_a_default_match",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "value": {
+            "type": "array",
+            "contains": false
+          }
+        },
+        "required": [
+          "value"
+        ]
+      },
+      "input": {
+        "value": [
+          1
+        ]
+      },
+      "expected_valid": false,
+      "exercise_module_boundary": true,
+      "expected_keyword": "contains"
+    },
+    {
+      "id": "contains_true_needs_a_default_match",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "value": {
+            "type": "array",
+            "contains": true
+          }
+        },
+        "required": [
+          "value"
+        ]
+      },
+      "input": {
+        "value": []
+      },
+      "expected_valid": false,
+      "exercise_module_boundary": true,
+      "expected_keyword": "contains"
+    },
+    {
+      "id": "contains_true_matches_every_item",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "value": {
+            "type": "array",
+            "contains": true
+          }
+        },
+        "required": [
+          "value"
+        ]
+      },
+      "input": {
+        "value": [
+          1
+        ]
+      },
+      "expected_valid": true,
+      "exercise_module_boundary": true
+    },
+    {
+      "id": "contains_false_accepts_zero_matches_when_permitted",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "value": {
+            "type": "array",
+            "contains": false,
+            "minContains": 0,
+            "maxContains": 0
+          }
+        },
+        "required": [
+          "value"
+        ]
+      },
+      "input": {
+        "value": [
+          1
+        ]
+      },
+      "expected_valid": true,
+      "exercise_module_boundary": true
+    },
+    {
+      "id": "contains_true_counts_matches_against_maximum",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "value": {
+            "type": "array",
+            "contains": true,
+            "minContains": 0,
+            "maxContains": 1
+          }
+        },
+        "required": [
+          "value"
+        ]
+      },
+      "input": {
+        "value": [
+          1,
+          2
+        ]
+      },
+      "expected_valid": false,
+      "exercise_module_boundary": true,
+      "expected_keyword": "maxContains"
+    },
+    {
+      "id": "decimal_multiple_of_accepts_exact_small_multiple",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "value": {
+            "type": "number",
+            "multipleOf": 0.01
+          }
+        },
+        "required": [
+          "value"
+        ]
+      },
+      "input": {
+        "value": 0.03
+      },
+      "expected_valid": true,
+      "exercise_module_boundary": true
+    },
+    {
+      "id": "decimal_multiple_of_accepts_exact_amount",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "value": {
+            "type": "number",
+            "multipleOf": 0.01
+          }
+        },
+        "required": [
+          "value"
+        ]
+      },
+      "input": {
+        "value": 1.01
+      },
+      "expected_valid": true,
+      "exercise_module_boundary": true
+    },
+    {
+      "id": "decimal_multiple_of_accepts_exact_amount_with_rounded_quotient",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "value": {
+            "type": "number",
+            "multipleOf": 0.01
+          }
+        },
+        "required": [
+          "value"
+        ]
+      },
+      "input": {
+        "value": 0.07
+      },
+      "expected_valid": true,
+      "exercise_module_boundary": true
+    },
+    {
+      "id": "decimal_multiple_of_rejects_nonmultiple",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "value": {
+            "type": "number",
+            "multipleOf": 0.01
+          }
+        },
+        "required": [
+          "value"
+        ]
+      },
+      "input": {
+        "value": 0.021
+      },
+      "expected_valid": false,
+      "exercise_module_boundary": true,
+      "expected_keyword": "multipleOf"
+    },
+    {
+      "id": "decimal_multiple_of_accepts_negative_exponent_form",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "value": {
+            "type": "number",
+            "multipleOf": 1e-07
+          }
+        },
+        "required": [
+          "value"
+        ]
+      },
+      "input": {
+        "value": -3e-07
+      },
+      "expected_valid": true,
+      "exercise_module_boundary": true
+    },
+    {
+      "id": "decimal_multiple_of_rejects_near_multiple",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "value": {
+            "type": "number",
+            "multipleOf": 0.01
+          }
+        },
+        "required": [
+          "value"
+        ]
+      },
+      "input": {
+        "value": 0.03000000001
+      },
+      "expected_valid": false,
+      "exercise_module_boundary": true,
+      "expected_keyword": "multipleOf"
+    },
+    {
+      "id": "decimal_multiple_of_rejects_negative_nonmultiple",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "value": {
+            "type": "number",
+            "multipleOf": 0.01
+          }
+        },
+        "required": [
+          "value"
+        ]
+      },
+      "input": {
+        "value": -0.021
+      },
+      "expected_valid": false,
+      "exercise_module_boundary": true,
+      "expected_keyword": "multipleOf"
+    },
+    {
+      "id": "decimal_multiple_of_inside_explicit_draft",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "value": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "type": "number",
+            "multipleOf": 0.01
+          }
+        },
+        "required": [
+          "value"
+        ]
+      },
+      "input": {
+        "value": 0.07
+      },
+      "expected_valid": true,
+      "exercise_module_boundary": true
+    },
+    {
+      "id": "decimal_multiple_of_inside_referenced_explicit_draft",
+      "schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "$defs": {
+          "amount": {
+            "$id": "urn:parity:amount",
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "type": "number",
+            "multipleOf": 0.01
+          }
+        },
+        "properties": {
+          "value": {
+            "$ref": "#/$defs/amount"
+          }
+        },
+        "required": [
+          "value"
+        ]
+      },
+      "input": {
+        "value": 0.07
+      },
+      "expected_valid": true,
+      "exercise_module_boundary": true
     }
   ]
 }

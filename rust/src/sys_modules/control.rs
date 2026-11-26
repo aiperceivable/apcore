@@ -13,23 +13,41 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
-use crate::config::Config;
+use crate::config::{canonical_config_key, Config};
 use crate::context::Context;
 use crate::errors::{ErrorCode, ModuleError};
 use crate::events::emitter::EventEmitter;
 use crate::module::Module;
-use crate::observability::redaction::DEFAULT_REPLACEMENT;
+use crate::observability::redaction::{RedactionConfig, DEFAULT_REPLACEMENT};
 use crate::registry::dependencies::resolve_dependencies;
 use crate::registry::registry::{Registry, DEFAULT_MODULE_VERSION};
 use crate::registry::types::DepInfo;
 use crate::utils::helpers::match_glob;
 
 use super::audit::{build_audit_entry, record_audit, AuditAction, AuditChange, AuditStore};
-use super::overrides::{persist_one, FileOverridesStore, OverridesStore};
+use super::overrides::{
+    normalize_config_overrides, persist_one, FileOverridesStore, OverridesStore,
+    TOGGLE_OVERRIDE_PREFIX,
+};
 use super::{
     augment_with_context_identity, emit_event, is_sensitive_key, missing_field_error,
     require_string, ToggleState, RESTRICTED_KEYS,
 };
+
+fn is_restricted_config_key(key: &str) -> bool {
+    key == "apcore"
+        || key == "toggle"
+        || key.starts_with(TOGGLE_OVERRIDE_PREFIX)
+        || RESTRICTED_KEYS.iter().any(|&restricted| {
+            key == restricted
+                || restricted
+                    .strip_prefix(key)
+                    .is_some_and(|tail| tail.starts_with('.'))
+                || key
+                    .strip_prefix(restricted)
+                    .is_some_and(|tail| tail.starts_with('.'))
+        })
+}
 
 async fn persist_control_override(
     store: Option<&dyn OverridesStore>,
@@ -49,13 +67,141 @@ async fn persist_control_override(
     }
 }
 
+fn redact_config_value(path: &str, value: &mut serde_json::Value, redaction: &RedactionConfig) {
+    if is_sensitive_key(path)
+        || redaction.field_matches(path)
+        || path.strip_prefix("apcore.").map_or_else(
+            || redaction.field_matches(&format!("apcore.{path}")),
+            |bare| redaction.field_matches(bare),
+        )
+        || path
+            .split('.')
+            .any(|segment| redaction.field_matches(segment))
+    {
+        *value = json!(DEFAULT_REPLACEMENT);
+        return;
+    }
+    match value {
+        serde_json::Value::Object(fields) => {
+            for (key, value) in fields {
+                redact_config_value(&format!("{path}.{key}"), value, redaction);
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for item in items {
+                redact_config_value(path, item, redaction);
+            }
+        }
+        _ => {}
+    }
+}
+
 // ---------------------------------------------------------------------------
 // UpdateConfigModule (F11) — runtime config mutation with optional persistence
 // ---------------------------------------------------------------------------
 
+#[derive(Clone)]
+pub(super) struct ControlConfig {
+    current: Arc<Mutex<Config>>,
+    executor: Option<Arc<Mutex<Config>>>,
+    // Serialize an update's persistence with reload's override read.
+    operation: Arc<Mutex<()>>,
+}
+
+impl ControlConfig {
+    pub(super) fn new(current: Arc<Mutex<Config>>, executor: Option<Arc<Mutex<Config>>>) -> Self {
+        Self {
+            current,
+            executor,
+            operation: Arc::new(Mutex::new(())),
+        }
+    }
+
+    async fn lock(
+        &self,
+    ) -> (
+        tokio::sync::MutexGuard<'_, Config>,
+        Option<tokio::sync::MutexGuard<'_, Config>>,
+    ) {
+        let current = self.current.lock().await;
+        let executor = match &self.executor {
+            Some(config) => Some(config.lock().await),
+            None => None,
+        };
+        (current, executor)
+    }
+}
+
+// These sections are read through the Executor's live configuration snapshot.
+fn is_executor_config_key(key: &str) -> bool {
+    matches!(key.split('.').next(), Some("executor" | "obs" | "stream"))
+}
+
+fn invalid_config_value(
+    key: &str,
+    value: &serde_json::Value,
+    reason: &str,
+    redaction: &RedactionConfig,
+) -> ModuleError {
+    let mut safe_value = value.clone();
+    redact_config_value(key, &mut safe_value, redaction);
+    let message = format!("Invalid value for '{key}': {reason} (got {safe_value})");
+    ModuleError::new(ErrorCode::ConfigInvalid, message).with_details(
+        [
+            ("key".to_owned(), json!(key)),
+            ("value".to_owned(), safe_value),
+        ]
+        .into_iter()
+        .collect(),
+    )
+}
+
+fn value_applied(
+    previous: Option<&serde_json::Value>,
+    read_back: Option<&serde_json::Value>,
+    requested: &serde_json::Value,
+) -> bool {
+    read_back.is_some_and(|current| {
+        Some(current) != previous
+            || current == requested
+            || (current.is_f64() && current.as_f64() == requested.as_f64())
+    })
+}
+
+fn refresh_snapshot(
+    mut config: Config,
+    require_source: bool,
+    source_less_baseline: Option<&Config>,
+    overrides: &std::collections::BTreeMap<String, serde_json::Value>,
+) -> Result<Config, ModuleError> {
+    let from_disk = require_source || config.yaml_path.is_some();
+    if from_disk {
+        // Startup-owned system modules stay wired according to the active configuration.
+        let enabled = config.get("sys_modules.enabled").unwrap_or(json!(false));
+        config.reload_from_disk()?;
+        config.set("sys_modules.enabled", enabled);
+    } else if let Some(baseline) = source_less_baseline {
+        // Replay persisted overrides from the supplied Executor's original
+        // configuration so a removed override exposes its baseline again.
+        let generation = config.generation;
+        config = baseline.clone();
+        config.generation = generation + 1;
+    }
+    for (key, value) in overrides {
+        let config_key = key.strip_prefix("apcore.").unwrap_or(key);
+        if !config_key.starts_with('_') && !is_restricted_config_key(config_key) {
+            config.set(key, value.clone());
+        }
+    }
+    if from_disk {
+        config.validate()?;
+    }
+    Ok(config)
+}
+
 /// Update a runtime configuration value by dot-path key (F11).
 pub struct UpdateConfigModule {
-    config: Arc<Mutex<Config>>,
+    config: ControlConfig,
     emitter: Arc<EventEmitter>,
     overrides_path: Option<PathBuf>,
     overrides_store: Option<Arc<dyn OverridesStore>>,
@@ -65,12 +211,17 @@ pub struct UpdateConfigModule {
 impl UpdateConfigModule {
     pub fn new(config: Arc<Mutex<Config>>, emitter: Arc<EventEmitter>) -> Self {
         Self {
-            config,
+            config: ControlConfig::new(config, None),
             emitter,
             overrides_path: None,
             overrides_store: None,
             audit_store: None,
         }
+    }
+
+    pub(super) fn with_control_config(mut self, config: ControlConfig) -> Self {
+        self.config = config;
+        self
     }
 
     #[must_use]
@@ -99,6 +250,53 @@ impl UpdateConfigModule {
         self.audit_store = audit_store;
         self
     }
+
+    async fn update_config(
+        &self,
+        key: &str,
+        effective_key: &str,
+        value: &serde_json::Value,
+    ) -> Result<(serde_json::Value, serde_json::Value), ModuleError> {
+        let (mut current, mut executor) = self.config.lock().await;
+        let redaction = RedactionConfig::from_config(&current);
+        let invalid = |reason: &str| invalid_config_value(key, value, reason, &redaction);
+        if Config::is_path_typed_key(effective_key) && value.as_str() == Some("") {
+            return Err(invalid("path-typed values cannot be empty"));
+        }
+        if let Some(Err(reason)) = Config::validate_key_constraint(effective_key, value) {
+            return Err(invalid(&reason));
+        }
+
+        let runtime_key = is_executor_config_key(effective_key);
+        let stage_write = |active: &Config| {
+            let before = active.get(effective_key);
+            let mut staged = active.clone();
+            staged.set(effective_key, value.clone());
+            let after = staged.get(effective_key);
+            if !value_applied(before.as_ref(), after.as_ref(), value) {
+                return Err(invalid(
+                    "the effective value would not change to the requested value",
+                ));
+            }
+            Ok((staged, before, after))
+        };
+        let (staged, mut before, mut after) = stage_write(&current)?;
+        if let Some(executor) = executor.as_mut() {
+            let (staged_executor, executor_before, executor_after) = stage_write(executor)?;
+            **executor = staged_executor;
+            if runtime_key {
+                before = executor_before;
+                after = executor_after;
+            }
+        }
+        *current = staged;
+
+        let mut before = before.unwrap_or(serde_json::Value::Null);
+        let mut after = after.unwrap_or(serde_json::Value::Null);
+        redact_config_value(key, &mut before, &redaction);
+        redact_config_value(key, &mut after, &redaction);
+        Ok((before, after))
+    }
 }
 
 #[async_trait]
@@ -113,7 +311,7 @@ impl Module for UpdateConfigModule {
             "required": ["key", "value", "reason"],
             "properties": {
                 "key":    {"type": "string"},
-                "value":  {},
+                "value":  {"x-sensitive": true},
                 "reason": {"type": "string"}
             }
         })
@@ -122,10 +320,12 @@ impl Module for UpdateConfigModule {
     fn output_schema(&self) -> serde_json::Value {
         json!({
             "type": "object",
+            "required": ["success", "key", "old_value", "new_value"],
+            "additionalProperties": false,
             "properties": {
                 "success":   {"type": "boolean"},
                 "key":       {"type": "string"},
-                "old_value": {},
+                "old_value": {"description": "Previous value, null if absent, or redacted for sensitive keys"},
                 "new_value": {}
             }
         })
@@ -143,7 +343,8 @@ impl Module for UpdateConfigModule {
             .cloned()
             .ok_or_else(|| missing_field_error("value"))?;
 
-        if RESTRICTED_KEYS.contains(&key.as_str()) {
+        let config_key = key.strip_prefix("apcore.").unwrap_or(&key);
+        if is_restricted_config_key(config_key) {
             // D-25: emit a distinct CONFIG_KEY_RESTRICTED code so callers can
             // match the policy-deny case independently of value-shape errors
             // (Python/TS already do this).
@@ -154,39 +355,9 @@ impl Module for UpdateConfigModule {
             .with_details([("key".to_string(), json!(key))].into_iter().collect()));
         }
 
-        // Ordered side-effects (system-modules.md §311-348):
-        //   1. read current value (old_value)
-        //   2. set key=value
-        //   3. validate the registered constraint for key (if any); on failure
-        //      roll back to old_value and raise ConfigError.
-        let old_value = {
-            let mut cfg = self.config.lock().await;
-            let old_value = cfg.get(&key);
-            cfg.set(&key, value.clone());
-
-            if let Some(Err(reason)) = Config::validate_key_constraint(&key, &value) {
-                // Roll back the in-memory mutation before surfacing the error so
-                // the runtime config is never left in a constraint-violating
-                // state. Mirrors apcore-python `_validate_post_set`.
-                match &old_value {
-                    Some(prev) => cfg.set(&key, prev.clone()),
-                    // No prior value: restore to JSON null so the bad write does
-                    // not linger. Python's `Config.set(key, None)` is equivalent.
-                    None => cfg.set(&key, serde_json::Value::Null),
-                }
-                drop(cfg);
-                // ConfigError maps to CONFIG_INVALID (apcore-python `ConfigError`).
-                let mut details = std::collections::HashMap::new();
-                details.insert("key".to_string(), json!(key));
-                details.insert("value".to_string(), value.clone());
-                return Err(ModuleError::new(
-                    ErrorCode::ConfigInvalid,
-                    format!("Invalid value for '{key}': {reason} (got {value})"),
-                )
-                .with_details(details));
-            }
-            old_value
-        };
+        let _operation = self.config.operation.lock().await;
+        let effective_key = canonical_config_key(&key);
+        let (redacted_old, redacted_new) = self.update_config(&key, effective_key, &value).await?;
 
         // Persist *after* the in-memory mutation succeeded so a write failure
         // cannot poison the runtime state. Errors are logged and not
@@ -195,27 +366,10 @@ impl Module for UpdateConfigModule {
         persist_control_override(
             self.overrides_store.as_deref(),
             self.overrides_path.as_deref(),
-            &key,
+            effective_key,
             &value,
         )
         .await;
-
-        // §1.2 + spec §F11 lines 337-339: redact `old_value`/`new_value` in the
-        // emitted event, the audit entry, and the response payload when `key`
-        // matches a sensitive segment. The in-memory `Config` still holds the
-        // real value — the sentinel only blocks egress to logs / events / audit
-        // store / RPC response.
-        let sensitive = is_sensitive_key(&key);
-        let redacted_old: serde_json::Value = if sensitive {
-            json!(DEFAULT_REPLACEMENT)
-        } else {
-            old_value.clone().unwrap_or(serde_json::Value::Null)
-        };
-        let redacted_new: serde_json::Value = if sensitive {
-            json!(DEFAULT_REPLACEMENT)
-        } else {
-            value.clone()
-        };
 
         let timestamp = chrono::Utc::now().to_rfc3339();
         // Issue #45.2 — contextual auditing: augment payload with caller_id
@@ -239,17 +393,13 @@ impl Module for UpdateConfigModule {
         )
         .await;
 
-        if sensitive {
-            tracing::info!(key = %key, reason = %reason, "Config updated: old_value=*** new_value=***");
-        } else {
-            tracing::info!(
-                key = %key,
-                old_value = ?old_value,
-                new_value = ?value,
-                reason = %reason,
-                "Config updated"
-            );
-        }
+        tracing::info!(
+            key = %key,
+            old_value = ?redacted_old,
+            new_value = ?redacted_new,
+            reason = %reason,
+            "Config updated"
+        );
 
         let entry = build_audit_entry(
             AuditAction::UpdateConfig,
@@ -295,7 +445,10 @@ pub struct ReloadModule {
     registry: Arc<Registry>,
     emitter: Arc<EventEmitter>,
     audit_store: Option<Arc<dyn AuditStore>>,
-    config: Option<Arc<Mutex<Config>>>,
+    config: Option<ControlConfig>,
+    executor_baseline: Option<Arc<Config>>,
+    overrides_path: Option<PathBuf>,
+    overrides_store: Option<Arc<dyn OverridesStore>>,
     /// Once per INSTANCE, not per process (D-121). `reload` is called by
     /// hot-reload loops and watchers, so an advisory whose volume is
     /// proportional to traffic is one operators learn to filter out — the
@@ -312,6 +465,9 @@ impl ReloadModule {
             emitter,
             audit_store: None,
             config: None,
+            executor_baseline: None,
+            overrides_path: None,
+            overrides_store: None,
             reload_dependents_warned: std::sync::atomic::AtomicBool::new(false),
         }
     }
@@ -456,8 +612,90 @@ impl ReloadModule {
     /// Issue #45.5.
     #[must_use]
     pub fn with_config(mut self, config: Option<Arc<Mutex<Config>>>) -> Self {
-        self.config = config;
+        self.config = config.map(|config| ControlConfig::new(config, None));
         self
+    }
+
+    pub(super) fn with_control_config(
+        mut self,
+        config: ControlConfig,
+        executor_baseline: Option<Arc<Config>>,
+        overrides_path: Option<PathBuf>,
+        overrides_store: Option<Arc<dyn OverridesStore>>,
+    ) -> Self {
+        self.config = Some(config);
+        self.executor_baseline = executor_baseline;
+        self.overrides_path = overrides_path;
+        self.overrides_store = overrides_store;
+        self
+    }
+
+    async fn refresh_config(&self, reason: &str) -> Result<(), ModuleError> {
+        let binding = self.config.as_ref().ok_or_else(|| {
+            ModuleError::new(
+                ErrorCode::ReloadFailed,
+                "No configuration is bound to reload_module",
+            )
+        })?;
+        let _operation = binding.operation.lock().await;
+        let overrides = if let Some(store) = &self.overrides_store {
+            store.load().await
+        } else if let Some(path) = &self.overrides_path {
+            FileOverridesStore::new(path).load().await
+        } else {
+            Ok(std::collections::HashMap::new())
+        }
+        .map_err(|error| {
+            ModuleError::new(
+                ErrorCode::ReloadFailed,
+                format!("Cannot reload configuration overrides: {error}"),
+            )
+        })?;
+        let overrides = normalize_config_overrides(overrides);
+        let executor_baseline = (self.overrides_path.is_some() || self.overrides_store.is_some())
+            .then(|| self.executor_baseline.clone())
+            .flatten();
+
+        {
+            let (mut config, mut executor) = binding.lock().await;
+            let current = config.clone();
+            let executor_current = executor.as_deref().cloned();
+            let stage = move || {
+                let config = refresh_snapshot(current, true, None, &overrides)?;
+                let executor = executor_current
+                    .map(|snapshot| {
+                        refresh_snapshot(snapshot, false, executor_baseline.as_deref(), &overrides)
+                    })
+                    .transpose()?;
+                Ok::<_, ModuleError>((config, executor))
+            };
+            let (staged, staged_executor) =
+                if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+                    runtime.spawn_blocking(stage).await.map_err(|error| {
+                        ModuleError::new(
+                            ErrorCode::ReloadFailed,
+                            format!("Configuration reload task failed: {error}"),
+                        )
+                    })?
+                } else {
+                    stage()
+                }?;
+            *config = staged;
+            if let (Some(active), Some(staged)) = (executor.as_mut(), staged_executor) {
+                **active = staged;
+            }
+        }
+
+        emit_event(
+            &self.emitter,
+            "apcore.config.reloaded",
+            "system.control.reload_module",
+            &chrono::Utc::now().to_rfc3339(),
+            json!({"reason": reason}),
+        )
+        .await;
+        tracing::info!(reason, "Config reloaded from disk");
+        Ok(())
     }
 
     /// Topologically sort the matched module IDs (leaves first). Falls back
@@ -933,14 +1171,40 @@ impl Module for ReloadModule {
     fn output_schema(&self) -> serde_json::Value {
         json!({
             "type": "object",
+            "required": ["success", "module_id"],
+            "additionalProperties": false,
             "properties": {
                 "success":            {"type": "boolean"},
                 "module_id":          {"type": ["string", "null"]},
-                "previous_version":   {"type": "string"},
-                "new_version":        {"type": "string"},
+                "previous_version":   {"type": ["string", "null"]},
+                "new_version":        {"type": ["string", "null"]},
                 "reload_duration_ms": {"type": "number"},
-                "reloaded_modules":   {"type": "array", "items": {"type": "string"}}
-            }
+                "reloaded_modules":   {"type": "array", "items": {"type": "string"}},
+                "config_reloaded":    {"type": "boolean"}
+            },
+            "oneOf": [
+                {"properties": {"module_id": {"type": "string"}, "reloaded_modules": false}},
+                {
+                    "required": ["reloaded_modules"],
+                    "properties": {
+                        "module_id": {"type": "null"},
+                        "reloaded_modules": {"type": "array"},
+                        "previous_version": false,
+                        "new_version": false
+                    }
+                },
+                {
+                    "required": ["config_reloaded"],
+                    "properties": {
+                        "module_id": {"type": "null"},
+                        "config_reloaded": {"type": "boolean"},
+                        "reloaded_modules": false,
+                        "previous_version": false,
+                        "new_version": false,
+                        "reload_duration_ms": false
+                    }
+                }
+            ]
         })
     }
 
@@ -978,38 +1242,17 @@ impl Module for ReloadModule {
         // Issue #45.5: when reload_config is set, refresh static configuration
         // from disk. This runs BEFORE module reload so any module that re-reads
         // config during its on_resume sees the fresh values.
-        let mut config_reloaded = false;
-        if reload_config_flag {
-            if let Some(cfg_handle) = self.config.as_ref() {
-                let mut cfg = cfg_handle.lock().await;
-                match cfg.reload_from_disk() {
-                    Ok(()) => {
-                        config_reloaded = true;
-                        let timestamp = chrono::Utc::now().to_rfc3339();
-                        emit_event(
-                            &self.emitter,
-                            "apcore.config.reloaded",
-                            "system.control.reload_module",
-                            &timestamp,
-                            json!({"reason": reason}),
-                        )
-                        .await;
-                        tracing::info!(reason = %reason, "Config reloaded from disk");
-                    }
-                    Err(e) => {
-                        tracing::warn!(
-                            error = %e.message,
-                            "reload_config: Config::reload_from_disk failed (continuing)"
-                        );
-                    }
+        let config_reloaded = if reload_config_flag {
+            match self.refresh_config(&reason).await {
+                Ok(()) => true,
+                Err(error) => {
+                    tracing::warn!(%error, "Configuration reload failed");
+                    false
                 }
-            } else {
-                tracing::warn!(
-                    "reload_config: requested but no Config bound to ReloadModule \
-                     (use ReloadModule::with_config to enable)"
-                );
             }
-        }
+        } else {
+            false
+        };
 
         if let Some(filter) = path_filter_input {
             let mut result = self.execute_bulk(filter.to_string(), &reason, ctx).await?;
@@ -1019,12 +1262,10 @@ impl Module for ReloadModule {
             return Ok(result);
         }
 
-        // If only reload_config was requested without a module target, return
-        // a config-only success response. This makes `reload_config: true`
-        // usable on its own without forcing the caller to nominate a module.
+        // A configuration-only request reports just the outcome of that reload.
         if module_id_input.is_none() && reload_config_flag {
             return Ok(json!({
-                "success": true,
+                "success": config_reloaded,
                 "module_id": serde_json::Value::Null,
                 "config_reloaded": config_reloaded,
             }));
@@ -1170,7 +1411,7 @@ impl Module for ToggleFeatureModule {
             self.toggle_state.disable(&module_id);
         }
 
-        let toggle_key = format!("toggle.{module_id}");
+        let toggle_key = format!("{TOGGLE_OVERRIDE_PREFIX}{module_id}");
         let toggle_value = serde_json::Value::Bool(enabled);
         persist_control_override(
             self.overrides_store.as_deref(),

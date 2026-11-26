@@ -70,6 +70,7 @@ def _registry_with(module_id: str) -> Registry:
     handler.description = "conformance target"
     handler.input_schema = {"type": "object"}
     handler.output_schema = {"type": "object"}
+    handler.execute = handler
     registry.register(module_id, handler)
     return registry
 

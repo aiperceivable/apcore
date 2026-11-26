@@ -77,7 +77,9 @@ Streamed chunks are accumulated with a recursive deep merge, capped at `stream.m
 
 ### Validation (Preflight)
 
-`validate()` is a non-destructive preflight: it runs Steps 1–5 and 7 of the pipeline — no middleware, no module execution — plus the module's optional `preflight()` hook, and returns a `PreflightResult` (`valid`, `checks`, `requires_approval`, `errors`). The pipeline runs in dry-run mode, which skips every step not declared `pure`; Step 5 is therefore evaluated as detection only — `requires_approval` reports the governance-effective requirement and no `ApprovalHandler` is invoked. A failed `acl` check suppresses the module's `preflight()` / `preview()` hooks. See [PROTOCOL_SPEC §12.8](../spec/protocol-spec.md#128-executorvalidate-cross-language-implementation-guide) and [Contract: APCore.validate](./apcore-client.md#contract-apcorevalidate).
+`validate()` evaluates the strategy's pure steps. Steps 1–4 and 7 perform the standard context, call-chain, lookup, ACL, and input checks. The dry run skips `approval_gate`, middleware, and module execution. `PreflightResult.requires_approval` reports the governance-effective requirement without invoking an `ApprovalHandler`. A failed `acl` check suppresses the optional module `preflight()` and `preview()` hooks. See [PROTOCOL_SPEC §12.8](../spec/protocol-spec.md#128-executorvalidate-cross-language-implementation-guide) and [Contract: APCore.validate](./apcore-client.md#contract-apcorevalidate).
+
+In Python, `Executor.validate_async()` runs the same checks and module hooks on the calling event loop. Both Python entry points accept `version_hint` as a keyword and use the same module lookup as `call()`.
 
 ### Execution State Machine
 

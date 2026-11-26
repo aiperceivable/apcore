@@ -95,20 +95,18 @@ The `metadata` dict MAY carry ecosystem-standard keys to aid AI orchestration. S
 | `on_suspend() -> dict \| None` | Called before hot-reload. Return JSON-serializable state to preserve. |
 | `on_resume(state: dict)` | Called after hot-reload with the dict returned by `on_suspend()`. |
 
-**Hot-reload sequence:**
+**Hooks during a successful replacement**
 
 ```text
 old.on_suspend() → state          ← export state
 old.on_unload()                   ← release resources
-  (reload module code from disk)
-new.__init__()
 new.on_load()                     ← acquire resources
 new.on_resume(state)              ← restore state (only if state is not None)
 ```
 
-`on_suspend()` return values MUST be JSON-serializable. `on_resume()` MUST tolerate missing or extra keys (versions may differ). Hook exceptions are logged but do not block reload.
+`on_suspend()` return values MUST be JSON-serializable. `on_resume()` MUST tolerate missing or extra keys (versions may differ). Publication of the replacement requires a successful `on_load()`.
 
-Which of these hooks a file-watch reload actually calls depends on the SDK — only apcore-python's `watch()` runs the full sequence above; see [Registry hot reload](./registry-system.md#hot-reload-development-mode). `system.control.reload_module` calls `on_suspend` / `on_resume` in every SDK.
+The Python and Rust watchers run the state handoff when they replace a module. In Rust the discoverer or its factory supplies the replacement instance. TypeScript emits a notification so the application can arrange its own replacement. An explicit `system.control.reload_module` also supports state handoff in every SDK. See [Registry hot reload](./registry-system.md#hot-reload-development-mode).
 
 ### Optional Methods
 

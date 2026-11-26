@@ -1,17 +1,5 @@
 /**
- * MW-001 — the after-middleware chain was skipped on a void output.
- *
- * `BuiltinMiddlewareAfter` guarded with `if (ctx.output == null) return`, so a
- * module that returned nothing skipped the ENTIRE after chain. The guard was
- * meant to cover "the execute step did not run" (streaming Phase 1, dry run),
- * but it tested the output's truthiness instead, and a void module produces
- * exactly the same `null` as a step that never ran.
- *
- * middleware-system.md makes `after()` the onion's closing half of `before()`:
- * a middleware that acquired state in `before()` never got its matching
- * `after()`, so metrics went unrecorded, tracing spans unpopped and audit
- * lines unwritten. apcore-python runs the chain with `{}`
- * (builtin_steps.py:~1191) and apcore-rust runs it with the module's `null`.
+ * Middleware handling for successful outputs and invalid empty results.
  */
 
 import { describe, it, expect } from 'vitest';
@@ -24,6 +12,7 @@ import type { Context } from '../../src/context.js';
 class Recorder extends Middleware {
   readonly beforeCalls: string[] = [];
   readonly afterCalls: Array<Record<string, unknown>> = [];
+  readonly errors: Error[] = [];
 
   before(moduleId: string, inputs: Record<string, unknown>, _context: Context) {
     this.beforeCalls.push(moduleId);
@@ -38,6 +27,11 @@ class Recorder extends Middleware {
   ) {
     this.afterCalls.push(output);
     return output;
+  }
+
+  override onError(_moduleId: string, _inputs: Record<string, unknown>, error: Error): null {
+    this.errors.push(error);
+    return null;
   }
 }
 
@@ -77,33 +71,26 @@ function build() {
   return { registry, executor };
 }
 
-describe('the after chain runs for a module that returns nothing (MW-001)', () => {
-  it('before() and after() are both called, once each', async () => {
+describe('middleware receives only valid execution outcomes', () => {
+  it('a missing output runs the error chain and skips successful after hooks', async () => {
     const { executor } = build();
     const mw = new Recorder();
     executor.use(mw);
 
-    await executor.call('executor.demo.void', {});
+    await expect(executor.call('executor.demo.void', {}))
+      .rejects.toMatchObject({ code: 'MODULE_EXECUTE_ERROR' });
 
     expect(mw.beforeCalls).toEqual(['executor.demo.void']);
-    expect(mw.afterCalls).toHaveLength(1);
+    expect(mw.afterCalls).toHaveLength(0);
+    expect(mw.errors).toHaveLength(1);
+    expect(mw.errors[0]).toMatchObject({ code: 'MODULE_EXECUTE_ERROR' });
   });
 
-  it('a void output reaches after() as an empty object, never null', async () => {
-    const { executor } = build();
-    const mw = new Recorder();
-    executor.use(mw);
-
-    await executor.call('executor.demo.void', {});
-
-    expect(mw.afterCalls[0]).toEqual({});
-  });
-
-  it('an after() that returns a mapping can replace a void result', async () => {
+  it('an after() that returns a mapping can replace a valid result', async () => {
     const { executor } = build();
     executor.use(new Replacer());
 
-    const result = await executor.call('executor.demo.void', {});
+    const result = await executor.call('executor.demo.value', {});
     expect(result).toEqual({ replaced: true });
   });
 
@@ -126,11 +113,7 @@ describe('the after chain runs for a module that returns nothing (MW-001)', () =
     expect(mw.afterCalls).toHaveLength(0);
   });
 
-  // Streaming does NOT skip the after chain: `BuiltinExecute` returns
-  // `skip_to: 'return_result'` in Phase 1, and `Executor.stream` re-runs
-  // `output_validation` / `middleware_after` / `return_result` in Phase 3 over
-  // the ACCUMULATED result. Pinned here so the MW-001 guard change cannot
-  // silently take that call away.
+  // After middleware runs once after the executor has drained and merged the stream.
   it('streaming runs the after chain once, in Phase 3, over the accumulated output', async () => {
     const { registry, executor } = build();
     const mw = new Recorder();

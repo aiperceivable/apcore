@@ -5,14 +5,32 @@
  * the error is not re-raised). Mirrors apcore-python executor.py.
  */
 
-import { describe, it, expect } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { describe, it, expect, vi } from 'vitest';
 import { Type } from '@sinclair/typebox';
+import { CancelToken, ExecutionCancelledError } from '../src/cancel.js';
 import { APCore } from '../src/client.js';
 import { Config } from '../src/config.js';
+import { Context } from '../src/context.js';
+import { ModuleError, ModuleExecuteError } from '../src/errors.js';
 import { Executor } from '../src/executor.js';
 import { FunctionModule } from '../src/decorator.js';
 import { Registry } from '../src/registry/registry.js';
 import type { ApCoreEvent } from '../src/events/emitter.js';
+import { Middleware } from '../src/middleware/base.js';
+import { findFixturesRoot } from './spec-repo.js';
+
+type Chunk = Record<string, unknown>;
+interface PostProcessingCase {
+  id: string;
+  input: { chunks: Chunk[]; after_error_code: string };
+  expected: { chunks: Chunk[]; error_code: string | null; on_error_calls: number; post_failure_events: number };
+}
+
+const fixture = JSON.parse(
+  readFileSync(join(findFixturesRoot(), 'stream_post_processing.json'), 'utf8'),
+) as { test_cases: PostProcessingCase[] };
 
 async function drain(gen: AsyncGenerator<Record<string, unknown>>): Promise<Record<string, unknown>[]> {
   const chunks: Record<string, unknown>[] = [];
@@ -21,6 +39,97 @@ async function drain(gen: AsyncGenerator<Record<string, unknown>>): Promise<Reco
 }
 
 describe('stream Phase-3 post-validation failure emits event (A-D-006)', () => {
+  it.each(['MODULE_TIMEOUT', 'EXECUTION_CANCELLED'])('reports %s before a pending after hook has finished', async (code) => {
+    vi.useFakeTimers();
+    let release!: () => void;
+    const blocked = new Promise<void>((resolve) => { release = resolve; });
+    let enter!: () => void;
+    const entered = new Promise<void>((resolve) => { enter = resolve; });
+    const parent = new CancelToken();
+    try {
+      const client = new APCore({ config: new Config({ executor: { global_timeout: 100 } }) });
+      const moduleId = 'test.poststream';
+      await client.register(moduleId, {
+        inputSchema: Type.Object({}),
+        outputSchema: Type.Object({ value: Type.Integer() }),
+        description: 'Stream with a blocked after hook',
+        execute: () => ({ value: 0 }),
+        async *stream() { yield { value: 1 }; },
+      });
+      let signal: AbortSignal | undefined;
+      class BlockedAfter extends Middleware {
+        override async after(_id: string, _inputs: Chunk, _output: Chunk, context: Context) {
+          signal = context.signal;
+          enter();
+          await blocked;
+          return null;
+        }
+      }
+      client.use(new BlockedAfter());
+      const stream = client.stream(moduleId, {}, Context.create(null, null, parent));
+      await expect(stream.next()).resolves.toEqual({ done: false, value: { value: 1 } });
+      let terminal: unknown;
+      const lastPull = stream.next().then(
+        (result) => { terminal = result; },
+        (error: unknown) => { terminal = error; },
+      );
+      await entered;
+      if (code === 'EXECUTION_CANCELLED') parent.cancel();
+      await vi.advanceTimersByTimeAsync(code === 'MODULE_TIMEOUT' ? 100 : 0);
+      try {
+        expect(terminal).toMatchObject({ code });
+        expect(signal?.aborted).toBe(true);
+        expect(parent.signal.aborted).toBe(code === 'EXECUTION_CANCELLED');
+      } finally {
+        release();
+        await lastPull;
+      }
+    } finally {
+      release();
+      await parent.drain();
+      vi.useRealTimers();
+    }
+  });
+
+  it.each(fixture.test_cases)('$id', async ({ input, expected }) => {
+    const client = new APCore({
+      config: new Config({ sys_modules: { enabled: true, events: { enabled: true } } }),
+    });
+    const moduleId = 'test.stream';
+    await client.register(moduleId, {
+      inputSchema: Type.Object({}),
+      outputSchema: Type.Object({ value: Type.Integer() }),
+      description: 'Stream post-processing test module',
+      execute: () => ({ value: 0 }),
+      async *stream() { yield* input.chunks; },
+    });
+    const onError = vi.fn(() => null);
+    class FailingAfter extends Middleware {
+      override after(): never {
+        if (input.after_error_code === 'EXECUTION_CANCELLED') throw new ExecutionCancelledError();
+        throw new ModuleExecuteError(moduleId, 'after failed');
+      }
+      override onError(): null { return onError(); }
+    }
+    client.use(new FailingAfter());
+    const events = vi.fn();
+    client.on('apcore.stream.post_validation_failed', events);
+
+    const chunks: Chunk[] = [];
+    let errorCode: string | null = null;
+    try {
+      for await (const chunk of client.stream(moduleId, {})) chunks.push(chunk);
+    } catch (error) {
+      if (!(error instanceof ModuleError)) throw error;
+      errorCode = error.code;
+    }
+    await client.events?.flush();
+    expect(chunks).toEqual(expected.chunks);
+    expect(errorCode).toBe(expected.error_code);
+    expect(onError).toHaveBeenCalledTimes(expected.on_error_calls);
+    expect(events).toHaveBeenCalledTimes(expected.post_failure_events);
+  });
+
   it('delivers apcore.stream.post_validation_failed through APCore.on()', async () => {
     const client = new APCore({
       config: new Config({ sys_modules: { enabled: true, events: { enabled: true } } }),

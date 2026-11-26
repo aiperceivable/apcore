@@ -4,14 +4,26 @@ from __future__ import annotations
 
 import importlib.util
 import inspect
+import os
+import sys
+from _thread import RLock
+from collections.abc import Iterator
+from contextlib import contextmanager
+from hashlib import sha256
 from pathlib import Path
+from threading import Lock
+from types import ModuleType
 from typing import Any, Callable
+from weakref import WeakValueDictionary
 
 from pydantic import BaseModel
 
 from apcore.errors import ModuleLoadError
 
 __all__ = ["resolve_entry_point", "PreApprovalHook"]
+
+_module_locks: WeakValueDictionary[str, RLock] = WeakValueDictionary()
+_module_locks_guard = Lock()
 
 
 PreApprovalHook = Callable[[Path], None]
@@ -57,8 +69,18 @@ def _is_module_class(cls: type, loaded_module_name: str) -> bool:
 def _import_module_from_file(
     file_path: Path,
     pre_approval_hook: PreApprovalHook | None = None,
-) -> Any:
-    """Dynamically import a Python file and return the loaded module object.
+) -> ModuleType:
+    """Dynamically import a Python file and return the loaded module object."""
+    with _load_module_from_file(file_path, pre_approval_hook) as mod:
+        return mod
+
+
+@contextmanager
+def _load_module_from_file(
+    file_path: Path,
+    pre_approval_hook: PreApprovalHook | None,
+) -> Iterator[ModuleType]:
+    """Load a fresh module and restore its previous entry if loading fails.
 
     .. warning::
         **Trust boundary.** This function executes arbitrary Python code from
@@ -76,29 +98,44 @@ def _import_module_from_file(
         - Pass a ``pre_approval_hook`` that verifies signatures / hashes /
           allowlists before each file is imported.
     """
-    if pre_approval_hook is not None:
-        try:
-            pre_approval_hook(file_path)
-        except Exception as exc:
+    absolute_path = os.path.normcase(os.path.abspath(file_path))
+    module_name = f"apcore_ext_{sha256(os.fsencode(absolute_path)).hexdigest()}"
+    with _module_locks_guard:
+        lock = _module_locks.setdefault(module_name, RLock())
+
+    with lock:
+        if pre_approval_hook is not None:
+            try:
+                pre_approval_hook(file_path)
+            except Exception as exc:
+                raise ModuleLoadError(
+                    module_id=str(file_path),
+                    reason=f"Pre-approval hook rejected {file_path}: {exc}",
+                ) from exc
+
+        spec = importlib.util.spec_from_file_location(module_name, str(file_path))
+        if spec is None or spec.loader is None:
             raise ModuleLoadError(
                 module_id=str(file_path),
-                reason=f"Pre-approval hook rejected {file_path}: {exc}",
-            ) from exc
+                reason=f"Cannot create import spec for {file_path}",
+            )
 
-    module_name = f"apcore_ext_{file_path.stem}"
-    spec = importlib.util.spec_from_file_location(module_name, str(file_path))
-    if spec is None or spec.loader is None:
-        raise ModuleLoadError(
-            module_id=str(file_path),
-            reason=f"Cannot create import spec for {file_path}",
-        )
-
-    mod = importlib.util.module_from_spec(spec)
-    try:
-        spec.loader.exec_module(mod)
-    except Exception as exc:
-        raise ModuleLoadError(module_id=str(file_path), reason=f"Failed to import module: {exc}") from exc
-    return mod
+        mod = importlib.util.module_from_spec(spec)
+        previous_entry = {module_name: sys.modules[module_name]} if module_name in sys.modules else {}
+        # Dataclasses and other annotation consumers look up __module__ during execution.
+        sys.modules[module_name] = mod
+        try:
+            try:
+                spec.loader.exec_module(mod)
+            except Exception as exc:
+                raise ModuleLoadError(module_id=str(file_path), reason=f"Failed to import module: {exc}") from exc
+            yield mod
+        except BaseException:
+            if previous_entry:
+                sys.modules.update(previous_entry)
+            else:
+                sys.modules.pop(module_name, None)
+            raise
 
 
 def resolve_entry_point(
@@ -115,8 +152,11 @@ def resolve_entry_point(
     before ``spec.loader.exec_module`` runs; raising from the hook rejects
     the load (wrapped as ``ModuleLoadError``).
     """
-    loaded = _import_module_from_file(file_path, pre_approval_hook=pre_approval_hook)
+    with _load_module_from_file(file_path, pre_approval_hook) as loaded:
+        return _select_module_class(loaded, file_path, meta)
 
+
+def _select_module_class(loaded: ModuleType, file_path: Path, meta: dict[str, Any] | None) -> type:
     # Meta override mode
     if meta and "entry_point" in meta:
         class_name = meta["entry_point"].split(":")[-1]

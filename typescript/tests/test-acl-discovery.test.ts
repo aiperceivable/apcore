@@ -21,7 +21,7 @@ import { Executor } from '../src/executor.js';
 import { Registry } from '../src/registry/registry.js';
 import { FunctionModule } from '../src/decorator.js';
 import { getDefault } from '../src/config-defaults.js';
-import { ACLDeniedError } from '../src/errors.js';
+import { ACLDeniedError, ConfigError } from '../src/errors.js';
 import { APCore } from '../src/client.js';
 
 function makeModule(id: string): FunctionModule {
@@ -86,6 +86,13 @@ describe('ACL.discover (D-64 / #74)', () => {
     const config = new Config({ acl: { root: aclDir } });
 
     expect(ACL.discover(config)).toBeNull();
+  });
+
+  it('requires a regular policy file at client startup', () => {
+    mkdirSync(join(tmpDir, 'global_acl.yaml'));
+    const config = new Config({ acl: { root: tmpDir } });
+
+    expect(() => new APCore({ config })).toThrow(ConfigError);
   });
 
   it('returns null when acl.root does not exist (no silent default-deny)', () => {

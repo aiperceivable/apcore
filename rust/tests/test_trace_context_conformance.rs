@@ -15,7 +15,10 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use apcore::context::{Context, Identity};
+use apcore::observability::{InMemoryExporter, TracingMiddleware};
 use apcore::trace_context::{TraceContext, TraceParent, TRACE_FLAGS_KEY, TRACE_STATE_KEY};
+use apcore::{APCore, Module, ModuleError};
+use async_trait::async_trait;
 use serde_json::{json, Value};
 
 use crate::conformance_env::find_fixtures_root;
@@ -42,7 +45,10 @@ fn case_by_id(fx: &Value, id: &str) -> Value {
 /// runs, and the `#[test]` below it is what runs it. `case_by_id` is still
 /// called for each in the bulk test, so removing a case from the fixture
 /// without removing it here fails loudly.
-const QUARANTINED: &[&str] = &["parent_id_override_rejected_malformed"];
+const QUARANTINED: &[&str] = &[
+    "parent_id_override_rejected_malformed",
+    "inbound_parent_is_used_by_exported_span",
+];
 
 /// Build the header map the case describes. `tracestate_entry_count: N` asks
 /// the harness to synthesise N `vendorNN=opaqueNN` entries — the same
@@ -267,7 +273,7 @@ fn conformance_trace_context() {
     for tc in cases {
         let id = tc["id"].as_str().expect("every case needs an id");
         if QUARANTINED.contains(&id) {
-            continue; // run by conformance_parent_id_override_rejected_malformed below
+            continue; // Exercised by a named test below.
         }
         run_case(tc);
     }
@@ -285,4 +291,61 @@ fn conformance_trace_context() {
 fn conformance_parent_id_override_rejected_malformed() {
     let fx = fixture();
     run_case(&case_by_id(&fx, "parent_id_override_rejected_malformed"));
+}
+
+struct InjectTraceContext;
+
+#[async_trait]
+impl Module for InjectTraceContext {
+    fn description(&self) -> &'static str {
+        "Inject the active execution span"
+    }
+
+    fn input_schema(&self) -> Value {
+        json!({"type": "object"})
+    }
+
+    fn output_schema(&self) -> Value {
+        json!({"type": "object", "properties": {"traceparent": {"type": "string"}}})
+    }
+
+    async fn execute(
+        &self,
+        _inputs: Value,
+        context: &Context<Value>,
+    ) -> Result<Value, ModuleError> {
+        Ok(json!(TraceContext::inject(context)))
+    }
+}
+
+#[tokio::test]
+async fn conformance_inbound_parent_is_used_by_exported_span() {
+    let case = case_by_id(&fixture(), "inbound_parent_is_used_by_exported_span");
+    let inbound = TraceContext::extract(&headers_of(&case)).expect("valid traceparent");
+    let context = Context::create(None, Some(inbound), None, None, Value::Null, None);
+    let client = APCore::new();
+    let exporter = InMemoryExporter::new();
+    client
+        .use_middleware(Box::new(TracingMiddleware::new(Box::new(exporter.clone()))))
+        .unwrap();
+    client
+        .register("demo.trace", Box::new(InjectTraceContext))
+        .unwrap();
+    let out = client
+        .call("demo.trace", json!({}), Some(&context), None)
+        .await
+        .unwrap();
+    let spans = exporter.get_spans();
+    assert_eq!(spans.len(), 1);
+    let span = &spans[0];
+    assert_eq!(json!(span.trace_id), case["expected"]["span_trace_id"]);
+    assert_eq!(
+        json!(span.parent_span_id),
+        case["expected"]["span_parent_id"]
+    );
+    let injected_parent = out["traceparent"].as_str().unwrap().split('-').nth(2);
+    assert_eq!(
+        json!(injected_parent == Some(span.span_id.as_str())),
+        case["expected"]["injected_parent_is_local_span"]
+    );
 }

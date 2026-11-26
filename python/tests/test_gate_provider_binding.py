@@ -22,6 +22,9 @@ from apcore.pipeline import BaseStep, ExecutionStrategy, PipelineContext, StepRe
 
 
 class _Target:
+
+    input_schema = {"type": "object"}
+    output_schema = {"type": "object"}
     description = "D-129 target"
 
     def __init__(self, *, requires_approval: bool = False) -> None:

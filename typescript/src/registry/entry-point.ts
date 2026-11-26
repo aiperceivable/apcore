@@ -25,10 +25,11 @@ function isModuleClass(obj: unknown): boolean {
 export async function resolveEntryPoint(
   filePath: string,
   meta?: Record<string, unknown> | null,
+  specifier: string = filePath,
 ): Promise<unknown> {
   let loaded: Record<string, unknown>;
   try {
-    loaded = await import(filePath);
+    loaded = await import(specifier);
   } catch (e) {
     throw new ModuleLoadError(filePath, `Failed to import module: ${e}`);
   }

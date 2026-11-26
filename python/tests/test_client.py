@@ -17,6 +17,7 @@ from apcore.context import Context
 from apcore.decorator import FunctionModule
 from apcore.errors import (
     ACLDeniedError,
+    ModuleDisabledError,
     ModuleNotFoundError,
     ModuleTimeoutError,
     SysModuleRegistrationError,
@@ -25,6 +26,7 @@ from apcore.errors import (
 from apcore.events.emitter import ApCoreEvent, EventEmitter
 from apcore.executor import Executor
 from apcore.middleware import Middleware
+from apcore.module import Change, PreviewResult
 from apcore.policy import ExecutionPolicy, PolicyRule
 from apcore.registry import Registry
 
@@ -188,6 +190,57 @@ class TestAPCoreConstruction:
         client = APCore(registry=registry, executor=executor)
         assert client.executor is executor
 
+    @pytest.mark.parametrize("use_prebuilt_strategy", [False, True])
+    def test_toggle_controls_the_lookup_on_a_prebuilt_executor(self, use_prebuilt_strategy: bool) -> None:
+        from apcore.builtin_steps import build_standard_strategy
+        from apcore.sys_modules.control import ToggleState
+
+        config = Config({"sys_modules": {"enabled": True, "events": {"enabled": True}}})
+        registry = Registry()
+        toggle_state = ToggleState()
+        if use_prebuilt_strategy:
+            strategy = build_standard_strategy(registry=registry, toggle_state=toggle_state)
+            executor = Executor(registry=registry, approval_handler=AutoApproveHandler(), strategy=strategy)
+        else:
+            executor = Executor(registry=registry, approval_handler=AutoApproveHandler(), toggle_state=toggle_state)
+        client = APCore(executor=executor, config=config)
+
+        @client.module(id="test.toggle")
+        def toggle_target() -> int:
+            return 1
+
+        try:
+            assert client.disable("test.toggle")["enabled"] is False
+            with pytest.raises(ModuleDisabledError):
+                client.call("test.toggle")
+            with pytest.raises(ModuleDisabledError):
+                executor.call_with_trace("test.toggle", strategy="standard")
+            assert client.enable("test.toggle")["enabled"] is True
+            assert client.call("test.toggle") == {"result": 1}
+        finally:
+            client.close()
+
+    def test_prebuilt_executors_with_default_toggle_states_are_isolated(self) -> None:
+        config = Config({"sys_modules": {"enabled": True, "events": {"enabled": True}}})
+        executor_a = Executor(registry=Registry(), approval_handler=AutoApproveHandler())
+        executor_b = Executor(registry=Registry(), approval_handler=AutoApproveHandler())
+        client_a = APCore(executor=executor_a, config=config)
+        client_b = APCore(executor=executor_b, config=config)
+
+        @client_a.module(id="test.toggle")
+        @client_b.module(id="test.toggle")
+        def toggle_target() -> int:
+            return 1
+
+        try:
+            assert client_a.disable("test.toggle")["enabled"] is False
+            with pytest.raises(ModuleDisabledError):
+                client_a.call("test.toggle")
+            assert client_b.call("test.toggle") == {"result": 1}
+        finally:
+            client_a.close()
+            client_b.close()
+
     def test_config_passed_through(self) -> None:
         from apcore.config import Config
 
@@ -276,6 +329,65 @@ class TestCall:
         client = APCore()
         with pytest.raises(ModuleNotFoundError):
             client.call("nonexistent.module", {"a": 1})
+
+
+class TestValidate:
+    async def test_validate_async_runs_preview_on_the_callers_loop(self) -> None:
+        client = APCore()
+        loop = asyncio.get_running_loop()
+        pending_summary: asyncio.Future[str] = loop.create_future()
+
+        class PreviewModule:
+            description = "Preview an inventory update"
+            input_schema = {"type": "object"}
+            output_schema = {"type": "object"}
+
+            def execute(self, inputs: dict[str, Any], context: Context) -> dict[str, Any]:
+                raise AssertionError("Preflight must skip module execution")
+
+            async def preview(self, inputs: dict[str, Any], context: Context) -> PreviewResult:
+                return PreviewResult(
+                    changes=[Change(action="update", target="inventory", summary=await pending_summary)]
+                )
+
+        client.register("inventory.update", PreviewModule())
+        loop.call_soon(pending_summary.set_result, "Update stock count")
+
+        result = await client.validate_async("inventory.update")
+
+        assert result.valid
+        assert [change.summary for change in result.predicted_changes] == ["Update stock count"]
+
+    async def test_version_hint_selects_the_same_schema_and_governance_as_call(self) -> None:
+        registry = Registry()
+        client = APCore(executor=Executor(registry=registry, approval_handler=AutoApproveHandler()))
+        module_id = "inventory.update"
+
+        def update_count(count: int) -> int:
+            return count
+
+        def update_name(name: str) -> str:
+            return name
+
+        registry.register(
+            module_id,
+            FunctionModule(update_count, module_id),
+            version="1.0.0",
+            metadata={"annotations": {"requires_approval": True}},
+        )
+        registry.register(module_id, FunctionModule(update_name, module_id), version="2.0.0")
+
+        inputs = {"count": 7}
+        assert not client.validate(module_id, inputs).valid
+        result = client.validate(module_id, inputs, version_hint="<2.0.0")
+        assert result.valid
+        assert result.requires_approval
+        assert await client.validate_async(module_id, inputs, version_hint="<2.0.0") == result
+        assert await client.call_async(module_id, inputs, version_hint="<2.0.0") == {"result": 7}
+
+        missing = await client.validate_async(module_id, inputs, version_hint=">=3.0.0")
+        assert not missing.valid
+        assert any(check.check == "module_lookup" and not check.passed for check in missing.checks)
 
 
 # ---------------------------------------------------------------------------
@@ -463,7 +575,7 @@ class TestEvents:
         client.on("test.life", received.append)
         event = ApCoreEvent(event_type="test.life", module_id=None, timestamp="now", severity="info", data={})
         client.events.emit(event)
-        loop = client.events._loop
+        loop = client.events._worker.loop
         assert loop is not None
         client.close()
         assert loop.is_closed()

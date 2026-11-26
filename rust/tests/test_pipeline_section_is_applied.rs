@@ -12,7 +12,9 @@
 //! system, and the pipeline an operator reads in configuration is not the
 //! pipeline that executes.
 
-use apcore::{Config, Executor, Registry};
+use apcore::{APCore, APCoreOptions, Config, ErrorCode, Executor, Registry};
+use futures_util::StreamExt;
+use serde_json::json;
 use std::sync::{Arc, Mutex, PoisonError};
 
 const DEFAULT_STEPS: [&str; 11] = [
@@ -136,17 +138,6 @@ fn a_named_preset_still_wins() {
 }
 
 #[test]
-fn an_unbuildable_section_falls_back_to_the_standard_pipeline() {
-    // Python and TypeScript propagate the error out of their constructors;
-    // `Executor::new` returns `Self` and cannot. The fallback is the fail-safe
-    // direction — every built-in protection stays — and it is logged at error
-    // level rather than passed over. See `strategy_from_config`.
-    let (config, _dir) = config_with("  remove:\n    - no_such_step\n");
-    let executor = Executor::new(Registry::new(), config);
-    assert_eq!(step_names(&executor), DEFAULT_STEPS);
-}
-
-#[test]
 fn the_module_lookup_step_stays_bound_to_the_instance_toggle_store() {
     // Seeding a config-built strategy from the plain `build_standard_strategy`
     // would bind the process-global toggle store, reintroducing issue #71
@@ -237,12 +228,44 @@ fn removing_an_ordinary_step_is_silent() {
 
 #[test]
 fn an_unbuildable_section_is_logged_at_error_level() {
-    // The fallback must never be silent — a declared step that does not run is
-    // the defect requirement 6 exists to remove.
     let logs = build_capturing("  remove:\n    - no_such_step\n");
     assert!(logs.contains("ERROR"), "logs:\n{logs}");
     assert!(
-        logs.contains("failed to build; running the standard pipeline"),
+        logs.contains("failed to build; module execution is disabled"),
         "logs:\n{logs}"
     );
+}
+
+#[tokio::test]
+async fn an_unbuildable_section_disables_all_invocation_paths() {
+    let (config, dir) = config_with("  remove:\n    - no_such_step\n");
+    let client_error = APCore::try_start(APCoreOptions {
+        config: Some(config.clone()),
+        ..APCoreOptions::default()
+    })
+    .err()
+    .expect("client must reject invalid startup configuration");
+    assert!(matches!(
+        client_error,
+        apcore::APCoreStartupError::PipelineLoadFailed { source }
+            if source.code == ErrorCode::PipelineConfigurationError
+    ));
+    let path_error = APCore::from_path(dir.path().join("apcore.yaml"))
+        .err()
+        .expect("file-based client must reject invalid startup configuration");
+    assert_eq!(path_error.code, ErrorCode::PipelineConfigurationError);
+
+    let executor = Executor::new(Registry::new(), config);
+    let id = "test.probe";
+    let call_error = executor.call(id, json!({}), None, None).await.unwrap_err();
+    let check_error = executor.validate(id, &json!({}), None).await.unwrap_err();
+    let stream_error = executor
+        .stream(id, json!({}), None, None)
+        .next()
+        .await
+        .unwrap()
+        .unwrap_err();
+    for error in [call_error, check_error, stream_error] {
+        assert_eq!(error.code, ErrorCode::PipelineConfigurationError);
+    }
 }

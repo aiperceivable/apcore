@@ -9,7 +9,7 @@
  * `node:fs` lives only on this leaf so the browser closure stays clean.
  */
 
-import { existsSync, readFileSync, statSync } from 'node:fs';
+import { existsSync, lstatSync, readFileSync, statSync, type Stats } from 'node:fs';
 import { appendFilesystemPath } from './utils/filesystem-path.js';
 import yaml from 'js-yaml';
 import {
@@ -181,6 +181,17 @@ _setAclFileLoader((yamlPath: string, auditLogger?: AuditLogger | null): ACL => {
 // Config-driven ACL discovery (D-64, Recommendation A — issue #74)
 // ---------------------------------------------------------------------------
 
+function discoveryStats(path: string): Stats | undefined {
+  try {
+    const entry = lstatSync(path, { throwIfNoEntry: false });
+    return entry?.isSymbolicLink() ? statSync(path) : entry;
+  } catch (cause) {
+    throw new ConfigError(`Cannot inspect ACL path '${path}': ${cause}`, {
+      cause: cause instanceof Error ? cause : undefined,
+    });
+  }
+}
+
 _setAclDiscoverer((config: AclConfigLike): ACL | null => {
   // Read `acl.root`, falling back to the canonical default ("./acl").
   const rawRoot = config.get('acl.root', getDefault('acl.root'));
@@ -188,13 +199,14 @@ _setAclDiscoverer((config: AclConfigLike): ACL | null => {
     return null;
   }
 
-  const rootPath = config.resolvePath(String(rawRoot === '' ? getDefault('acl.root') : rawRoot));
+  let policyPath = config.resolvePath(String(rawRoot === '' ? getDefault('acl.root') : rawRoot));
 
   // Missing path => no enforcement. CRITICAL: do NOT synthesize an empty
   // default-deny ACL — that would silently deny every inter-module call in
   // every project lacking an acl file. `acl.default_effect` only applies once
   // a real ACL file is loaded (read by ACL.load from the file itself).
-  if (!existsSync(rootPath)) {
+  let entry = discoveryStats(policyPath);
+  if (entry === undefined) {
     return null;
   }
 
@@ -202,13 +214,16 @@ _setAclDiscoverer((config: AclConfigLike): ACL | null => {
   // conventional `<root>/global_acl.yaml` (PROTOCOL_SPEC §3.1 `acl/{scope}_acl.yaml`).
   // A directory without that file is a no-op. acl.root MAY also point directly
   // at a YAML file. Parity with apcore-python and apcore-rust.
-  if (statSync(rootPath).isDirectory()) {
-    const globalAcl = appendFilesystemPath(rootPath, 'global_acl.yaml');
-    if (!existsSync(globalAcl)) {
+  if (entry.isDirectory()) {
+    policyPath = appendFilesystemPath(policyPath, 'global_acl.yaml');
+    entry = discoveryStats(policyPath);
+    if (entry === undefined) {
       return null;
     }
-    return ACL.load(globalAcl);
+  }
+  if (!entry.isFile()) {
+    throw new ConfigError(`ACL path '${policyPath}' is not a regular file`);
   }
 
-  return ACL.load(rootPath);
+  return ACL.load(policyPath);
 });

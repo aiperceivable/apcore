@@ -19,6 +19,7 @@ use crate::module::{
 use crate::registry::conflicts::{detect_id_conflicts, ConflictSeverity, ConflictType};
 use crate::registry::metadata::parse_dependencies;
 use crate::registry::types::DepInfo;
+use crate::registry::version::try_matches_version_hint;
 
 /// Join the `message` field of each validation error detail into a single
 /// comma-separated string for human-readable error reporting.
@@ -464,11 +465,15 @@ impl ModuleReferences {
     }
 }
 
-pub(crate) struct ModuleExecutionLease(Arc<ModuleReferences>);
+pub(crate) struct ModuleExecutionLease {
+    references: Arc<ModuleReferences>,
+    pub declared_annotations: Option<ModuleAnnotations>,
+    pub enabled: bool,
+}
 
 impl Drop for ModuleExecutionLease {
     fn drop(&mut self) {
-        self.0.release();
+        self.references.release();
     }
 }
 
@@ -1965,7 +1970,7 @@ impl Registry {
     /// - `Err(ModuleError(code=ModuleNotFound))` if the module is currently
     ///   draining (a `safe_unregister` is in progress) or not registered.
     pub fn acquire(&self, name: &str) -> Result<Arc<dyn Module>, ModuleError> {
-        self.acquire_with_count(name).map(|(module, _)| module)
+        Self::acquire_with_count(&mut self.core.write(), name).map(|(module, _)| module)
     }
 
     pub(crate) fn acquire_execution(
@@ -1973,8 +1978,23 @@ impl Registry {
         name: &str,
         version_hint: Option<&str>,
     ) -> Result<(Arc<dyn Module>, Arc<ModuleExecutionLease>), ModuleError> {
-        let (module, count) = self.acquire_with_count(name)?;
-        let lease = Arc::new(ModuleExecutionLease(count));
+        let (module, lease, deprecated) = {
+            let mut core = self.core.write();
+            let (module, references) = Self::acquire_with_count(&mut core, name)?;
+            let descriptor = core.descriptors.get(name);
+            let lease = Arc::new(ModuleExecutionLease {
+                references,
+                declared_annotations: descriptor.and_then(|entry| entry.annotations.clone()),
+                enabled: descriptor.is_none_or(|entry| entry.enabled),
+            });
+            let deprecated = descriptor
+                .filter(|entry| entry.metadata.contains_key(Self::DEPRECATION_METADATA_KEY))
+                .cloned();
+            (module, lease, deprecated)
+        };
+        if let Some(descriptor) = deprecated {
+            self.warn_if_deprecated(name, &descriptor);
+        }
         let warn =
             version_hint.is_some() && self.version_hint_warned.lock().insert(name.to_owned());
         if warn {
@@ -1987,10 +2007,9 @@ impl Registry {
     }
 
     fn acquire_with_count(
-        &self,
+        core: &mut RegistryCore,
         name: &str,
     ) -> Result<(Arc<dyn Module>, Arc<ModuleReferences>), ModuleError> {
-        let mut core = self.core.write();
         if core.draining.contains(name) {
             return Err(ModuleError::new(
                 crate::errors::ErrorCode::ModuleNotFound,
@@ -2111,12 +2130,12 @@ impl Registry {
     /// Watch the extension roots and apply file changes to the registry.
     ///
     /// Watches every path in `extension_roots` recursively. File events are
-    /// debounced (300ms) and then applied through the configured discoverer:
-    /// a new module file is registered, a changed one REPLACES its registered
-    /// module (`on_suspend` → unregister → register → `on_resume`), and a
-    /// removed one is unregistered. Cross-language parity with apcore-python's
-    /// `watchdog`-based watcher and apcore-typescript's `fs.watch` watcher
-    /// (sync finding A-D-010).
+    /// grouped after 300 ms of quiet and handled through the configured
+    /// discoverer. New candidates are registered. When an existing source or
+    /// its metadata sidecar changes, the old instance is suspended and
+    /// unregistered before the replacement is registered. The replacement
+    /// receives `on_resume` if suspension returned state. A deleted source is
+    /// unregistered when its module is absent from the discovery results.
     ///
     /// # Caller obligations
     ///
@@ -2135,12 +2154,10 @@ impl Registry {
     /// Calling `watch()` while already watching is a no-op (returns `Ok(())`).
     /// Use [`Self::unwatch`] to stop and re-call `watch()` to pick up new
     /// `extension_roots`.
-    // `async` is kept for cross-language API parity: Python and TypeScript both
-    // expose `await registry.watch()`, and dropping it here would make the Rust
-    // surface the odd one out for a function whose whole job is to run for a
-    // long time. Rust 1.98 split the lint, so both names are needed; the
-    // `unknown_lints` allow keeps older toolchains from rejecting the newer
-    // name, which they have never heard of.
+    // Keep the async API for existing callers. Startup installs the watcher
+    // and spawns its Tokio task; the task consumes events after this returns.
+    // Rust 1.98 split the lint. The unknown-lints allowance keeps the new lint
+    // name compatible with older toolchains.
     #[allow(unknown_lints)]
     #[allow(clippy::unused_async)]
     #[allow(clippy::unused_async_trait_impl)]
@@ -2281,22 +2298,25 @@ impl Registry {
             self.safe_unregister(&id, 5000).await?;
         }
 
-        let mut new_modules = Vec::new();
+        let batch_ids = discovered.iter().map(|entry| entry.name.clone()).collect();
         for dm in discovered {
             if !self.has(&dm.name) {
-                new_modules.push(dm);
+                self.register_discovered_batch(std::iter::once(dm), &batch_ids);
             } else if touches(&dm.source) {
-                self.replace_discovered(dm).await?;
+                self.replace_discovered(dm, &batch_ids).await?;
             }
         }
-        self.register_discovered(new_modules);
         Ok(())
     }
 
     /// Replace a registered module with a freshly discovered instance,
     /// handing its `on_suspend` state to the new instance's `on_resume`. The
     /// previous instance is put back if the new one fails to register.
-    async fn replace_discovered(&self, dm: DiscoveredModule) -> Result<(), ModuleError> {
+    async fn replace_discovered(
+        &self,
+        dm: DiscoveredModule,
+        batch_ids: &HashSet<String>,
+    ) -> Result<(), ModuleError> {
         let name = dm.name.clone();
         let previous = self.get(&name)?;
         let previous_descriptor = self.get_definition(&name)?;
@@ -2310,7 +2330,7 @@ impl Registry {
         });
 
         self.safe_unregister(&name, 5000).await?;
-        if self.register_discovered(vec![dm]) == 0 {
+        if self.register_discovered_batch(std::iter::once(dm), batch_ids) == 0 {
             tracing::warn!(
                 module_id = %name,
                 "Registry watch: the changed module failed to register; keeping the previous instance"
@@ -2411,6 +2431,46 @@ impl Registry {
         input_ok && output_ok
     }
 
+    fn check_discovered_dependencies(
+        core: &RegistryCore,
+        module: &DiscoveredModule,
+    ) -> Result<(), ModuleError> {
+        for dependency in module
+            .descriptor
+            .dependencies
+            .iter()
+            .filter(|dep| !dep.optional)
+        {
+            let Some(provider) = core.descriptors.get(&dependency.module_id) else {
+                return Err(ModuleError::new(
+                    crate::errors::ErrorCode::ModuleLoadError,
+                    format!(
+                        "Required dependency '{}' did not load for '{}'",
+                        dependency.module_id, module.name
+                    ),
+                ));
+            };
+            let constraint = &dependency.version_constraint;
+            if !constraint.is_empty() && !try_matches_version_hint(&provider.version, constraint)? {
+                return Err(ModuleError::dependency_version_mismatch(
+                    &module.name,
+                    &dependency.module_id,
+                    constraint,
+                    &provider.version,
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    fn notify_discovered_load_failed(&self, name: &str, error: &ModuleError) {
+        let callbacks = self.load_failed_callbacks.read().clone();
+        for callback in callbacks {
+            callback(name, error);
+        }
+        self.emit_module_load_failed(name, error);
+    }
+
     /// Shared discovery post-processing for `discover()` and `discover_internal()`.
     ///
     /// For each entry: validate the name per `PROTOCOL_SPEC` §2.7, reject
@@ -2421,10 +2481,18 @@ impl Registry {
     ///
     /// Uses the same **deferred-publish** pattern as `register_core` (Issue #65):
     /// a module is NOT visible in `core.modules` until its `on_load` succeeds.
-    #[allow(clippy::too_many_lines)] // sequential per-entry validation gates in a batch loop; splitting further requires passing state and reduces clarity
     fn register_discovered(&self, discovered: Vec<DiscoveredModule>) -> usize {
-        let mut registered_count = 0usize;
+        let batch_ids = discovered.iter().map(|entry| entry.name.clone()).collect();
+        self.register_discovered_batch(discovered, &batch_ids)
+    }
 
+    #[allow(clippy::too_many_lines)] // sequential per-entry validation gates in a batch loop; splitting further requires passing state and reduces clarity
+    fn register_discovered_batch(
+        &self,
+        discovered: impl IntoIterator<Item = DiscoveredModule>,
+        batch_ids: &HashSet<String>,
+    ) -> usize {
+        let mut registered_count = 0usize;
         for dm in discovered {
             // 1. Validate module_id.
             if let Err(e) = validate_module_id(&dm.name, false) {
@@ -2476,8 +2544,9 @@ impl Registry {
                 continue;
             }
 
-            // 4. Conflict detection under a brief core.read() (LOCK ORDER: core before in_flight).
-            {
+            // Reserve the ID against the same published state used for
+            // conflict and dependency checks. Lock order is core before in_flight.
+            let readiness = {
                 let core = self.core.read();
                 let existing_ids: HashSet<String> = core.modules.keys().cloned().collect();
                 match detect_id_conflicts(
@@ -2503,40 +2572,60 @@ impl Registry {
                     }
                     None => {}
                 }
-            }
-
-            // 5. Reserve slot in in_flight (deferred-publish: not yet visible).
-            {
-                let mut in_flight = self.in_flight.lock();
-                if in_flight.contains(&dm.name) {
-                    tracing::warn!(
-                        module_id = %dm.name,
-                        "Discovered module rejected: concurrent registration in progress"
-                    );
-                    continue;
+                let readiness = Self::check_discovered_dependencies(&core, &dm);
+                if readiness.is_ok() {
+                    let mut in_flight = self.in_flight.lock();
+                    if !in_flight.insert(dm.name.clone()) {
+                        tracing::warn!(
+                            module_id = %dm.name,
+                            "Discovered module rejected: concurrent registration in progress"
+                        );
+                        continue;
+                    }
+                    for dep in &dm.descriptor.dependencies {
+                        if dep.optional
+                            && batch_ids.contains(&dep.module_id)
+                            && !core.modules.contains_key(&dep.module_id)
+                        {
+                            tracing::warn!(module_id = %dm.name, dependency_id = %dep.module_id, "Optional dependency did not load");
+                        }
+                    }
                 }
-                in_flight.insert(dm.name.clone());
+                readiness
+            };
+            if let Err(error) = readiness {
+                self.notify_discovered_load_failed(&dm.name, &error);
+                continue;
             }
 
             // 6. Run on_load WITHOUT any lock held (module NOT yet in core.modules).
             match dm.module.on_load() {
                 Ok(()) => {
                     // Commit: insert into visible maps, remove from in_flight.
-                    {
+                    let published = {
                         let mut core = self.core.write();
-                        let schema = serde_json::json!({
-                            "input": dm.descriptor.input_schema.clone(),
-                            "output": dm.descriptor.output_schema.clone(),
-                        });
-                        core.schema_cache.insert(dm.name.clone(), schema);
-                        core.lowercase_map
-                            .insert(dm.name.to_lowercase(), dm.name.clone());
-                        core.modules.insert(dm.name.clone(), Arc::clone(&dm.module));
-                        core.descriptors
-                            .insert(dm.name.clone(), dm.descriptor.clone());
-                        core.sources.insert(dm.name.clone(), dm.source.clone());
+                        let published = Self::check_discovered_dependencies(&core, &dm);
+                        if published.is_ok() {
+                            let schema = serde_json::json!({
+                                "input": dm.descriptor.input_schema.clone(),
+                                "output": dm.descriptor.output_schema.clone(),
+                            });
+                            core.schema_cache.insert(dm.name.clone(), schema);
+                            core.lowercase_map
+                                .insert(dm.name.to_lowercase(), dm.name.clone());
+                            core.modules.insert(dm.name.clone(), Arc::clone(&dm.module));
+                            core.descriptors
+                                .insert(dm.name.clone(), dm.descriptor.clone());
+                            core.sources.insert(dm.name.clone(), dm.source.clone());
+                        }
+                        self.in_flight.lock().remove(&dm.name);
+                        published
+                    };
+                    if let Err(error) = published {
+                        dm.module.on_unload();
+                        self.notify_discovered_load_failed(&dm.name, &error);
+                        continue;
                     }
-                    self.in_flight.lock().remove(&dm.name);
 
                     for cb in self.snapshot_callbacks("register") {
                         cb(&dm.name, dm.module.as_ref());
@@ -2559,16 +2648,7 @@ impl Registry {
                     // registry-system.md names "discovery-driven paths
                     // (discover(), register_discovered, hot-reload, etc.)"
                     // explicitly (sync finding A-D-005).
-                    let cbs: Vec<Arc<LoadFailedCallbackFn>> = self
-                        .load_failed_callbacks
-                        .read()
-                        .iter()
-                        .map(Arc::clone)
-                        .collect();
-                    for cb in cbs {
-                        cb(&dm.name, &e);
-                    }
-                    self.emit_module_load_failed(&dm.name, &e);
+                    self.notify_discovered_load_failed(&dm.name, &e);
                 }
             }
         }

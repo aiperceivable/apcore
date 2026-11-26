@@ -1,0 +1,116 @@
+{
+  "description": "The opt-in completion handle reports one invocation's canonical JSON output, individual post-processing outcomes, and terminal reason, including on close or failure.",
+  "driver_contract": "Drive the public stream-with-completion API. `mode` chooses native streaming or single-call fallback. The fixture module emits the objects in `chunks`, or `chunks[0]` for fallback. Validation `invalid`, `ignored`, `recovered`, and `no_match` use a schema requiring an integer value. `ignored` configures ignore_errors and `recovered` uses step middleware recovery. Validation `removed` and `no_match` remove or scope that step. After `mutate` changes `value` to 2 in place; `fail` raises MODULE_EXECUTE_ERROR; `cancel` raises EXECUTION_CANCELLED. `execution_count` counts module body entry, not an iterator pull. For early close, cancellation or timeout, settle and observe completion independently of producer cleanup. For `timeout_after_first` hold the producer's next item past the deadline. For `timeout_during_after` or `cancel_during_after`, start the final pull, wait until after has entered its blocked callback, then allow the caller deadline or cancellation to settle completion before releasing the callback. For `recover_after_first`, outer module on_error returns {\"recovered\":true}. Project idiomatic field names to snake_case in assertions.",
+  "test_cases": [
+    {
+      "id": "native_merge_replaces_arrays",
+      "input": {"mode":"native","validation":"pass","after":"pass","action":"drain","chunks":[{"object":{"nest":{"left":1}},"parts":[1]},{"object":{"nest":{"right":2}},"parts":[2]}]},
+      "expected": {"reason":"completed","output":{"object":{"nest":{"left":1,"right":2}},"parts":[2]},"output_validation":{"status":"passed"},"middleware_after":{"status":"passed"},"error_code":null,"execution_count":1,"chunks":[{"object":{"nest":{"left":1}},"parts":[1]},{"object":{"nest":{"right":2}},"parts":[2]}]}
+    },
+    {
+      "id": "native_merge_uses_effective_depth",
+      "input": {"mode":"native","validation":"pass","after":"pass","action":"drain","chunks":[{"object":{"nest":{"left":1}},"parts":[1]},{"object":{"nest":{"right":2}},"parts":[2]}],"max_merge_depth":1},
+      "expected": {"reason":"completed","output":{"object":{"nest":{"right":2}},"parts":[2]},"output_validation":{"status":"passed"},"middleware_after":{"status":"passed"},"error_code":null,"execution_count":1,"chunks":[{"object":{"nest":{"left":1}},"parts":[1]},{"object":{"nest":{"right":2}},"parts":[2]}]}
+    },
+    {
+      "id": "empty_native_completes_with_empty_object",
+      "input": {"mode":"native","validation":"pass","after":"pass","action":"drain","chunks":[]},
+      "expected": {"reason":"completed","output":{},"output_validation":{"status":"passed"},"middleware_after":{"status":"passed"},"error_code":null,"execution_count":1,"chunks":[]}
+    },
+    {
+      "id": "native_output_detached_from_after_mutation",
+      "input": {"mode":"native","validation":"pass","after":"mutate","action":"drain","chunks":[{"value":1}]},
+      "expected": {"reason":"completed","output":{"value":1},"output_validation":{"status":"passed"},"middleware_after":{"status":"passed"},"error_code":null,"execution_count":1,"chunks":[{"value":1}]}
+    },
+    {
+      "id": "fallback_once_and_detached_from_after_mutation",
+      "input": {"mode":"fallback","validation":"pass","after":"mutate","action":"drain","chunks":[{"value":1}]},
+      "expected": {"reason":"completed","output":{"value":1},"output_validation":{"status":"passed"},"middleware_after":{"status":"passed"},"error_code":null,"execution_count":1,"chunks":[{"value":2}]}
+    },
+    {
+      "id": "invalid_native_output_remains_visible",
+      "input": {"mode":"native","validation":"invalid","after":"pass","action":"drain","chunks":[{"value":"bad"}]},
+      "expected": {"reason":"completed","output":{"value":"bad"},"output_validation":{"status":"failed","disposition":"unhandled"},"middleware_after":{"status":"skipped","reason":"not_reached"},"error_code":null,"execution_count":1,"chunks":[{"value":"bad"}]}
+    },
+    {
+      "id": "validation_removed",
+      "input": {"mode":"native","validation":"removed","after":"mutate","action":"drain","chunks":[{"value":"bad"}]},
+      "expected": {"reason":"completed","output":{"value":"bad"},"output_validation":{"status":"skipped","reason":"not_configured"},"middleware_after":{"status":"passed"},"error_code":null,"execution_count":1,"chunks":[{"value":"bad"}]}
+    },
+    {
+      "id": "validation_outside_match",
+      "input": {"mode":"native","validation":"no_match","after":"mutate","action":"drain","chunks":[{"value":"bad"}]},
+      "expected": {"reason":"completed","output":{"value":"bad"},"output_validation":{"status":"skipped","reason":"no_match"},"middleware_after":{"status":"passed"},"error_code":null,"execution_count":1,"chunks":[{"value":"bad"}]}
+    },
+    {
+      "id": "validation_failure_ignored_by_strategy",
+      "input": {"mode":"native","validation":"ignored","after":"pass","action":"drain","chunks":[{"value":"bad"}]},
+      "expected": {"reason":"completed","output":{"value":"bad"},"output_validation":{"status":"failed","disposition":"ignored"},"middleware_after":{"status":"passed"},"error_code":null,"execution_count":1,"chunks":[{"value":"bad"}]}
+    },
+    {
+      "id": "validation_failure_recovered_by_step_middleware",
+      "input": {"mode":"native","validation":"recovered","after":"pass","action":"drain","chunks":[{"value":"bad"}]},
+      "expected": {"reason":"completed","output":{"value":"bad"},"output_validation":{"status":"failed","disposition":"recovered"},"middleware_after":{"status":"passed"},"error_code":null,"execution_count":1,"chunks":[{"value":"bad"}]}
+    },
+    {
+      "id": "native_after_failure",
+      "input": {"mode":"native","validation":"pass","after":"fail","action":"drain","chunks":[{"value":1}]},
+      "expected": {"reason":"completed","output":{"value":1},"output_validation":{"status":"passed"},"middleware_after":{"status":"failed","disposition":"unhandled"},"error_code":null,"execution_count":1,"chunks":[{"value":1}]}
+    },
+    {
+      "id": "cancel_in_after",
+      "input": {"mode":"native","validation":"pass","after":"cancel","action":"drain","chunks":[{"value":1}]},
+      "expected": {"reason":"cancelled","output":{"value":1},"output_validation":{"status":"passed"},"middleware_after":{"status":"failed","disposition":"unhandled"},"error_code":"EXECUTION_CANCELLED","execution_count":1,"chunks":[{"value":1}]}
+    },
+    {
+      "id": "producer_fails_after_partial_chunk",
+      "input": {"mode":"native","validation":"pass","after":"pass","action":"fail_after_first","chunks":[{"value":1}]},
+      "expected": {"reason":"failed","output":null,"output_validation":{"status":"skipped","reason":"not_reached"},"middleware_after":{"status":"skipped","reason":"not_reached"},"error_code":"MODULE_EXECUTE_ERROR","execution_count":1,"chunks":[{"value":1}]}
+    },
+    {
+      "id": "producer_recovery_chunk_keeps_failure",
+      "input": {"mode":"native","validation":"pass","after":"pass","action":"recover_after_first","chunks":[{"value":1}]},
+      "expected": {"reason":"failed","output":null,"output_validation":{"status":"skipped","reason":"not_reached"},"middleware_after":{"status":"skipped","reason":"not_reached"},"error_code":"MODULE_EXECUTE_ERROR","execution_count":1,"chunks":[{"value":1},{"recovered":true}]}
+    },
+    {
+      "id": "close_before_consuming",
+      "input": {"mode":"native","validation":"pass","after":"pass","action":"close_before_first","chunks":[{"value":1}]},
+      "expected": {"reason":"consumer_closed","output":null,"output_validation":{"status":"skipped","reason":"not_reached"},"middleware_after":{"status":"skipped","reason":"not_reached"},"error_code":null,"execution_count":0,"chunks":[]}
+    },
+    {
+      "id": "close_after_first_chunk",
+      "input": {"mode":"native","validation":"pass","after":"pass","action":"close_after_first","chunks":[{"value":1},{"value":2}]},
+      "expected": {"reason":"consumer_closed","output":null,"output_validation":{"status":"skipped","reason":"not_reached"},"middleware_after":{"status":"skipped","reason":"not_reached"},"error_code":null,"execution_count":1,"chunks":[{"value":1}]}
+    },
+    {
+      "id": "cancel_after_first_chunk",
+      "input": {"mode":"native","validation":"pass","after":"pass","action":"cancel_after_first","chunks":[{"value":1},{"value":2}]},
+      "expected": {"reason":"cancelled","output":null,"output_validation":{"status":"skipped","reason":"not_reached"},"middleware_after":{"status":"skipped","reason":"not_reached"},"error_code":"EXECUTION_CANCELLED","execution_count":1,"chunks":[{"value":1}]}
+    },
+    {
+      "id": "deadline_waiting_for_next_chunk",
+      "input": {"mode":"native","validation":"pass","after":"pass","action":"timeout_after_first","chunks":[{"value":1}]},
+      "expected": {"reason":"timed_out","output":null,"output_validation":{"status":"skipped","reason":"not_reached"},"middleware_after":{"status":"skipped","reason":"not_reached"},"error_code":"MODULE_TIMEOUT","execution_count":1,"chunks":[{"value":1}]}
+    },
+    {
+      "id": "timeout_during_after",
+      "input": {"mode":"native","validation":"pass","after":"block","action":"timeout_during_after","chunks":[{"value":1}]},
+      "expected": {"reason":"timed_out","output":{"value":1},"output_validation":{"status":"passed"},"middleware_after":{"status":"skipped","reason":"not_reached"},"error_code":"MODULE_TIMEOUT","execution_count":1,"chunks":[{"value":1}]}
+    },
+    {
+      "id": "cancel_during_after",
+      "input": {"mode":"native","validation":"pass","after":"block","action":"cancel_during_after","chunks":[{"value":1}]},
+      "expected": {"reason":"cancelled","output":{"value":1},"output_validation":{"status":"passed"},"middleware_after":{"status":"skipped","reason":"not_reached"},"error_code":"EXECUTION_CANCELLED","execution_count":1,"chunks":[{"value":1}]}
+    },
+    {
+      "id": "fallback_timeout_during_after",
+      "input": {"mode":"fallback","validation":"pass","after":"block","action":"timeout_during_after","chunks":[{"value":1}]},
+      "expected": {"reason":"timed_out","output":{"value":1},"output_validation":{"status":"passed"},"middleware_after":{"status":"skipped","reason":"not_reached"},"error_code":"MODULE_TIMEOUT","execution_count":1,"chunks":[]}
+    },
+    {
+      "id": "fallback_cancel_during_after",
+      "input": {"mode":"fallback","validation":"pass","after":"block","action":"cancel_during_after","chunks":[{"value":1}]},
+      "expected": {"reason":"cancelled","output":{"value":1},"output_validation":{"status":"passed"},"middleware_after":{"status":"skipped","reason":"not_reached"},"error_code":"EXECUTION_CANCELLED","execution_count":1,"chunks":[]}
+    }
+  ]
+}

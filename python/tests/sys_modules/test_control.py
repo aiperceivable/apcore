@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import time
@@ -11,17 +12,20 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from apcore.client import APCore
 from apcore.config import Config
 from apcore.errors import InvalidInputError, ModuleDisabledError, ModuleError, ModuleNotFoundError, ReloadFailedError
 from apcore.events.emitter import ApCoreEvent, EventEmitter
 from apcore.module import ModuleAnnotations
 from apcore.registry.registry import Registry
+from apcore.sys_modules.audit import InMemoryAuditStore
 from apcore.sys_modules.control import (
     UpdateConfigModule,
     ToggleFeatureModule,
     _default_toggle_state,
     check_module_disabled,
 )
+from apcore.sys_modules.overrides import InMemoryOverridesStore
 
 
 # ---------------------------------------------------------------------------
@@ -93,6 +97,73 @@ class TestUpdateConfigAppliesChange:
         )
         assert config.get("executor.default_timeout") == 7777
 
+    def test_qualified_framework_key_updates_live_value_and_persists_storage_key(self) -> None:
+        config = _make_config()
+        emitter = MagicMock(spec=EventEmitter)
+        overrides = InMemoryOverridesStore()
+        module = UpdateConfigModule(config, emitter, overrides_store=overrides)
+        issued_key = "apcore.executor.default_timeout"
+
+        result = module.execute({"key": issued_key, "value": 5000, "reason": "test"}, None)
+
+        assert result == {"success": True, "key": issued_key, "old_value": 30000, "new_value": 5000}
+        assert config.get("executor.default_timeout") == result["new_value"]
+        assert overrides.load() == {"executor.default_timeout": 5000}
+        event = emitter.emit.call_args.args[0]
+        assert event.data["key"] == issued_key
+        assert event.data["old_value"] == result["old_value"]
+        assert event.data["new_value"] == result["new_value"]
+
+    def test_framework_update_in_namespace_keeps_other_executor_settings(self, tmp_path: Path) -> None:
+        config_file = tmp_path / "apcore.yaml"
+        config_file.write_text(
+            "apcore:\n  executor:\n    default_timeout: 30000\n    global_timeout: 45000\n",
+            encoding="utf-8",
+        )
+        config = Config.load(str(config_file), validate=False)
+        emitter = MagicMock(spec=EventEmitter)
+        overrides = InMemoryOverridesStore()
+        module = UpdateConfigModule(config, emitter, overrides_store=overrides)
+
+        result = module.execute({"key": "executor.default_timeout", "value": 5000, "reason": "test"}, None)
+
+        assert result["old_value"] == 30000
+        assert config.get("executor.default_timeout") == 5000
+        assert config.get("apcore.executor.default_timeout") == 5000
+        assert config.get("executor.global_timeout") == 45000
+        assert overrides.load() == {"apcore.executor.default_timeout": 5000}
+
+    @pytest.mark.asyncio
+    async def test_qualified_timeout_update_reaches_executor(self) -> None:
+        config = _make_config(
+            **{"sys_modules.enabled": True, "sys_modules.events.enabled": True, "sys_modules.control.enabled": True}
+        )
+        client = APCore(config=config)
+        release = asyncio.Event()
+
+        class WaitForSignal:
+            description = "Wait for the test to release the call"
+            input_schema = {"type": "object"}
+            output_schema = {"type": "object"}
+
+            async def execute(self, inputs: dict[str, Any], context: Any) -> dict[str, Any]:
+                await release.wait()
+                return {}
+
+        try:
+            client.register("test.wait_for_signal", WaitForSignal())
+            result = await client.call_async(
+                "system.control.update_config",
+                {"key": "apcore.executor.default_timeout", "value": 5, "reason": "test live deadline"},
+            )
+            assert result["new_value"] == 5
+            with pytest.raises(ModuleError) as error:
+                await asyncio.wait_for(client.call_async("test.wait_for_signal", {}), timeout=1)
+            assert error.value.code == "MODULE_TIMEOUT"
+        finally:
+            release.set()
+            client.close()
+
 
 class TestUpdateConfigEmitsConfigChangedEvent:
     def test_update_config_emits_config_changed_event(self) -> None:
@@ -114,6 +185,20 @@ class TestUpdateConfigEmitsConfigChangedEvent:
         assert event.data["old_value"] == 30000
         assert event.data["new_value"] == 5000
 
+    def test_qualified_alias_respects_redaction_of_effective_framework_path(self) -> None:
+        config = _make_config(**{"obs.redaction.sensitive_keys": ["executor.default_*"]})
+        emitter = MagicMock(spec=EventEmitter)
+        module = _make_module(config=config, emitter=emitter)
+
+        result = module.execute(
+            {"key": "apcore.executor.default_timeout", "value": 5000, "reason": "test redaction"},
+            None,
+        )
+
+        assert config.get("executor.default_timeout") == 5000
+        assert result["old_value"] == result["new_value"] == "***REDACTED***"
+        assert emitter.emit.call_args.args[0].data["new_value"] == result["new_value"]
+
 
 class TestUpdateConfigRestrictedKeySysModulesEnabled:
     def test_update_config_restricted_key_sys_modules_enabled(self) -> None:
@@ -128,12 +213,29 @@ class TestUpdateConfigRestrictedKeySysModulesEnabled:
 
 
 class TestUpdateConfigInvalidValueRejected:
+    @pytest.mark.parametrize("key", ["extensions.root", "apcore.extensions.root"])
+    def test_empty_path_does_not_publish_a_successful_update(self, key: str) -> None:
+        config = _make_config(**{"extensions.root": "./extensions"})
+        emitter = MagicMock(spec=EventEmitter)
+        overrides = InMemoryOverridesStore()
+        audit = InMemoryAuditStore()
+        module = UpdateConfigModule(config, emitter, audit_store=audit, overrides_store=overrides)
+
+        with pytest.raises(ModuleError) as error:
+            module.execute({"key": key, "value": "", "reason": "test"}, None)
+
+        assert error.value.code == "CONFIG_INVALID"
+        assert config.get("extensions.root") == "./extensions"
+        assert overrides.load() == {}
+        assert audit.query() == []
+        emitter.emit.assert_not_called()
+
     def test_update_config_invalid_value_rejected(self) -> None:
         """Set a value that fails constraint validation; verify error and rollback."""
         config = _make_config()
         original = config.get("executor.default_timeout")
         mod = _make_module(config=config)
-        with patch.object(config, "set", wraps=config.set) as write:
+        with patch.object(config, "_update_runtime_value", wraps=config._update_runtime_value) as write:
             with pytest.raises(ModuleError) as exc_info:
                 mod.execute(
                     {"key": "executor.default_timeout", "value": -1, "reason": "bad value"},

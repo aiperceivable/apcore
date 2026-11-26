@@ -10,9 +10,16 @@
 //! `src/builtin_steps.rs` calls for input and output validation. Driving
 //! `SchemaValidator` instead would defeat the fixture's purpose.
 
-use serde_json::Value;
+use std::sync::{
+    atomic::{AtomicUsize, Ordering},
+    Arc,
+};
+
+use async_trait::async_trait;
+use serde_json::{json, Value};
 
 use apcore::executor::validate_against_schema;
+use apcore::{Config, Context, ErrorCode, Executor, Module, ModuleError, Registry};
 
 use crate::conformance_env::find_fixtures_root;
 
@@ -71,4 +78,93 @@ fn conformance_schema_keyword_parity() {
         cases.len(),
         failures.join("\n")
     );
+}
+
+struct Echo {
+    input: Value,
+    output: Value,
+    executions: Arc<AtomicUsize>,
+}
+
+#[async_trait]
+impl Module for Echo {
+    fn description(&self) -> &'static str {
+        "Return the supplied object"
+    }
+
+    fn input_schema(&self) -> Value {
+        self.input.clone()
+    }
+
+    fn output_schema(&self) -> Value {
+        self.output.clone()
+    }
+
+    async fn execute(&self, inputs: Value, _: &Context<Value>) -> Result<Value, ModuleError> {
+        self.executions.fetch_add(1, Ordering::Relaxed);
+        Ok(inputs)
+    }
+}
+
+#[tokio::test]
+async fn conformance_schema_keyword_parity_through_public_module_boundary() {
+    let fixture = load_fixture("schema_keyword_parity");
+    let cases = fixture["test_cases"].as_array().expect("fixture cases");
+    for case in cases
+        .iter()
+        .filter(|case| case["exercise_module_boundary"] == true)
+    {
+        let registry = Arc::new(Registry::new());
+        let open = json!({"type": "object"});
+        let schema = case["schema"].clone();
+        let input = &case["input"];
+        let executions = Arc::new(AtomicUsize::new(0));
+        registry
+            .register_module(
+                "parity.input",
+                Box::new(Echo {
+                    input: schema.clone(),
+                    output: open.clone(),
+                    executions: Arc::clone(&executions),
+                }),
+            )
+            .unwrap();
+        registry
+            .register_module(
+                "parity.output",
+                Box::new(Echo {
+                    input: open,
+                    output: schema,
+                    executions: Arc::clone(&executions),
+                }),
+            )
+            .unwrap();
+        let executor = Executor::new(registry, Config::default());
+
+        for (id, executions_on_rejection) in [("parity.input", 0), ("parity.output", 1)] {
+            let result = executor.call(id, input.clone(), None, None).await;
+            if case["expected_valid"] == true {
+                assert_eq!(result.unwrap(), *input, "{}", case["id"]);
+            } else {
+                let error = result.unwrap_err();
+                assert_eq!(
+                    error.code,
+                    ErrorCode::SchemaValidationError,
+                    "{}",
+                    case["id"]
+                );
+                if let Some(keyword) = case["expected_keyword"].as_str() {
+                    let errors = error.details["errors"]
+                        .as_array()
+                        .expect("validation errors");
+                    assert!(
+                        errors.iter().any(|entry| entry["keyword"] == keyword),
+                        "{} did not report {keyword}: {errors:?}",
+                        case["id"]
+                    );
+                }
+                assert_eq!(executions.load(Ordering::Relaxed), executions_on_rejection);
+            }
+        }
+    }
 }

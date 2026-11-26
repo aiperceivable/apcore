@@ -44,6 +44,9 @@ from apcore.utils.call_chain import guard_call_chain
 class _MinimalModule:
     """No schema — accepts any input, returns a fixed dict."""
 
+    input_schema = {"type": "object"}
+    output_schema = {"type": "object"}
+
     def execute(self, inputs: dict[str, Any], context: Any) -> dict[str, Any]:
         del inputs, context
         return {"ok": True}
@@ -51,6 +54,9 @@ class _MinimalModule:
 
 class _FailingOnLoadModule:
     """Module whose on_load() always raises to exercise rollback paths."""
+
+    input_schema = {"type": "object"}
+    output_schema = {"type": "object"}
 
     def execute(self, inputs: dict[str, Any], context: Any) -> dict[str, Any]:
         del inputs, context

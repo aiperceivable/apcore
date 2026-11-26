@@ -305,9 +305,7 @@ pub(crate) fn augment_with_context_identity(
 // SysModuleError — strict registration failure (Issue #45 §1.5)
 // ---------------------------------------------------------------------------
 
-/// Error type returned by `register_sys_modules`. The `RegistrationFailed`
-/// variant carries the offending `module_id` so callers can route the failure
-/// to module-specific recovery logic.
+/// System-module registration error with the affected module ID.
 #[derive(Debug, Error)]
 pub enum SysModuleError {
     #[error("system module '{module_id}' failed to register: {source}")]
@@ -320,6 +318,7 @@ pub enum SysModuleError {
 
 impl SysModuleError {
     #[must_use]
+    /// The affected module ID.
     pub fn module_id(&self) -> &str {
         match self {
             Self::RegistrationFailed { module_id, .. } => module_id,
@@ -445,6 +444,7 @@ pub fn register_sys_modules_with_options(
         metrics_collector,
         options,
         &mut SysModulesStartup::default(),
+        true,
     )
 }
 
@@ -457,6 +457,7 @@ pub(crate) fn register_sys_modules_for_client(
     metrics_collector: Option<MetricsCollector>,
     options: SysModulesOptions,
     startup: &mut SysModulesStartup,
+    executor_supplied: bool,
 ) -> Result<SysModulesContext, SysModuleError> {
     let SysModulesOptions {
         overrides_path,
@@ -494,6 +495,9 @@ pub(crate) fn register_sys_modules_for_client(
 
     // --- §1.1: load overrides into a mutable Config clone, then share it ---
     let mut effective_config = config.clone();
+    // A supplied executor has its own defaults. Explicit control writes and
+    // persisted overrides update both configurations from their own baselines.
+    let mut executor_config = executor_supplied.then(|| executor.config.as_ref().clone());
     // Explicit option wins; otherwise fall back to the
     // `sys_modules.control.overrides_path` CONFIG key, as apcore-python does
     // (registration.py:382). Reading `SysModulesOptions` alone meant a project
@@ -503,7 +507,12 @@ pub(crate) fn register_sys_modules_for_client(
         .clone()
         .or_else(|| config.get_path("sys_modules.control.overrides_path"));
     if let Some(path) = resolved_overrides_path.as_deref() {
-        overrides::load_overrides(path, &mut effective_config, Some(&toggle_state));
+        overrides::load_config_overrides(
+            path,
+            &mut effective_config,
+            executor_config.as_mut(),
+            Some(&toggle_state),
+        );
     } else if overrides_store.is_some() {
         // An injected OverridesStore is written to by the control modules but
         // cannot be READ here: `OverridesStore::load` is async and
@@ -544,6 +553,7 @@ pub(crate) fn register_sys_modules_for_client(
     }
 
     let config_arc = Arc::new(Mutex::new(effective_config.clone()));
+    let executor_config = executor_config.map(|config| Arc::new(Mutex::new(config)));
 
     // Build the EventEmitter up-front as an owned value so we can populate
     // its subscribers from config synchronously, then wrap it in the Arc<Mutex<_>>
@@ -726,10 +736,13 @@ pub(crate) fn register_sys_modules_for_client(
         }
 
         if control_enabled {
+            let control_config =
+                control::ControlConfig::new(Arc::clone(&config_arc), executor_config.clone());
             modules.push((
                 "system.control.update_config",
                 Box::new(
                     UpdateConfigModule::new(Arc::clone(&config_arc), Arc::clone(&emitter_arc))
+                        .with_control_config(control_config.clone())
                         // The RESOLVED path: an overrides file named only by the
                         // config key is restored above and must be written back
                         // here, or a restart loses every runtime change.
@@ -743,7 +756,12 @@ pub(crate) fn register_sys_modules_for_client(
                 "system.control.reload_module",
                 Box::new(
                     ReloadModule::new(Arc::clone(&registry), Arc::clone(&emitter_arc))
-                        .with_config(Some(Arc::clone(&config_arc)))
+                        .with_control_config(
+                            control_config,
+                            executor_supplied.then(|| Arc::clone(&executor.config)),
+                            resolved_overrides_path.clone(),
+                            overrides_store.clone(),
+                        )
                         .with_audit_store(audit_store.clone()),
                 ),
                 vec!["system".into(), "control".into()],
@@ -806,6 +824,11 @@ pub(crate) fn register_sys_modules_for_client(
         });
         match registry.register_internal(id, module, descriptor) {
             Ok(()) => {
+                if id == "system.control.update_config" {
+                    executor.set_runtime_config(Arc::clone(
+                        executor_config.as_ref().unwrap_or(&config_arc),
+                    ));
+                }
                 registered.insert(id.to_string(), info);
             }
             Err(e) => {

@@ -315,6 +315,26 @@ class TestCallFlow:
         with pytest.raises(SchemaValidationError):
             ex.call("test.module", {"name": "Alice"})
 
+    def test_dict_schema_reports_failed_constraint_without_embedding_output(self) -> None:
+        class ModuleWithDictSchema:
+            input_schema: dict[str, Any] = {}
+            output_schema = {
+                "type": "object",
+                "properties": {"value": {"type": "integer", "x-sensitive": True}},
+            }
+
+            def execute(self, inputs: dict[str, Any], context: Context) -> dict[str, Any]:
+                return {"value": "private-canary"}
+
+        with _make_executor(module=ModuleWithDictSchema()) as executor:
+            with pytest.raises(SchemaValidationError) as exc_info:
+                executor.call("test.module")
+
+        error = exc_info.value
+        assert error.details["errors"][0]["path"] == "/value"
+        assert error.details["errors"][0]["keyword"] == "type"
+        assert "private-canary" not in repr(error.to_dict())
+
     def test_middleware_after_called(self) -> None:
         """Step 9: Middleware after chain is called."""
         mod = MockModule()

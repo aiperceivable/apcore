@@ -137,7 +137,7 @@ schemas/
 
 ```yaml
 # schemas/executor/email/send_email.schema.yaml
-$schema: "https://apcore.dev/schema/v1"
+$schema: "https://apcore.aiperceivable.com/schemas/module-schema.schema.json"
 version: "1.0.0"
 module_id: "executor.email.send_email"
 description: "Send an email through the configured SMTP relay"

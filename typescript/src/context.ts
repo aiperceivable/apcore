@@ -5,6 +5,7 @@
 import { v4 as uuidv4 } from 'uuid';
 import type { CancelToken } from './cancel.js';
 import { ContextBindingError } from './errors.js';
+import { copyObservationState, inheritObservationParent, setRemoteSpanParent } from './execution-lifetime.js';
 import { ContextLogger } from './observability/context-logger.js';
 import type { TraceParent } from './trace-context.js';
 
@@ -113,8 +114,8 @@ export class Context<T = null> {
    *     Contexts always have `callerId === null`.
    *
    * When `traceParent` is provided, its `traceId` is accepted only if it is
-   * exactly 32 lowercase hex characters and not the W3C-reserved all-zero
-   * or all-f value. Otherwise a fresh traceId is generated and a warning
+   * exactly 32 lowercase hex characters and unequal to the reserved all-zero
+   * and APCore all-f values. Otherwise a fresh traceId is generated and a warning
    * is logged. No normalization (dashed UUID stripping, case folding) is
    * performed here; such normalization is the responsibility of the
    * TraceParent header parser or the caller's ContextFactory.
@@ -131,8 +132,8 @@ export class Context<T = null> {
     if (traceParent) {
       const h = traceParent.traceId;
       const isValidHex = /^[0-9a-f]{32}$/.test(h);
-      const isW3cValid = h !== '0'.repeat(32) && h !== 'f'.repeat(32);
-      if (isValidHex && isW3cValid) {
+      const isApcoreValid = h !== '0'.repeat(32) && h !== 'f'.repeat(32);
+      if (isValidHex && isApcoreValid) {
         traceId = h;
       } else {
         console.warn(
@@ -160,7 +161,7 @@ export class Context<T = null> {
         ctxData['_apcore.trace.state'] = tracestate;
       }
     }
-    return new Context<S>(
+    const context = new Context<S>(
       traceId,
       null,
       [],
@@ -172,6 +173,11 @@ export class Context<T = null> {
       services ?? (null as S),
       globalDeadline ?? null,
     );
+    if (traceParent && traceParent.traceId === traceId &&
+        /^[0-9a-f]{16}$/.test(traceParent.parentId) && traceParent.parentId !== '0'.repeat(16)) {
+      setRemoteSpanParent(context, traceParent.parentId);
+    }
+    return context;
   }
 
   /**
@@ -190,7 +196,7 @@ export class Context<T = null> {
         'Context already bound to a different Executor instance',
       );
     }
-    return new Context<T>(
+    const bound = new Context<T>(
       this.traceId,
       this.callerId,
       [...this.callChain],
@@ -203,6 +209,8 @@ export class Context<T = null> {
       this.globalDeadline,
       this.redactedOutput,
     );
+    copyObservationState(this, bound);
+    return bound;
   }
 
   /** @deprecated Use {@link withExecutor}. Retained for older callers; will be removed in a future major. */
@@ -222,7 +230,7 @@ export class Context<T = null> {
    * first call's remaining time — or fail immediately, having already expired.
    */
   _withGlobalDeadline(globalDeadline: number | null): Context<T> {
-    return new Context<T>(
+    const bound = new Context<T>(
       this.traceId,
       this.callerId,
       [...this.callChain],
@@ -235,6 +243,8 @@ export class Context<T = null> {
       globalDeadline,
       this.redactedOutput,
     );
+    copyObservationState(this, bound);
+    return bound;
   }
 
   /**
@@ -255,7 +265,12 @@ export class Context<T = null> {
         'Context already bound to a different CancelToken',
       );
     }
-    return new Context<T>(
+    return this._withCancellationScope(cancelToken);
+  }
+
+  /** @internal Carry an invocation-owned token without changing call-chain identity. */
+  _withCancellationScope(cancelToken: CancelToken): Context<T> {
+    const bound = new Context<T>(
       this.traceId,
       this.callerId,
       [...this.callChain],
@@ -268,6 +283,8 @@ export class Context<T = null> {
       this.globalDeadline,
       this.redactedOutput,
     );
+    copyObservationState(this, bound);
+    return bound;
   }
 
   /**
@@ -457,13 +474,13 @@ export class Context<T = null> {
    * **Invariant — `data` is shared by reference.** The child inherits the
    * parent's `data` map; writes in the child propagate to the parent and to
    * every sibling child built from the same parent. This is intentional: it
-   * lets middleware state (retry counters, tracing spans) flow across the
-   * call chain within a single trace. Do NOT rely on sibling isolation.
+   * lets data such as retry counters flow across the call chain within a
+   * single trace. Each invocation carries its own tracing and timing state.
    *
    * Everything else (`redactedInputs`, etc.) is per-call.
    */
   child(targetModuleId: string, cancelToken: CancelToken | null = this.cancelToken): Context<T> {
-    return new Context<T>(
+    const child = new Context<T>(
       this.traceId,
       this.callChain.length > 0 ? this.callChain[this.callChain.length - 1] : null,
       [...this.callChain, targetModuleId],
@@ -475,6 +492,8 @@ export class Context<T = null> {
       this.services,
       this.globalDeadline,
     );
+    inheritObservationParent(this, child);
+    return child;
   }
 }
 

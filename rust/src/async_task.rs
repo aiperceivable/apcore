@@ -11,11 +11,12 @@ use dashmap::DashMap;
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use tokio::sync::{watch, Semaphore};
+use tokio::sync::{watch, OwnedSemaphorePermit, Semaphore};
 use tokio::task::JoinHandle;
 use tracing::{debug, error, warn};
 use uuid::Uuid;
 
+use crate::cancel::CancelToken;
 use crate::context::Context;
 use crate::errors::{ErrorCode, ModuleError};
 use crate::executor::Executor;
@@ -359,44 +360,32 @@ impl Default for ReaperConfig {
 /// [`AsyncTaskManager::shutdown`] calls) stops a detached reaper.
 #[derive(Debug)]
 pub struct ReaperHandle {
-    handle: Option<JoinHandle<()>>,
+    handle: JoinHandle<()>,
     stop_tx: watch::Sender<bool>,
-    /// Shared `running` flag owned by the [`AsyncTaskManager`] that spawned
-    /// this reaper. Cleared on `stop()` so a subsequent `start_reaper` call
-    /// succeeds. NOT cleared on drop — see the type docs.
-    running_flag: Arc<std::sync::atomic::AtomicBool>,
-    /// The manager's slot holding this reaper's stop sender, cleared by
-    /// `stop()` so the manager does not keep signalling a dead reaper.
     stop_slot: Arc<Mutex<Option<watch::Sender<bool>>>>,
 }
 
 impl ReaperHandle {
     /// Signal the reaper to stop and await its clean shutdown.
-    pub async fn stop(mut self) {
+    pub async fn stop(self) {
         // Receivers may have already been dropped — ignore the send error.
         let _ = self.stop_tx.send(true);
-        // Take the JoinHandle so we can `.await` it without moving out of
-        // `self` (the Drop impl below releases the running flag).
-        if let Some(handle) = self.handle.take() {
-            if let Err(err) = handle.await {
-                if !err.is_cancelled() {
-                    warn!("reaper task join failed: {err}");
-                }
+        if let Err(err) = self.handle.await {
+            if !err.is_cancelled() {
+                warn!("reaper task join failed: {err}");
             }
         }
-        self.stop_slot.lock().take();
-        self.running_flag
-            .store(false, std::sync::atomic::Ordering::SeqCst);
+        let mut slot = self.stop_slot.lock();
+        // The manager may have stopped this generation and started another
+        // while the old handle was still awaiting its final sweep.
+        if slot
+            .as_ref()
+            .is_some_and(|sender| sender.same_channel(&self.stop_tx))
+        {
+            slot.take();
+        }
     }
 }
-
-// No `Drop` impl on purpose. Clearing `running_flag` here without signalling
-// `stop_tx` was the defect: the sweep loop kept running while the guard it was
-// holding was released, so the next `start_reaper` won its compare_exchange and
-// a SECOND sweep loop ran alongside the first, both deleting from the same
-// store. Dropping a handle detaches — and a detached reaper is still running,
-// so the flag stays set. Use `ReaperHandle::stop` or
-// `AsyncTaskManager::stop_reaper` to actually stop one.
 
 // ---------------------------------------------------------------------------
 // AsyncTaskManager
@@ -404,6 +393,7 @@ impl ReaperHandle {
 
 struct TaskHandle {
     join: JoinHandle<()>,
+    transition: Arc<tokio::sync::Mutex<()>>,
     // Shared with the worker's normal deregistration path, so cancellation
     // cannot reinsert a handle after that worker has already removed itself.
     finished: Arc<AtomicBool>,
@@ -414,6 +404,7 @@ impl From<JoinHandle<()>> for TaskHandle {
     fn from(join: JoinHandle<()>) -> Self {
         Self {
             join,
+            transition: Arc::default(),
             finished: Arc::new(AtomicBool::new(false)),
         }
     }
@@ -448,16 +439,8 @@ pub struct AsyncTaskManager {
     /// sync mutex's `!Send` guard would block `tokio::spawn` of any code
     /// path that touches `submit` (D10-003 alignment).
     admission_lock: Arc<tokio::sync::Mutex<()>>,
-    /// Tracks whether a reaper is currently running. Closes A-D-AT-05 —
-    /// `start_reaper` returns `Err(ReaperAlreadyRunning)` when this flag is
-    /// already set. Cleared by `ReaperHandle::stop` (and on drop) so a
-    /// caller can `stop()` then `start_reaper()` again.
-    reaper_running: Arc<std::sync::atomic::AtomicBool>,
-    /// Stop sender for the reaper this manager started, retained so
-    /// [`Self::shutdown`] can stop it even when the [`ReaperHandle`] was
-    /// dropped (detached). `shutdown` used to leave the reaper sweeping
-    /// forever, while apcore-python (`stop_reaper`) and apcore-typescript both
-    /// stop theirs.
+    /// Single-reaper guard and stop sender. Retained so [`Self::shutdown`]
+    /// can stop the current reaper even if its handle was dropped.
     reaper_stop: Arc<Mutex<Option<watch::Sender<bool>>>>,
 }
 
@@ -496,7 +479,6 @@ impl AsyncTaskManager {
             cancellation_lock: tokio::sync::Mutex::new(()),
             semaphore: Arc::new(Semaphore::new(max_concurrent)),
             admission_lock: Arc::new(tokio::sync::Mutex::new(())),
-            reaper_running: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             reaper_stop: Arc::new(Mutex::new(None)),
         }
     }
@@ -602,17 +584,20 @@ impl AsyncTaskManager {
         // stale entry.
         let finished = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let finished_in_task = Arc::clone(&finished);
+        let transition = Arc::new(tokio::sync::Mutex::new(()));
+        let transition_in_task = Arc::clone(&transition);
 
         let handle = tokio::spawn(async move {
             run_task(
                 tid.clone(),
                 mid,
                 inputs,
-                Some(context),
+                context,
                 retry,
                 executor,
                 semaphore,
                 store_for_run,
+                transition_in_task,
             )
             .await;
             // The store may already expose a timeout while the invocation is
@@ -634,6 +619,7 @@ impl AsyncTaskManager {
                     task_id.clone(),
                     TaskHandle {
                         join: handle,
+                        transition,
                         finished,
                     },
                 );
@@ -715,6 +701,15 @@ impl AsyncTaskManager {
     /// `Ok(false)` for an unknown or already-terminal task.
     pub async fn cancel(&self, task_id: &str) -> Result<bool, ModuleError> {
         let _cancellation = self.cancellation_lock.lock().await;
+        let transition = self
+            .handles
+            .lock()
+            .get(task_id)
+            .map(|handle| Arc::clone(&handle.transition));
+        let _transition = match &transition {
+            Some(lock) => Some(lock.lock().await),
+            None => None,
+        };
         let Some(info) = self.store.get(task_id).await? else {
             return Ok(false);
         };
@@ -784,15 +779,12 @@ impl AsyncTaskManager {
     /// Does not await the sweep loop's final iteration — hold the
     /// [`ReaperHandle`] and call [`ReaperHandle::stop`] when that matters.
     pub fn stop_reaper(&self) -> bool {
-        let sender = self.reaper_stop.lock().take();
-        let was_running = sender.is_some();
-        if let Some(stop_tx) = sender {
-            // Receivers may already be gone — ignore the send error.
-            let _ = stop_tx.send(true);
-        }
-        self.reaper_running
-            .store(false, std::sync::atomic::Ordering::SeqCst);
-        was_running
+        let mut slot = self.reaper_stop.lock();
+        let Some(stop_tx) = slot.take() else {
+            return false;
+        };
+        let _ = stop_tx.send(true);
+        true
     }
 
     /// Cancel all pending and running tasks, and stop the reaper.
@@ -995,21 +987,10 @@ impl AsyncTaskManager {
     ///
     /// # Errors
     /// Returns `ModuleError` with [`ErrorCode::ReaperAlreadyRunning`] when a
-    /// reaper handle from a prior `start_reaper` call has not yet been
-    /// stopped or dropped.
+    /// reaper from a prior `start_reaper` call has not yet been stopped.
     pub fn start_reaper(&self, config: ReaperConfig) -> Result<ReaperHandle, ModuleError> {
-        // Compare-and-swap from `false` → `true` so concurrent calls do not
-        // race past the check. `Err` indicates the flag was already `true`.
-        if self
-            .reaper_running
-            .compare_exchange(
-                false,
-                true,
-                std::sync::atomic::Ordering::SeqCst,
-                std::sync::atomic::Ordering::SeqCst,
-            )
-            .is_err()
-        {
+        let mut slot = self.reaper_stop.lock();
+        if slot.is_some() {
             return Err(ModuleError::new(
                 ErrorCode::ReaperAlreadyRunning,
                 "AsyncTaskManager reaper is already running; call stop() first",
@@ -1026,7 +1007,7 @@ impl AsyncTaskManager {
                 tokio::select! {
                     biased;
                     changed = stop_rx.changed() => {
-                        if changed.is_ok() && *stop_rx.borrow() {
+                        if changed.is_err() || *stop_rx.borrow() {
                             debug!("reaper received stop signal");
                             return;
                         }
@@ -1056,12 +1037,11 @@ impl AsyncTaskManager {
 
         // Retain the sender so `shutdown` / `stop_reaper` can stop this reaper
         // even after the handle below is dropped (detached).
-        *self.reaper_stop.lock() = Some(stop_tx.clone());
+        *slot = Some(stop_tx.clone());
 
         Ok(ReaperHandle {
-            handle: Some(handle),
+            handle,
             stop_tx,
-            running_flag: Arc::clone(&self.reaper_running),
             stop_slot: Arc::clone(&self.reaper_stop),
         })
     }
@@ -1095,6 +1075,8 @@ async fn check_capacity_and_save(
     Ok(())
 }
 
+const INITIAL_STORE_RETRY_DELAY: Duration = Duration::from_millis(10);
+
 /// Run a single task with optional retry/backoff. Persists state transitions
 /// via the [`TaskStore`].
 #[allow(clippy::too_many_arguments)]
@@ -1102,123 +1084,198 @@ async fn run_task(
     task_id: String,
     module_id: String,
     inputs: serde_json::Value,
-    context: Option<Context<serde_json::Value>>,
+    context: Context<serde_json::Value>,
     retry: Option<RetryConfig>,
     executor: Arc<Executor>,
     semaphore: Arc<Semaphore>,
     store: Arc<dyn TaskStore>,
+    transition: Arc<tokio::sync::Mutex<()>>,
 ) {
     let max_retries = retry.as_ref().map_or(0, |r| r.max_retries);
+    let mut start_delay = INITIAL_STORE_RETRY_DELAY;
 
     loop {
         // Acquire concurrency permit. A closed semaphore is treated as
         // cancellation (matches the legacy `_run` behaviour).
-        let Ok(permit) = semaphore.acquire().await else {
+        let Ok(permit) = Arc::clone(&semaphore).acquire_owned().await else {
             mark_cancelled(&store, &task_id).await;
             return;
         };
 
-        // Re-fetch and short-circuit if cancellation happened during the wait.
-        let Ok(Some(mut info)) = store.get(&task_id).await else {
-            return;
+        let mut info = match start_attempt(store.as_ref(), &task_id, &transition).await {
+            Ok(Some(info)) => info,
+            Ok(None) => return,
+            Err(error) => {
+                if start_delay == INITIAL_STORE_RETRY_DELAY {
+                    warn!(task_id = %task_id, code = %error.wire_code(), "retrying task start");
+                }
+                // No business code has run. Release the slot and recheck the
+                // record after backoff, including after an ambiguous write.
+                drop(permit);
+                wait_for_store_retry(&mut start_delay).await;
+                continue;
+            }
         };
-        if info.status == TaskStatus::Cancelled {
-            return;
-        }
-        info.status = TaskStatus::Running;
-        if info.started_at.is_none() {
-            info.started_at = Some(now_secs());
-        }
-        if let Err(err) = store.save(&info).await {
-            error!(task_id = %task_id, "store.save(running) failed: {err}");
-            return;
-        }
+        start_delay = INITIAL_STORE_RETRY_DELAY;
 
-        // Execute the module.
+        // Every retry gets a fresh invocation scope within the task's
+        // cancellation tree. A timeout can report before physical cleanup.
+        let mut attempt_context = context.clone();
+        let token = context
+            .cancel_token
+            .as_ref()
+            .map_or_else(CancelToken::new, CancelToken::child);
+        attempt_context.cancel_token = Some(token.clone());
+        let slot = TaskAttemptSlot {
+            token,
+            permit: Some(permit),
+        };
         let result = executor
-            .call(&module_id, inputs.clone(), context.as_ref(), None)
+            .call(&module_id, inputs.clone(), Some(&attempt_context), None)
             .await;
-        drop(permit);
-
-        // Re-fetch in case cancel() raced with the executor call.
-        let Ok(Some(mut info)) = store.get(&task_id).await else {
-            return;
-        };
-        if info.status == TaskStatus::Cancelled {
-            return;
-        }
 
         match result {
             Ok(output) => {
                 info.status = TaskStatus::Completed;
-                info.completed_at = Some(now_secs());
                 info.result = Some(output);
-                save_terminal_if_not_cancelled(&store, &task_id, &info).await;
-                return;
             }
             Err(err) => {
                 if let Some(cfg) = retry.as_ref() {
                     if info.retry_count < max_retries {
                         let delay_ms = cfg.compute_delay_ms(info.retry_count);
-                        info.retry_count += 1;
-                        info.status = TaskStatus::Pending;
-                        // `started_at` is intentionally NOT reset across retries:
-                        // it captures the wall-clock of the first execution and
-                        // matches the Python reference behaviour so cross-language
-                        // TaskInfo snapshots remain comparable mid-retry.
-                        match store.save(&info).await {
-                            Ok(()) => {
+                        match queue_retry(store.as_ref(), &info, &transition).await {
+                            Ok(true) => {
                                 debug!(
                                     task_id = %task_id,
-                                    attempt = info.retry_count,
+                                    attempt = info.retry_count + 1,
                                     delay_ms,
                                     "scheduling retry"
                                 );
+                                slot.token.drain().await;
+                                drop(slot);
                                 tokio::time::sleep(Duration::from_millis(delay_ms)).await;
                                 continue;
                             }
+                            Ok(false) => return,
                             Err(e) => {
-                                warn!(task_id = %task_id, "retry state save failed: {e}");
-                                info.retry_count -= 1;
+                                warn!(task_id = %task_id, code = %e.wire_code(), "could not queue retry");
                             }
                         }
                     }
                 }
                 info.status = TaskStatus::Failed;
-                info.completed_at = Some(now_secs());
                 info.error = Some(err.to_string());
-                save_terminal_if_not_cancelled(&store, &task_id, &info).await;
                 error!(task_id = %task_id, "task failed: {err}");
-                return;
             }
+        }
+        info.completed_at = Some(now_secs());
+        // The attempt slot still owns any physical work that outlived a timeout.
+        drop(slot);
+        save_terminal_if_not_cancelled(store.as_ref(), info, &transition).await;
+        return;
+    }
+}
+
+async fn start_attempt(
+    store: &dyn TaskStore,
+    task_id: &str,
+    transition: &tokio::sync::Mutex<()>,
+) -> Result<Option<TaskInfo>, ModuleError> {
+    let _transition = transition.lock().await;
+    let Some(mut info) = store
+        .get(task_id)
+        .await?
+        .filter(|info| info.status.is_active())
+    else {
+        return Ok(None);
+    };
+    info.status = TaskStatus::Running;
+    info.started_at.get_or_insert_with(now_secs);
+    store.save(&info).await?;
+    Ok(Some(info))
+}
+
+async fn queue_retry(
+    store: &dyn TaskStore,
+    info: &TaskInfo,
+    transition: &tokio::sync::Mutex<()>,
+) -> Result<bool, ModuleError> {
+    let _transition = transition.lock().await;
+    let Some(mut current) = store
+        .get(&info.task_id)
+        .await?
+        .filter(|current| current.status.is_active())
+    else {
+        return Ok(false);
+    };
+    current.status = TaskStatus::Pending;
+    current.retry_count = info.retry_count + 1;
+    store.save(&current).await?;
+    Ok(true)
+}
+
+struct TaskAttemptSlot {
+    token: CancelToken,
+    permit: Option<OwnedSemaphorePermit>,
+}
+
+impl Drop for TaskAttemptSlot {
+    fn drop(&mut self) {
+        if self.token.has_active_executions() {
+            let permit = self.permit.take();
+            let token = self.token.clone();
+            tokio::spawn(async move {
+                token.drain().await;
+                drop(permit);
+            });
         }
     }
 }
 
-/// Re-fetches the task immediately before writing a terminal status. If a
-/// concurrent `cancel()` flipped the task to Cancelled while the executor was
-/// finishing, leave that state intact — do not overwrite it with
-/// Completed/Failed. The intermediate `re-fetch + check + save` is not
-/// atomic at the store level, so a perfectly-timed cancel can still slip in
-/// between the `get` and the `save`; closing that final window would require
-/// CAS support in the `TaskStore` trait. The window left here is small and
-/// the cost of slipping (one extra terminal write that the next cancel will
-/// no-op against) is non-corrupting.
-pub(crate) async fn save_terminal_if_not_cancelled(
-    store: &Arc<dyn TaskStore>,
-    task_id: &str,
-    info: &TaskInfo,
+/// Publish a completed attempt separately from its business retry policy.
+async fn save_terminal_if_not_cancelled(
+    store: &dyn TaskStore,
+    mut info: TaskInfo,
+    transition: &tokio::sync::Mutex<()>,
 ) {
-    if let Ok(Some(current)) = store.get(task_id).await {
-        if current.status == TaskStatus::Cancelled {
-            return;
+    let mut delay = INITIAL_STORE_RETRY_DELAY;
+    loop {
+        let error = {
+            let _transition = transition.lock().await;
+            match store.get(&info.task_id).await {
+                Ok(Some(current)) if current.status.is_active() => match store.save(&info).await {
+                    Ok(()) => return,
+                    Err(error) => {
+                        if error.code == ErrorCode::TaskStoreUnavailable
+                            && error.retryable == Some(false)
+                        {
+                            if info.status != TaskStatus::Completed {
+                                warn!(task_id = %info.task_id, "store rejected terminal state");
+                                return;
+                            }
+                            info.status = TaskStatus::Failed;
+                            info.result = None;
+                            info.error = Some("Task result could not be persisted".to_owned());
+                        }
+                        error
+                    }
+                },
+                Ok(_) => return,
+                Err(error) => error,
+            }
+        };
+        if delay == INITIAL_STORE_RETRY_DELAY {
+            warn!(task_id = %info.task_id, code = %error.wire_code(), "retrying terminal task write");
         }
+        // A failed save may already have committed. Retry with a fresh read,
+        // releasing the task lock during backoff so cancellation can win.
+        wait_for_store_retry(&mut delay).await;
     }
-    // Background task: there is no caller to propagate to (D-81 governs the
-    // manager surface), so a store failure is logged rather than dropped.
-    if let Err(e) = store.save(info).await {
-        warn!(task_id = %task_id, "terminal state save failed: {e}");
-    }
+}
+
+async fn wait_for_store_retry(delay: &mut Duration) {
+    tokio::time::sleep(*delay).await;
+    *delay = (*delay * 2).min(Duration::from_secs(1));
 }
 
 async fn mark_cancelled(store: &Arc<dyn TaskStore>, task_id: &str) {
@@ -1885,7 +1942,8 @@ mod tests {
             retry_count: 0,
             max_retries: 0,
         };
-        save_terminal_if_not_cancelled(&store, task_id, &terminal).await;
+        save_terminal_if_not_cancelled(store.as_ref(), terminal, &tokio::sync::Mutex::new(()))
+            .await;
 
         let after = store.get(task_id).await.unwrap().expect("task present");
         assert_eq!(

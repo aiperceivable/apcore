@@ -4,6 +4,7 @@
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use thiserror::Error;
 
@@ -370,10 +371,10 @@ impl ErrorCode {
     /// if serde serialization unexpectedly fails (should never occur).
     #[must_use]
     pub fn wire_str(self) -> String {
-        serde_json::to_value(self)
-            .ok()
-            .and_then(|v| v.as_str().map(str::to_owned))
-            .unwrap_or_else(|| format!("{self:?}"))
+        match serde_json::to_value(self) {
+            Ok(serde_json::Value::String(code)) => code,
+            _ => format!("{self:?}"),
+        }
     }
 }
 
@@ -391,6 +392,16 @@ pub static FRAMEWORK_CODES: std::sync::LazyLock<HashSet<String>> = std::sync::La
         })
         .collect()
 });
+
+fn reserved_code_reason(code: &str) -> Option<Cow<'static, str>> {
+    if FRAMEWORK_CODES.contains(code) {
+        return Some(Cow::Borrowed("is a reserved framework code"));
+    }
+    FRAMEWORK_ERROR_CODE_PREFIXES
+        .iter()
+        .find(|prefix| code.starts_with(**prefix))
+        .map(|prefix| Cow::Owned(format!("uses reserved framework prefix '{prefix}'")))
+}
 
 /// Declarative `retryable` policy, keyed by error code (single source of
 /// truth). The authority is PROTOCOL_SPEC §8.6's classification table, of which
@@ -595,25 +606,106 @@ pub fn user_fixable_for_code(code: ErrorCode) -> Option<bool> {
 }
 
 /// Structured error returned by module execution.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct ModuleError {
+    /// Framework classification. Custom codes are classified as `ModuleExecuteError`.
     pub code: ErrorCode,
     pub message: String,
-    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    /// Error details. Use `with_details` to replace the map while retaining a custom code.
     pub details: HashMap<String, serde_json::Value>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub cause: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub trace_id: Option<String>,
     pub timestamp: DateTime<Utc>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub retryable: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub ai_guidance: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub user_fixable: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub suggestion: Option<String>,
+}
+
+// This internal key is outside the protocol's snake_case details namespace.
+// Keeping the wire code here preserves downstream assembly via struct literals.
+const WIRE_CODE_DETAIL_KEY: &str = "$apcore_wire_error_code";
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename = "ModuleError")]
+struct ModuleErrorWire<'a> {
+    code: Cow<'a, str>,
+    message: Cow<'a, str>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    details: Cow<'a, HashMap<String, serde_json::Value>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cause: Option<Cow<'a, str>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    trace_id: Option<Cow<'a, str>>,
+    timestamp: DateTime<Utc>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    retryable: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ai_guidance: Option<Cow<'a, str>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    user_fixable: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    suggestion: Option<Cow<'a, str>>,
+}
+
+impl Serialize for ModuleError {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let details = match self.wire_code_storage() {
+            Some((_, original)) => {
+                let mut details = self.details.clone();
+                details.remove(WIRE_CODE_DETAIL_KEY);
+                if let Some(value) = original {
+                    details.insert(WIRE_CODE_DETAIL_KEY.to_owned(), value.clone());
+                }
+                Cow::Owned(details)
+            }
+            None => Cow::Borrowed(&self.details),
+        };
+        ModuleErrorWire {
+            code: self.wire_code(),
+            message: Cow::Borrowed(&self.message),
+            details,
+            cause: self.cause.as_deref().map(Cow::Borrowed),
+            trace_id: self.trace_id.as_deref().map(Cow::Borrowed),
+            timestamp: self.timestamp,
+            retryable: self.retryable,
+            ai_guidance: self.ai_guidance.as_deref().map(Cow::Borrowed),
+            user_fixable: self.user_fixable,
+            suggestion: self.suggestion.as_deref().map(Cow::Borrowed),
+        }
+        .serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for ModuleError {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let wire = ModuleErrorWire::deserialize(deserializer)?;
+        if wire.code.trim().is_empty() {
+            return Err(serde::de::Error::custom("error code must not be blank"));
+        }
+
+        let code = ErrorCode::deserialize(serde::de::value::StrDeserializer::<D::Error>::new(
+            &wire.code,
+        ));
+        let (code, custom_code) = match code {
+            Ok(code) => (code, None),
+            Err(_) => (ErrorCode::ModuleExecuteError, Some(wire.code.into_owned())),
+        };
+        let mut error = Self {
+            code,
+            message: wire.message.into_owned(),
+            details: wire.details.into_owned(),
+            cause: wire.cause.map(Cow::into_owned),
+            trace_id: wire.trace_id.map(Cow::into_owned),
+            timestamp: wire.timestamp,
+            retryable: wire.retryable,
+            ai_guidance: wire.ai_guidance.map(Cow::into_owned),
+            user_fixable: wire.user_fixable,
+            suggestion: wire.suggestion.map(Cow::into_owned),
+        };
+        error.store_wire_code(custom_code);
+        Ok(error)
+    }
 }
 
 impl ModuleError {
@@ -638,11 +730,89 @@ impl ModuleError {
         }
     }
 
+    /// Create an error with an application-defined wire code.
+    ///
+    /// `code` uses the same framework reservations as [`ErrorCodeRegistry`].
+    /// The public [`Self::code`] field remains `ModuleExecuteError` for typed
+    /// framework handling. Use [`Self::wire_code`] for transport or routing.
+    ///
+    /// # Errors
+    ///
+    /// Returns an invalid-input error for a blank code or an error-code collision
+    /// for an exact framework code or a reserved framework prefix.
+    pub fn new_custom(
+        code: impl Into<String>,
+        message: impl Into<String>,
+    ) -> Result<Self, ModuleError> {
+        let code = code.into();
+        if code.trim().is_empty() {
+            return Err(Self::invalid_input("A custom error code must not be blank"));
+        }
+        if let Some(reason) = reserved_code_reason(&code) {
+            return Err(Self::new(
+                ErrorCode::ErrorCodeCollision,
+                format!("Error code '{code}' {reason}"),
+            ));
+        }
+        let mut error = Self::new(ErrorCode::ModuleExecuteError, message);
+        error.store_wire_code(Some(code));
+        Ok(error)
+    }
+
+    /// Return the code written to the top-level wire `code` field.
+    #[must_use]
+    pub fn wire_code(&self) -> Cow<'_, str> {
+        self.custom_code()
+            .map_or_else(|| Cow::Owned(self.code.wire_str()), Cow::Borrowed)
+    }
+
+    /// Return a code outside this SDK's typed framework table, if present.
+    ///
+    /// This includes custom business codes and unknown codes received from a peer.
+    #[must_use]
+    pub fn custom_code(&self) -> Option<&str> {
+        if self.code != ErrorCode::ModuleExecuteError {
+            return None;
+        }
+        let (code, _) = self.wire_code_storage()?;
+        code.as_str()
+    }
+
+    fn wire_code_storage(&self) -> Option<(&serde_json::Value, Option<&serde_json::Value>)> {
+        use serde_json::Value;
+        match self
+            .details
+            .get(WIRE_CODE_DETAIL_KEY)?
+            .as_array()?
+            .as_slice()
+        {
+            [code @ Value::String(_)] => Some((code, None)),
+            [code @ (Value::String(_) | Value::Null), original] => Some((code, Some(original))),
+            _ => None,
+        }
+    }
+
+    fn store_wire_code(&mut self, code: Option<String>) {
+        use serde_json::Value;
+        let original = self.details.remove(WIRE_CODE_DETAIL_KEY);
+        if code.is_none() && original.is_none() {
+            return;
+        }
+        // Nest incoming details under the marker so only the top-level code
+        // controls classification, including when the sender used this key.
+        let mut storage = vec![code.map_or(Value::Null, Value::String)];
+        storage.extend(original);
+        self.details
+            .insert(WIRE_CODE_DETAIL_KEY.to_owned(), Value::Array(storage));
+    }
+
     // Builder methods
 
     #[must_use]
     pub fn with_details(mut self, details: HashMap<String, serde_json::Value>) -> Self {
+        let custom_code = self.custom_code().map(str::to_owned);
         self.details = details;
+        self.store_wire_code(custom_code);
         self
     }
 
@@ -1201,6 +1371,9 @@ impl ModuleError {
 
 impl std::fmt::Display for ModuleError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if let Some(code) = self.custom_code() {
+            return write!(f, "[{code}] {}", self.message);
+        }
         write!(f, "[{:?}] {}", self.code, self.message)
     }
 }
@@ -1377,32 +1550,14 @@ impl ErrorCodeRegistry {
         codes: &HashSet<String>,
     ) -> Result<(), ModuleError> {
         for code in codes {
-            // Check exact-code collision with a framework code. This protects
-            // framework codes whose names fall outside the 14 reserved prefixes
-            // (e.g. CIRCUIT_BREAKER_OPEN, PIPELINE_STEP_ERROR, STEP_NOT_FOUND,
-            // STRATEGY_NOT_FOUND, RELOAD_FAILED). Mirrors Python `_FRAMEWORK_CODES`
-            // and TypeScript `FRAMEWORK_CODES`.
-            if FRAMEWORK_CODES.contains(code) {
+            if let Some(reason) = reserved_code_reason(code) {
                 return Err(ErrorCodeCollisionError::new(
-                    format!("Error code '{code}' is a reserved framework code"),
+                    format!("Error code '{code}' {reason}"),
                     code,
                     module_id,
                     "framework",
                 )
                 .to_module_error());
-            }
-
-            // Check framework prefix collision
-            for prefix in FRAMEWORK_ERROR_CODE_PREFIXES {
-                if code.starts_with(prefix) {
-                    return Err(ErrorCodeCollisionError::new(
-                        format!("Error code '{code}' uses reserved framework prefix '{prefix}'"),
-                        code,
-                        module_id,
-                        "framework",
-                    )
-                    .to_module_error());
-                }
             }
 
             // Check cross-module collision

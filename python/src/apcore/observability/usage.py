@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from apcore.context_keys import USAGE_STARTS
+from apcore.context_keys import USAGE_STARTS, _middleware_data
 from apcore.middleware import Middleware
 from apcore.observability.storage import (
     STORAGE_NAMESPACE_USAGE,
@@ -38,6 +38,11 @@ class UsageRecord:
     caller_id: str
     latency_ms: float
     success: bool
+
+
+@dataclass
+class _StoredUsageRecord(UsageRecord):
+    storage_key: str
 
 
 @dataclass
@@ -143,14 +148,11 @@ class UsageCollector:
     ) -> None:
         self.retention_hours = retention_hours
         self._max_records_per_bucket = max_records_per_bucket
-        # D-113: an OMITTED backend means the bundled in-memory one, not "no
-        # storage". Only apcore-typescript honoured that, so the same omission
-        # produced a working store there and a silent no-op here — and a caller
-        # reading records back got an empty list rather than an error.
+        # D-113. The collector owns retention only for the backend it creates.
+        self._owns_storage = storage is None
         self._storage: StorageBackend = storage if storage is not None else InMemoryStorageBackend()
         self._lock = threading.Lock()
-        # module_id -> bucket_key -> list[UsageRecord]
-        self._data: dict[str, dict[str, list[UsageRecord]]] = {}
+        self._data: dict[str, dict[str, list[_StoredUsageRecord]]] = {}
 
     def record(
         self,
@@ -167,33 +169,34 @@ class UsageCollector:
         else:
             now = datetime.fromisoformat(timestamp)
         bk = _bucket_key(now)
-        rec = UsageRecord(
+        key = f"{module_id}:{timestamp}:{uuid.uuid4().hex}"
+        rec = _StoredUsageRecord(
             timestamp=timestamp,
             caller_id=caller_id,
             latency_ms=latency_ms,
             success=success,
+            storage_key=key,
         )
+        payload = {
+            "module_id": module_id,
+            "timestamp": timestamp,
+            "caller_id": caller_id,
+            "latency_ms": latency_ms,
+            "success": success,
+        }
         with self._lock:
             mod = self._data.setdefault(module_id, {})
             bucket = mod.setdefault(bk, [])
-            if len(bucket) < self._max_records_per_bucket:
+            admitted = len(bucket) < self._max_records_per_bucket
+            if admitted:
                 bucket.append(rec)
             self._cleanup_expired(module_id)
+            if self._owns_storage and admitted and bk in mod:
+                self._storage.save(STORAGE_NAMESPACE_USAGE, key, payload)
 
-        # D-113: persist under the canonical `usage` namespace, outside the lock
-        # so a user-supplied backend's I/O does not serialise every record.
-        if self._storage is not None:
-            self._storage.save(
-                STORAGE_NAMESPACE_USAGE,
-                f"{module_id}:{timestamp}:{uuid.uuid4().hex}",
-                {
-                    "module_id": module_id,
-                    "timestamp": timestamp,
-                    "caller_id": caller_id,
-                    "latency_ms": latency_ms,
-                    "success": success,
-                },
-            )
+        # Application storage can archive more than the live collector retains.
+        if not self._owns_storage:
+            self._storage.save(STORAGE_NAMESPACE_USAGE, key, payload)
 
     def get_summary(self, period: str = "24h") -> list[ModuleUsageSummary]:
         """Return aggregated usage summaries for all modules within the period."""
@@ -328,7 +331,10 @@ class UsageCollector:
         buckets = self._data.get(module_id, {})
         expired = [bk for bk in buckets if bk < cutoff_key]
         for bk in expired:
-            del buckets[bk]
+            records = buckets.pop(bk)
+            if self._owns_storage:
+                for record in records:
+                    self._storage.delete(STORAGE_NAMESPACE_USAGE, record.storage_key)
 
     def get_module_stats(self) -> list[ModulePrometheusStats]:
         """Return per-module Prometheus stats (p50/p95/p99) for all tracked modules.
@@ -363,8 +369,8 @@ class UsageCollector:
     def export_prometheus(self) -> str:
         """Export usage metrics in Prometheus text format.
 
-        Produces five metric families per module:
-          apcore_usage_calls_total{module_id, status}
+        Produces these rolling metrics per module:
+          apcore_usage_calls_24h{module_id, status} and its legacy alias apcore_usage_calls_total
           apcore_usage_error_rate{module_id}
           apcore_usage_p50_latency_ms{module_id}
           apcore_usage_p95_latency_ms{module_id}
@@ -373,35 +379,41 @@ class UsageCollector:
         all_stats = self.get_module_stats()
         lines: list[str] = []
 
-        if all_stats:
-            lines.append("# HELP apcore_usage_calls_total Total usage calls by module and status")
-            lines.append("# TYPE apcore_usage_calls_total counter")
+        if not all_stats:
+            return ""
+
+        for family, description in (
+            ("apcore_usage_calls_24h", "Module calls in the last 24 hours by status"),
+            ("apcore_usage_calls_total", "Deprecated alias of apcore_usage_calls_24h"),
+        ):
+            lines.append(f"# HELP {family} {description}")
+            lines.append(f"# TYPE {family} gauge")
             for s in all_stats:
                 mid = s.module_id
-                lines.append(f'apcore_usage_calls_total{{module_id="{mid}",status="success"}} {s.success_count}')
-                lines.append(f'apcore_usage_calls_total{{module_id="{mid}",status="error"}} {s.error_count}')
+                lines.append(f'{family}{{module_id="{mid}",status="success"}} {s.success_count}')
+                lines.append(f'{family}{{module_id="{mid}",status="error"}} {s.error_count}')
 
-            lines.append("# HELP apcore_usage_error_rate Error rate per module (0.0-1.0)")
-            lines.append("# TYPE apcore_usage_error_rate gauge")
-            for s in all_stats:
-                lines.append(f'apcore_usage_error_rate{{module_id="{s.module_id}"}} {s.error_rate}')
+        lines.append("# HELP apcore_usage_error_rate Error rate per module (0.0-1.0)")
+        lines.append("# TYPE apcore_usage_error_rate gauge")
+        for s in all_stats:
+            lines.append(f'apcore_usage_error_rate{{module_id="{s.module_id}"}} {s.error_rate}')
 
-            lines.append("# HELP apcore_usage_p50_latency_ms P50 latency in milliseconds")
-            lines.append("# TYPE apcore_usage_p50_latency_ms gauge")
-            for s in all_stats:
-                lines.append(f'apcore_usage_p50_latency_ms{{module_id="{s.module_id}"}} {s.p50_latency_ms}')
+        lines.append("# HELP apcore_usage_p50_latency_ms P50 latency in milliseconds")
+        lines.append("# TYPE apcore_usage_p50_latency_ms gauge")
+        for s in all_stats:
+            lines.append(f'apcore_usage_p50_latency_ms{{module_id="{s.module_id}"}} {s.p50_latency_ms}')
 
-            lines.append("# HELP apcore_usage_p95_latency_ms P95 latency in milliseconds")
-            lines.append("# TYPE apcore_usage_p95_latency_ms gauge")
-            for s in all_stats:
-                lines.append(f'apcore_usage_p95_latency_ms{{module_id="{s.module_id}"}} {s.p95_latency_ms}')
+        lines.append("# HELP apcore_usage_p95_latency_ms P95 latency in milliseconds")
+        lines.append("# TYPE apcore_usage_p95_latency_ms gauge")
+        for s in all_stats:
+            lines.append(f'apcore_usage_p95_latency_ms{{module_id="{s.module_id}"}} {s.p95_latency_ms}')
 
-            lines.append("# HELP apcore_usage_p99_latency_ms P99 latency in milliseconds")
-            lines.append("# TYPE apcore_usage_p99_latency_ms gauge")
-            for s in all_stats:
-                lines.append(f'apcore_usage_p99_latency_ms{{module_id="{s.module_id}"}} {s.p99_latency_ms}')
+        lines.append("# HELP apcore_usage_p99_latency_ms P99 latency in milliseconds")
+        lines.append("# TYPE apcore_usage_p99_latency_ms gauge")
+        for s in all_stats:
+            lines.append(f'apcore_usage_p99_latency_ms{{module_id="{s.module_id}"}} {s.p99_latency_ms}')
 
-        return "\n".join(lines)
+        return "\n".join(lines) + "\n"
 
 
 class UsageMiddleware(Middleware):
@@ -411,10 +423,8 @@ class UsageMiddleware(Middleware):
         self._collector = collector
 
     def before(self, module_id: str, inputs: dict[str, Any], context: Any) -> dict[str, Any] | None:
-        """Store start time in context data."""
-        starts = USAGE_STARTS.get(context, default=[])
-        starts.append(time.time())
-        USAGE_STARTS.set(context, starts)
+        """Store the invocation start time."""
+        _middleware_data(context).setdefault(USAGE_STARTS.name, []).append(time.time())
         return None
 
     def after(
@@ -446,7 +456,7 @@ class UsageMiddleware(Middleware):
     @staticmethod
     def _pop_elapsed_ms(context: Any) -> float:
         """Pop start time and return elapsed milliseconds."""
-        starts = USAGE_STARTS.get(context, default=[])
+        starts = _middleware_data(context).get(USAGE_STARTS.name, [])
         if not starts:
             return 0.0
         start_time = starts.pop()

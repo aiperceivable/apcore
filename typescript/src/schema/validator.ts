@@ -9,6 +9,7 @@ import type { SchemaValidationErrorDetail, SchemaValidationResult } from './type
 import { validationResultToError } from './types.js';
 import { KEYWORD_MARKER } from './constants.js';
 import { FORMAT_VALIDATORS, withFormatsAsAnnotations } from './formats.js';
+import { convertedApplicatorFailure, withExactTypeBoxMultipleOf } from './loader-pure.js';
 
 /**
  * The branch list of a union node, or `null` when the schema is not one.
@@ -206,7 +207,9 @@ export class SchemaValidator {
    * formats are enforced at SHOULD level by `_checkFormats`, never here.
    */
   validate(data: Record<string, unknown>, schema: TSchema): SchemaValidationResult {
-    return withFormatsAsAnnotations(schema, () => this._validate(this._coerce(data, schema), schema));
+    const validationSchema = withExactTypeBoxMultipleOf(schema);
+    return withFormatsAsAnnotations(schema, () =>
+      this._validate(this._coerce(data, validationSchema), validationSchema));
   }
 
   /**
@@ -377,18 +380,19 @@ export class SchemaValidator {
   }
 
   private _validateAndReturn(data: Record<string, unknown>, schema: TSchema): Record<string, unknown> {
+    const validationSchema = withExactTypeBoxMultipleOf(schema);
     return withFormatsAsAnnotations(schema, () => {
       // Route through _validate() so union schemas surface their specific error
       // code (SCHEMA_UNION_NO_MATCH / SCHEMA_UNION_AMBIGUOUS) and plain failures
       // surface SCHEMA_VALIDATION_ERROR — all preserved through the thrown error.
-      const value = this._coerce(data, schema);
-      const result = this._validate(value, schema);
+      const value = this._coerce(data, validationSchema);
+      const result = this._validate(value, validationSchema);
       if (!result.valid) {
         throw validationResultToError(result);
       }
 
       if (this._coerceTypes) {
-        return Value.Decode(schema, value) as Record<string, unknown>;
+        return Value.Decode(validationSchema, value) as Record<string, unknown>;
       }
       return value;
     });
@@ -518,11 +522,17 @@ export class SchemaValidator {
     if (error.type === ValueErrorType.Literal) keyword = 'enum' in error.schema ? 'enum' : 'const';
     if (error.type === ValueErrorType.Intersect) keyword = 'allOf';
     if (error.type === ValueErrorType.Not) keyword = 'not';
-    if (error.type === ValueErrorType.Kind) keyword = String(error.schema[KEYWORD_MARKER] ?? 'type');
-    const objectConstraint = keyword === 'required' || keyword === 'additionalProperties';
+    const applicator = error.type === ValueErrorType.Kind
+      ? convertedApplicatorFailure(error.schema, error.value)
+      : null;
+    if (error.type === ValueErrorType.Kind) keyword = applicator ?? String(error.schema[KEYWORD_MARKER] ?? 'type');
+    const fieldPath = error.type === ValueErrorType.ObjectRequiredProperty ||
+      error.type === ValueErrorType.ObjectAdditionalProperties;
     return {
-      path: objectConstraint ? error.path.replace(/\/[^/]*$/, '') : error.path,
-      message: error.message,
+      path: fieldPath ? error.path.replace(/\/[^/]*$/, '') : error.path,
+      message: applicator !== null && applicator !== 'type'
+        ? `Value does not satisfy the ${keyword} schema constraint`
+        : error.message,
       keyword,
     };
   }

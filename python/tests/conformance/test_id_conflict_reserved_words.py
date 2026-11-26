@@ -39,13 +39,10 @@ pytestmark = pytest.mark.skipif(
 class _Module:
     """Minimal conformant module; the ID is what is under test, not the body."""
 
+    input_schema = {"type": "object"}
+    output_schema = {"type": "object"}
+
     description = "conformance fixture module"
-
-    def input_schema(self) -> dict[str, Any]:
-        return {"type": "object"}
-
-    def output_schema(self) -> dict[str, Any]:
-        return {"type": "object"}
 
     async def execute(self, inputs: dict[str, Any], context: Any) -> dict[str, Any]:
         return {}

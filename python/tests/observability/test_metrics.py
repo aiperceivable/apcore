@@ -3,11 +3,56 @@
 from __future__ import annotations
 
 import threading
+from datetime import datetime, timedelta
+
+import pytest
 
 
 from apcore.context import Context
 from apcore.errors import ModuleError
 from apcore.observability.metrics import MetricsCollector, MetricsMiddleware
+from apcore.observability.store import InMemoryObservabilityStore, MetricPoint
+
+
+def test_metrics_send_counter_deltas_and_observations_to_explicit_store() -> None:
+    store = InMemoryObservabilityStore()
+    collector = MetricsCollector(store=store)
+    labels = {"module_id": "demo.one", "status": "success"}
+    collector.increment("calls", labels, amount=2)
+    collector.increment("calls", labels)
+    collector.observe("duration", labels, 0.25)
+    labels["status"] = "changed"
+
+    points = store.get_metrics(module_id="demo.one")
+    assert [(point.name, point.value) for point in points] == [("calls", 2), ("calls", 1), ("duration", 0.25)]
+    for point in points:
+        assert point.labels == {"module_id": "demo.one", "status": "success"}
+        assert datetime.fromisoformat(point.timestamp).utcoffset() == timedelta(0)
+
+
+def test_metrics_aggregate_when_explicit_sink_fails(caplog: pytest.LogCaptureFixture) -> None:
+    class UnavailableStore(InMemoryObservabilityStore):
+        def record_metric(self, metric: MetricPoint) -> None:
+            raise RuntimeError("sink unavailable")
+
+    collector = MetricsCollector(store=UnavailableStore())
+    collector.increment("calls", {})
+    collector.observe("duration", {}, 0.25)
+
+    snapshot = collector.snapshot()
+    assert snapshot["counters"][("calls", ())] == 1
+    assert snapshot["histograms"]["counts"][("duration", ())] == 1
+    assert "Observability store write failed" in caplog.text
+
+
+def test_metrics_do_not_append_history_without_an_explicit_sink(monkeypatch: pytest.MonkeyPatch) -> None:
+    def unexpected_metric(_store: InMemoryObservabilityStore, metric: MetricPoint) -> None:
+        pytest.fail(f"Unexpected history point: {metric}")
+
+    monkeypatch.setattr(InMemoryObservabilityStore, "record_metric", unexpected_metric)
+    collector = MetricsCollector()
+    collector.increment("calls", {})
+    collector.observe("duration", {}, 0.25)
 
 
 # --- MetricsCollector Increment Tests ---

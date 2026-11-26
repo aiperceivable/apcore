@@ -34,7 +34,7 @@ from apcore.observability.metrics import (
     MetricsMiddleware,
     estimate_p99_latency_ms,
 )
-from apcore.observability.prometheus_exporter import PrometheusExporter
+from apcore.observability.prometheus_exporter import PrometheusExporter, render_prometheus_metrics
 from apcore.observability.storage import (
     InMemoryStorageBackend,
     StorageBackend,
@@ -83,6 +83,7 @@ __all__ = [
     "OTLPExporter",
     "PeriodicUsageExporter",
     "PrometheusExporter",
+    "render_prometheus_metrics",
     "StorageBackend",
     "RedactionConfig",
     "SimpleSpanProcessor",

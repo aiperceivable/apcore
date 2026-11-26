@@ -19,6 +19,176 @@
 use std::collections::HashMap;
 
 use apcore::errors::{ErrorCode, ModuleError};
+use apcore::{APCore, ChunkStream, Context, ErrorFormatterRegistry, Module, StreamEndReason};
+use futures_util::StreamExt;
+use serde_json::{json, Value};
+
+const BUSINESS_CODE: &str = "ORDERS_STOCK_EXHAUSTED";
+
+#[test]
+fn framework_error_struct_literals_keep_their_typed_and_wire_codes() {
+    let timestamp = "2026-11-25T00:00:00Z".parse().unwrap();
+    for &code in ErrorCode::ALL {
+        let error = ModuleError {
+            code,
+            message: "Framework failure".to_owned(),
+            details: HashMap::new(),
+            cause: None,
+            trace_id: None,
+            timestamp,
+            retryable: None,
+            ai_guidance: None,
+            user_fixable: None,
+            suggestion: None,
+        };
+        let wire = error.to_dict();
+        assert_eq!(wire["code"], code.wire_str());
+        let restored: ModuleError = serde_json::from_value(wire).unwrap();
+        assert_eq!(restored.code, code);
+        assert_eq!(restored.custom_code(), None);
+    }
+}
+
+#[test]
+fn custom_error_code_round_trips_through_module_error() {
+    let wire = json!({
+        "code": BUSINESS_CODE,
+        "message": "Out of stock",
+        "timestamp": "2026-11-25T00:00:00Z",
+        "details": {"available": 0},
+        "retryable": false,
+    });
+    let error: ModuleError = serde_json::from_value(wire.clone()).unwrap();
+    assert_eq!(error.code, ErrorCode::ModuleExecuteError);
+    assert_eq!(error.custom_code(), Some(BUSINESS_CODE));
+    assert_eq!(error.wire_code(), BUSINESS_CODE);
+    assert_eq!(error.to_dict(), wire);
+}
+
+#[test]
+fn custom_error_code_survives_details_replacement_and_serialization() {
+    let error = ModuleError::new_custom(BUSINESS_CODE, "Out of stock")
+        .unwrap()
+        .with_details(HashMap::from([("available".to_owned(), json!(0))]))
+        .with_retryable(false);
+    assert_eq!(error.wire_code(), BUSINESS_CODE);
+    assert_eq!(error.to_string(), "[ORDERS_STOCK_EXHAUSTED] Out of stock");
+
+    let serialized = serde_json::to_value(&error).unwrap();
+    assert_eq!(serialized["code"], BUSINESS_CODE);
+    assert_eq!(serialized["details"], json!({"available": 0}));
+    assert_eq!(serialized["retryable"], false);
+    assert_eq!(
+        ErrorFormatterRegistry::format("unregistered_custom_error_adapter", &error, None),
+        serialized
+    );
+}
+
+#[test]
+fn custom_error_constructor_rejects_reserved_codes() {
+    for code in [
+        "MODULE_TIMEOUT",
+        "MODULE_RESERVED_CUSTOM",
+        "CIRCUIT_BREAKER_OPEN",
+    ] {
+        let error = ModuleError::new_custom(code, "Invalid business error code").unwrap_err();
+        assert_eq!(error.code, ErrorCode::ErrorCodeCollision);
+    }
+    assert_eq!(
+        ModuleError::new_custom(" ", "Invalid business error code")
+            .unwrap_err()
+            .code,
+        ErrorCode::GeneralInvalidInput
+    );
+}
+
+#[test]
+fn custom_error_wire_decoder_keeps_the_top_level_code_authoritative() {
+    for code in [
+        "MODULE_EXECUTE_ERROR",
+        "MODULE_UNKNOWN_TO_THIS_SDK",
+        BUSINESS_CODE,
+    ] {
+        let wire = json!({
+            "code": code,
+            "message": "Failure",
+            "timestamp": "2026-11-25T00:00:00Z",
+            "details": {"$apcore_wire_error_code": ["OTHER_CODE"]},
+        });
+        let error: ModuleError = serde_json::from_value(wire.clone()).unwrap();
+        assert_eq!(error.code, ErrorCode::ModuleExecuteError);
+        assert_eq!(error.wire_code(), code);
+        assert_eq!(error.to_dict(), wire);
+    }
+    for code in [
+        json!(""),
+        json!("  "),
+        json!(0),
+        json!(null),
+        json!({"MODULE_NOT_FOUND": null}),
+    ] {
+        let wire = json!({
+            "code": code,
+            "message": "Failure",
+            "timestamp": "2026-11-25T00:00:00Z",
+        });
+        assert!(serde_json::from_value::<ModuleError>(wire).is_err());
+    }
+}
+
+struct OutOfStock;
+
+#[async_trait::async_trait]
+impl Module for OutOfStock {
+    fn input_schema(&self) -> Value {
+        json!({"type": "object"})
+    }
+
+    fn output_schema(&self) -> Value {
+        json!({"type": "object"})
+    }
+
+    fn description(&self) -> &'static str {
+        "Fail an order due to insufficient stock"
+    }
+
+    async fn execute(&self, _: Value, _: &Context<Value>) -> Result<Value, ModuleError> {
+        Err(ModuleError::new_custom(BUSINESS_CODE, "Out of stock")?)
+    }
+
+    fn stream(&self, _: Value, _: &Context<Value>) -> Option<ChunkStream> {
+        Some(Box::pin(futures_util::stream::iter([
+            Ok(json!({"available": 0})),
+            Err(ModuleError::new_custom(BUSINESS_CODE, "Out of stock").unwrap()),
+        ])))
+    }
+}
+
+#[tokio::test]
+async fn custom_error_code_is_preserved_by_public_execution_and_stream_completion() {
+    let client = APCore::new();
+    let module_id = "shop.orders";
+    client.register(module_id, Box::new(OutOfStock)).unwrap();
+
+    let failure = client.call(module_id, None, None, None).await.unwrap_err();
+    assert_eq!(failure.wire_code(), BUSINESS_CODE);
+    assert_eq!(failure.to_dict()["code"], BUSINESS_CODE);
+    assert_eq!(failure.to_dict()["details"]["module_id"], module_id);
+
+    let (mut chunks, completion) = client.stream_with_completion(module_id, None, None, None);
+    assert_eq!(
+        chunks.next().await.unwrap().unwrap(),
+        json!({"available": 0})
+    );
+    assert_eq!(
+        chunks.next().await.unwrap().unwrap_err().wire_code(),
+        BUSINESS_CODE
+    );
+    assert!(chunks.next().await.is_none());
+    let result = completion.await;
+    assert_eq!(result.reason, StreamEndReason::Failed);
+    assert_eq!(result.error_code.as_deref(), Some(BUSINESS_CODE));
+}
 
 // ---------------------------------------------------------------------------
 // Returns contract: guaranteed keys

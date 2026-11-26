@@ -952,6 +952,30 @@ describe('§6.8: ACL introspection accessors', () => {
     expect(entries).toHaveLength(0);
   });
 
+  it('detaches rule fields and nested conditions from the snapshot', () => {
+    const acl = new ACL([{
+      callers: ['api.*'],
+      targets: ['executor.report'],
+      effect: 'allow',
+      description: 'reporting',
+      conditions: { $not: { roles: ['guest'] } },
+    }]);
+
+    const snapshot = acl.rules[0];
+    snapshot.description = 'local edit';
+    snapshot.callers.push('cli.*');
+    snapshot.targets.splice(0);
+    const condition = snapshot.conditions?.['$not'] as { roles: string[] };
+    condition.roles.push('member');
+
+    expect(acl.rules[0]).toMatchObject({
+      callers: ['api.*'],
+      targets: ['executor.report'],
+      description: 'reporting',
+      conditions: { $not: { roles: ['guest'] } },
+    });
+  });
+
   it('both accessors reflect a reload()', () => {
     const dir = mkdtempSync(join(tmpdir(), 'acl-introspect-'));
     const file = join(dir, 'global_acl.yaml');

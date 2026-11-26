@@ -22,7 +22,7 @@ from referencing.jsonschema import DRAFT202012
 
 from apcore.config import Config
 from apcore.errors import SchemaNotFoundError, SchemaParseError
-from apcore.schema.hardening import content_hash
+from apcore.schema.hardening import _Draft202012DecimalValidator, _inherit_decimal_dialect, content_hash
 from apcore.schema.ref_resolver import RefResolver
 from apcore.schema.types import ResolvedSchema, SchemaDefinition, SchemaStrategy
 from apcore.version import _negotiate_document_version
@@ -52,15 +52,13 @@ _NUMERIC_CONSTRAINTS = {
     "maximum": "le",
     "exclusiveMinimum": "gt",
     "exclusiveMaximum": "lt",
-    "multipleOf": "multiple_of",
 }
 _ARRAY_CONSTRAINTS = {"minItems": "min_length", "maxItems": "max_length"}
 
-# Applicator keywords with no Pydantic equivalent (JSON Schema 2020-12 §10.3,
-# §11). Dropping them silently let apcore-python accept contracts apcore-rust
-# rejected, so each one is delegated to the jsonschema library instead — the same
-# engine `_make_schema_assertion` already uses for combinator siblings.
+# Assertions handled by jsonschema alongside the generated annotation.
+# Exact decimal divisibility uses the same check as raw schema validation.
 _APPLICATOR_KEYWORDS = (
+    "multipleOf",
     "prefixItems",
     "patternProperties",
     "propertyNames",
@@ -93,7 +91,6 @@ _WHOLE_SCHEMA_APPLICATORS = ("unevaluatedItems", "unevaluatedProperties")
 # deliberately absent: those are already delegated by their own paths.
 _BARE_ASSERTION_KEYWORDS = (
     # §6.2 numeric
-    "multipleOf",
     "maximum",
     "exclusiveMaximum",
     "minimum",
@@ -368,7 +365,9 @@ def _make_schema_assertion(
     except JsonSchemaError as exc:
         raise SchemaParseError(message=f"Invalid schema for keyword(s) {sorted(sub_schema)}: {exc.message}") from exc
 
-    validator = Draft202012Validator(sub_schema, registry=Registry() if registry is None else registry)
+    validator = _Draft202012DecimalValidator(
+        _inherit_decimal_dialect(sub_schema), registry=Registry() if registry is None else registry
+    )
 
     def assert_sub_schema(value: Any) -> Any:
         data = value if plain_data else _to_jsonable(value)
@@ -448,7 +447,7 @@ def _ref_assertion_schema(ref: str, root: dict[str, Any]) -> tuple[dict[str, Any
     else:
         return None
 
-    resource = Resource.from_contents(root, default_specification=DRAFT202012)
+    resource = Resource.from_contents(_inherit_decimal_dialect(root), default_specification=DRAFT202012)
     registry = Registry().with_resource(_ROOT_BASE_URI, resource)
     return {"$ref": f"{_ROOT_BASE_URI}{pointer}"}, registry
 
@@ -698,6 +697,11 @@ class SchemaLoader:
         # one field; `_handle_object` covers the object schemas that never reach
         # `create_model` because they declare no `properties`.
         validators: dict[str, Any] = {}
+        required_only = required.difference(properties)
+        if required_only:
+            validators["_apcore_required_only"] = _as_model_before_validator(
+                _make_schema_assertion({"required": sorted(required_only)}, plain_data=True)
+            )
         count_check = _make_property_count_check(json_schema)
         if count_check is not None:
             validators["_apcore_property_count"] = _as_model_before_validator(count_check)
@@ -934,7 +938,7 @@ class SchemaLoader:
         `minProperties`/`maxProperties` check; the open-mapping forms below get one
         attached here, since they never reach `create_model`.
         """
-        if "properties" in prop_schema:
+        if "properties" in prop_schema or prop_schema.get("required"):
             return self.generate_model(prop_schema, f"{parent_name}_{prop_name}", root=root)
         annotation: Any = dict[str, Any]
         additional = prop_schema.get("additionalProperties")
@@ -959,7 +963,7 @@ class SchemaLoader:
             base_type = Annotated[base_type, AfterValidator(_check_unique)]
 
         contains = prop_schema.get("contains")
-        if isinstance(contains, dict):
+        if isinstance(contains, (dict, bool)):
             # §6.4.4/§6.4.5 assert nothing on their own — they are meaningful only
             # alongside `contains` (§10.3.1.3), so the three travel together. No
             # Pydantic annotation expresses "at least N items match this sub-schema",
@@ -1059,6 +1063,8 @@ class SchemaLoader:
 
         # LLM extensions and format as json_schema_extra
         extra: dict[str, Any] = {key: value for key, value in prop_schema.items() if key.startswith("x-")}
+        if "multipleOf" in prop_schema:
+            extra["multipleOf"] = prop_schema["multipleOf"]
         if "format" in prop_schema:
             extra["format"] = prop_schema["format"]
         if extra:

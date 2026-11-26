@@ -12,6 +12,7 @@
  */
 
 import * as fs from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import * as path from 'node:path';
 import * as yaml from 'js-yaml';
 import { appendFilesystemPath } from '../utils/filesystem-path.js';
@@ -120,12 +121,20 @@ export class FileOverridesStore implements OverridesStore {
     const yamlText = yaml.dump(ordered, { sortKeys: true });
 
     const base = path.basename(this._path);
-    const tmp = appendFilesystemPath(dir, `.${base}.${process.pid}.${Date.now()}.tmp`);
+    const tmp = appendFilesystemPath(dir, `.${base}.${randomUUID()}.tmp`);
+    let owned = false;
     try {
-      fs.writeFileSync(tmp, yamlText, 'utf-8');
+      const file = fs.openSync(tmp, 'wx', 0o600);
+      owned = true;
+      try {
+        fs.writeFileSync(file, yamlText, 'utf-8');
+      } finally {
+        fs.closeSync(file);
+      }
       fs.renameSync(tmp, this._path);
     } catch (err) {
       console.error(`[apcore:overrides] Failed to write overrides file '${this._path}':`, err);
+      if (!owned) return;
       try {
         fs.unlinkSync(tmp);
       } catch {

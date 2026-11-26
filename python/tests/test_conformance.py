@@ -1017,6 +1017,8 @@ def test_sys_module_output_schemas_match_spec() -> None:
 
         # Verify property keys match
         spec_props = set(spec_schema.get("properties", {}).keys())
+        if schema_name == "sys-control-reload-module":
+            spec_props.remove("config_reloaded")  # Rust configuration reload extension.
         module_props = set(module_schema.get("properties", {}).keys())
         assert (
             spec_props == module_props
@@ -1251,7 +1253,7 @@ import asyncio  # noqa: E402
 
 from apcore.approval import ApprovalResult  # noqa: E402
 from apcore.builtin_steps import BuiltinApprovalGate  # noqa: E402
-from apcore.errors import ApprovalDeniedError, ApprovalPendingError  # noqa: E402
+from apcore.errors import ApprovalDeniedError, ApprovalPendingError, ApprovalTimeoutError  # noqa: E402
 from apcore.pipeline import PipelineContext  # noqa: E402
 
 _approval_data = _load("approval_gate")
@@ -1264,6 +1266,7 @@ _approval_data = _load("approval_gate")
 _APPROVAL_GATE_ERROR_MAP: dict[str, type[Exception]] = {
     "APPROVAL_DENIED": ApprovalDeniedError,
     "APPROVAL_PENDING": ApprovalPendingError,
+    "APPROVAL_TIMEOUT": ApprovalTimeoutError,
 }
 
 
@@ -1279,12 +1282,21 @@ class _FixtureApprovalHandler:
             metadata=result_data.get("metadata"),
         )
         self.called = False
+        self.resume_arguments: dict[str, Any] | None = None
 
     async def request_approval(self, request: Any) -> ApprovalResult:
         self.called = True
         return self._result
 
     async def check_approval(self, approval_id: str) -> ApprovalResult:
+        self.called = True
+        return self._result
+
+
+class _ScopedFixtureApprovalHandler(_FixtureApprovalHandler):
+    async def check_approval_for_call(self, approval_id: str, request: Any) -> ApprovalResult:
+        assert request.module_id == "test.module"
+        self.resume_arguments = request.arguments
         self.called = True
         return self._result
 
@@ -1334,8 +1346,10 @@ def _declared_requires_approval(case: dict[str, Any]) -> bool:
 )
 def test_approval_gate(case: dict[str, Any]) -> None:
     handler: _FixtureApprovalHandler | None = None
+    resume = case.get("resume", {})
     if case["approval_handler_configured"] and case["approval_result"] is not None:
-        handler = _FixtureApprovalHandler(case["approval_result"])
+        handler_type = _ScopedFixtureApprovalHandler if resume.get("scoped_handler") else _FixtureApprovalHandler
+        handler = handler_type(case["approval_result"])
 
     gate = BuiltinApprovalGate(handler=handler if case["approval_handler_configured"] else None)
 
@@ -1345,7 +1359,7 @@ def test_approval_gate(case: dict[str, Any]) -> None:
     pipe_ctx = PipelineContext(
         module_id="test.module",
         module=module,
-        inputs={},
+        inputs={**resume["arguments"], "_approval_token": resume["credential"]} if resume else {},
         context=ctx_obj,
     )
 
@@ -1372,6 +1386,9 @@ def test_approval_gate(case: dict[str, Any]) -> None:
                     f"[approval_gate :: {case_id}] approval_id: "
                     f"{exc_info.value.approval_id!r} != {expected['approval_id']!r}"
                 )
+            if "result" in expected:
+                result = exc_info.value.result
+                assert {key: getattr(result, key) for key in expected["result"]} == expected["result"]
         else:
             pytest.fail(f"[approval_gate :: {case_id}] unknown outcome {outcome!r}. Teach the driver, do not skip it.")
 
@@ -1379,6 +1396,9 @@ def test_approval_gate(case: dict[str, Any]) -> None:
         assert (
             gate_invoked == expected["gate_invoked"]
         ), f"gate_invoked: expected {expected['gate_invoked']}, got {gate_invoked}"
+        if "resume_arguments" in expected:
+            assert handler is not None
+            assert handler.resume_arguments == expected["resume_arguments"]
 
     asyncio.run(_run())
 

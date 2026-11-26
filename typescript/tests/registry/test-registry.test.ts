@@ -2,17 +2,19 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtempSync, writeFileSync, rmSync, mkdirSync, realpathSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { fileURLToPath } from 'node:url';
 import { EventEmitter as NodeEventEmitter } from 'node:events';
 import type { FSWatcher } from 'node:fs';
 import { registryNodeFilesystem } from '../../src/registry/install-filesystem.js';
 import { Type } from '@sinclair/typebox';
 import { Registry, MAX_MODULE_ID_LENGTH } from '../../src/registry/registry.js';
 import { FunctionModule } from '../../src/decorator.js';
-import { DuplicateModuleIdError, InvalidInputError, ModuleNotFoundError } from '../../src/errors.js';
+import { DuplicateModuleIdError, InvalidInputError, ModuleNotFoundError, ReloadFailedError } from '../../src/errors.js';
 import { Config } from '../../src/config.js';
 import { createAnnotations } from '../../src/module.js';
 import { EventEmitter } from '../../src/events/emitter.js';
 import type { ApCoreEvent } from '../../src/events/emitter.js';
+import { ReloadModule } from '../../src/sys-modules/control.js';
 
 function createMod(id: string): FunctionModule {
   return new FunctionModule({
@@ -82,6 +84,25 @@ describe('Registry', () => {
 
     await expect(registry.discover()).resolves.toBe(1);
     expect(registry.get('test.custom')).toBe(mod);
+  });
+
+  it('requires instance schemas before publishing custom discoveries', async () => {
+    class StaticSchemaModule {
+      static inputSchema = Type.Object({});
+      static outputSchema = Type.Object({});
+      description = 'Schemas are declared on the constructor';
+      execute() { return {}; }
+    }
+    const registry = new Registry();
+    const valid = createMod('test.valid');
+    registry.setDiscoverer({ discover: () => [
+      { moduleId: 'test.static', module: new StaticSchemaModule() },
+      { moduleId: 'test.valid', module: valid },
+    ] });
+
+    await expect(registry.discover()).resolves.toBe(1);
+    expect(registry.get('test.static')).toBeNull();
+    expect(registry.get('test.valid')).toBe(valid);
   });
 
   it('get returns null for unknown module', () => {
@@ -451,6 +472,25 @@ describe('Registry.discover()', () => {
 
     expect(count).toBe(1);
     expect(registry.has('greeter')).toBe(true);
+  });
+
+  it('requires instance schemas when loading a named file export', async () => {
+    writeModuleFile(
+      tempDir,
+      'sample.js',
+      `class SampleModule {
+        static inputSchema = { type: 'object' };
+        static outputSchema = { type: 'object' };
+        description = 'A sample module';
+        execute() { return {}; }
+      }
+      export const Sample = new SampleModule();`,
+    );
+    writeFileSync(join(tempDir, 'sample_meta.yaml'), 'entry_point: sample:Sample\n');
+
+    const registry = new Registry({ extensionsDir: tempDir });
+    await expect(registry.discover()).resolves.toBe(0);
+    expect(registry.get('sample')).toBeNull();
   });
 
   it('discovers multiple modules in nested directories', async () => {
@@ -1452,6 +1492,61 @@ describe('Registry discover() with idMapPath', () => {
     expect(registry.has('mymod')).toBe(false);
   });
 
+  it('keeps the first canonical registration when ID-map overrides collide', async () => {
+    for (const name of ['first', 'second']) {
+      writeFileSync(join(tempDir, `${name}.js`), `export default {
+        execute: () => ({}), description: '${name}',
+        inputSchema: { type: 'object' }, outputSchema: { type: 'object' },
+      };`);
+    }
+    const idMapPath = join(tempDir, 'idmap.yaml');
+    writeFileSync(idMapPath, [
+      'mappings:', '  - file: first.js', '    id: shared.module',
+      '  - file: second.js', '    id: shared.module',
+    ].join('\n'));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const registry = new Registry({ extensionsDir: tempDir, idMapPath });
+      expect(await registry.discover()).toBe(1);
+      expect(registry.get('shared.module')).toMatchObject({ description: 'first' });
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('ID conflict'));
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('loads source changes on the public control reload path', async () => {
+    const source = join(tempDir, 'module.js');
+    const writeModule = (version: string): void => {
+      writeFileSync(source, `export default {
+        execute: () => ({ version: '${version}' }), description: 'Reloaded module',
+        inputSchema: { type: 'object' }, outputSchema: { type: 'object' },
+      };`);
+    };
+    writeModule('first');
+    const registry = new Registry({ extensionsDir: tempDir });
+    expect(await registry.discover()).toBe(1);
+    const reload = new ReloadModule(registry, new EventEmitter());
+    writeModule('second');
+    await expect(reload.execute({ module_id: 'module', reason: 'update' }, null))
+      .resolves.toMatchObject({ success: true });
+    const module = registry.get('module') as { execute(): { version: string } };
+    expect(module.execute()).toEqual({ version: 'second' });
+  });
+
+  it('encodes literal path characters for discovery and adds a fresh query for each reload', () => {
+    const source = join(tempDir, 'extensions # %', 'module.js');
+    const initial = new URL(registryNodeFilesystem.entryPointSpecifier(source, false));
+    const reloaded = new URL(registryNodeFilesystem.entryPointSpecifier(source, true));
+
+    expect(initial.hash).toBe('');
+    expect(initial.search).toBe('');
+    expect(fileURLToPath(initial)).toBe(source);
+    expect(fileURLToPath(reloaded)).toBe(source);
+    expect(reloaded.searchParams.has('apcore-reload')).toBe(true);
+    expect(registryNodeFilesystem.entryPointSpecifier(source, true)).not.toBe(reloaded.href);
+  });
+
   it('discovers normally when ID map has no matching entry for a file', async () => {
     writeFileSync(
       join(tempDir, 'unmapped.js'),
@@ -1783,6 +1878,39 @@ describe('Registry hot reload (watch/unwatch)', () => {
 
       expect(registry.moduleIds).toEqual(['first.echo']);
       expect(onChange).toHaveBeenCalledWith('second.echo', { filePath: expect.stringContaining(join('second', 'echo.js')) });
+    } finally {
+      registry.unwatch();
+      watch.mockRestore();
+    }
+  });
+
+  it('keeps the discovered source associated with a restored registration', async () => {
+    const filename = 'watched_module.js';
+    writeFileSync(join(tempDir, filename), `export default {
+      execute() { return {}; }, description: 'Watched source',
+      inputSchema: { type: 'object' }, outputSchema: { type: 'object' },
+    };`);
+    const registry = new Registry({ extensionsDirs: [{ root: tempDir, namespace: 'ns' }] });
+    await expect(registry.discover()).resolves.toBe(1);
+    vi.spyOn(registry, 'discover').mockResolvedValue(0);
+    const reload = new ReloadModule(registry, new EventEmitter());
+    await expect(reload.execute({ module_id: 'ns.watched_module', reason: 'restore test' }, null))
+      .rejects.toBeInstanceOf(ReloadFailedError);
+    expect(registry.has('ns.watched_module')).toBe(true);
+
+    const onChange = vi.fn();
+    registry.on('file_changed', onChange);
+    let notify!: (eventType: string, filename: string | null) => void;
+    const watcher = Object.assign(new NodeEventEmitter(), { close: vi.fn() });
+    const watch = vi.spyOn(registryNodeFilesystem.fs, 'watch').mockImplementation((_root, _opts, listener) => {
+      notify = listener;
+      return watcher as unknown as FSWatcher;
+    });
+    try {
+      await registry.watch();
+      notify('change', filename);
+      expect(registry.has('ns.watched_module')).toBe(false);
+      expect(onChange).toHaveBeenCalledWith('ns.watched_module', { filePath: expect.stringContaining(filename) });
     } finally {
       registry.unwatch();
       watch.mockRestore();
@@ -2243,6 +2371,68 @@ describe('Registry hot-reload API (acquire/release/drain)', () => {
     const result = await registry.safeUnregister('test.mod');
     expect(result).toBe(true);
     expect(registry.has('test.mod')).toBe(false);
+  });
+
+  it.each([false, true])('keeps a replacement registered while an old unregister resumes (same object: %s)', async (sameObject) => {
+    const registry = new Registry();
+    const onUnload = vi.fn();
+    const original = Object.assign(createMod('test.mod'), { onUnload });
+    const replacementUnload = vi.fn();
+    const replacement = sameObject ? original : Object.assign(createMod('test.mod'), { onUnload: replacementUnload });
+    await registry.register('test.mod', original);
+
+    const removal = registry.safeUnregister('test.mod');
+    expect(registry.unregister('test.mod')).toBe(true);
+    await registry.register('test.mod', replacement);
+
+    expect(await removal).toBe(false);
+    expect(registry.get('test.mod')).toBe(replacement);
+    expect(registry.acquire('test.mod')).toBe(replacement);
+    registry.release('test.mod');
+    expect(onUnload).toHaveBeenCalledTimes(1);
+    expect(replacementUnload).not.toHaveBeenCalled();
+  });
+
+  it('wakes an old drain on direct unregister without releasing a replacement lease', async () => {
+    vi.useFakeTimers();
+    try {
+      const registry = new Registry();
+      const module = createMod('test.mod');
+      await registry.register('test.mod', module);
+      const releaseOriginal = registry.acquireExecution('test.mod', module);
+      const removal = registry.safeUnregister('test.mod');
+      registry.unregister('test.mod');
+      expect(vi.getTimerCount()).toBe(0);
+
+      await registry.register('test.mod', module);
+      const releaseReplacement = registry.acquireExecution('test.mod', module);
+      releaseOriginal();
+      expect(await removal).toBe(false);
+      expect(registry.refCount.get('test.mod')).toBe(1);
+      releaseReplacement();
+      expect(registry.refCount.get('test.mod')).toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('joins overlapping safe unregister calls through asynchronous cleanup', async () => {
+    const registry = new Registry();
+    let finishCleanup!: () => void;
+    const cleanup = new Promise<void>((resolve) => { finishCleanup = resolve; });
+    const onUnload = vi.fn(() => cleanup);
+    await registry.register('test.mod', Object.assign(createMod('test.mod'), { onUnload }));
+    const outcomes: boolean[] = [];
+    const remove = () => registry.safeUnregister('test.mod').then((result) => outcomes.push(result));
+
+    const first = remove();
+    const second = remove();
+    await new Promise<void>((resolve) => { setImmediate(resolve); });
+    expect(onUnload).toHaveBeenCalledTimes(1);
+    expect(outcomes).toEqual([]);
+    finishCleanup();
+    await Promise.all([first, second]);
+    expect(outcomes).toEqual([true, true]);
   });
 
   it('safeUnregister force-unloads and warns after timeout', async () => {

@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use serde_yaml_ng as serde_yaml;
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Once};
 
@@ -2179,31 +2180,50 @@ impl ACL {
     /// behavior. [`ACL::load`] reads `default_effect` from the ACL file itself.
     ///
     /// # Errors
-    /// Returns [`ModuleError`] only when a resolved ACL file exists but is
-    /// structurally invalid (propagated from [`ACL::load`] with
-    /// `ErrorCode::ACLRuleError`). A missing root is never an error — it yields
-    /// `Ok(None)`.
+    /// Returns [`ModuleError`] when a policy path cannot be inspected or
+    /// the policy cannot be loaded. A missing path yields `Ok(None)`.
     pub fn discover(config: &crate::config::Config) -> Result<Option<Self>, ModuleError> {
         let Some(root_path) = config.get_path("acl.root") else {
             return Ok(None);
         };
 
-        if !root_path.exists() {
-            // Missing path -> no enforcement. Do NOT synthesize an ACL.
+        let Some(metadata) = Self::discover_metadata(&root_path)? else {
             return Ok(None);
-        }
+        };
 
-        if root_path.is_dir() {
-            // Directory convention: acl/{scope}_acl.yaml (PROTOCOL_SPEC §3.1).
-            let acl_file = root_path.join("global_acl.yaml");
-            if !acl_file.is_file() {
-                // Directory present but no conventional ACL file -> no-op.
+        let (path, metadata) = if metadata.is_dir() {
+            let path = root_path.join("global_acl.yaml");
+            let Some(metadata) = Self::discover_metadata(&path)? else {
                 return Ok(None);
-            }
-            return Self::load(&acl_file.to_string_lossy()).map(Some);
+            };
+            (path, metadata)
+        } else {
+            (root_path, metadata)
+        };
+        if !metadata.is_file() {
+            return Err(ModuleError::new(
+                ErrorCode::ConfigInvalid,
+                format!("ACL path '{}' is not a regular file", path.display()),
+            ));
         }
+        Self::load(&path.to_string_lossy()).map(Some)
+    }
 
-        Self::load(&root_path.to_string_lossy()).map(Some)
+    fn discover_metadata(path: &Path) -> Result<Option<std::fs::Metadata>, ModuleError> {
+        let inspect_error = |error: std::io::Error| {
+            ModuleError::new(
+                ErrorCode::ConfigInvalid,
+                format!("Cannot inspect ACL path '{}': {error}", path.display()),
+            )
+        };
+        match std::fs::symlink_metadata(path) {
+            Ok(meta) if meta.is_symlink() => {
+                std::fs::metadata(path).map(Some).map_err(inspect_error)
+            }
+            Ok(meta) => Ok(Some(meta)),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(inspect_error(error)),
+        }
     }
 
     /// Register a custom condition handler. Delegates to `acl_handlers::register_condition`.

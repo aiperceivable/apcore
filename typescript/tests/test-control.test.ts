@@ -11,13 +11,46 @@ import {
   ReloadFailedError,
 } from '../src/errors.js';
 import type { ApCoreEvent } from '../src/events/emitter.js';
-import { InMemoryOverridesStore } from '../src/sys-modules/overrides.js';
-import { REDACTED_VALUE } from '../src/executor.js';
-import { mkdtempSync, existsSync, rmSync } from 'node:fs';
+import { FileOverridesStore, InMemoryOverridesStore } from '../src/sys-modules/overrides.js';
+import { InMemoryAuditStore } from '../src/sys-modules/audit.js';
+import { Executor, REDACTED_VALUE } from '../src/executor.js';
+import { Context } from '../src/context.js';
+import { Middleware } from '../src/middleware/base.js';
+import { mkdtempSync, existsSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
 describe('UpdateConfigModule store-XOR-path precedence', () => {
+  it('keeps an existing private overrides file private on replacement', () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), 'apcore-control-'));
+    const overridesPath = join(tmpDir, 'overrides.yaml');
+    try {
+      writeFileSync(overridesPath, '{}', { mode: 0o600 });
+      const store = new FileOverridesStore(overridesPath);
+      store.save({ 'service.api_key': 'sample' });
+      expect(store.load()).toEqual({ 'service.api_key': 'sample' });
+      if (process.platform !== 'win32') expect(statSync(overridesPath).mode & 0o777).toBe(0o600);
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('captures sensitive config input before control module execution', async () => {
+    const registry = new Registry();
+    await registry.registerInternal('system.control.update_config', new UpdateConfigModule(new Config({}), new EventEmitter()));
+    let captured: unknown;
+    const executor = new Executor({ registry, middlewares: [new class extends Middleware {
+      override before(_id: string, _input: Record<string, unknown>, context: Context) {
+        captured = context.redactedInputs?.['value'];
+        return null;
+      }
+    }] });
+    await executor.call('system.control.update_config', {
+      key: 'service.api_key', value: 'sample', reason: 'rotation',
+    });
+    expect(captured).toBe(REDACTED_VALUE);
+  });
+
   it('writes only the store when both store and path are configured', () => {
     const config = new Config({ some: { name: 'value' } });
     const emitter = new EventEmitter();
@@ -52,6 +85,11 @@ describe('UpdateConfigModule', () => {
   });
 
   describe('input validation', () => {
+    it('reserves the parent of persisted toggle keys', () => {
+      expect(() => mod.execute({ key: 'toggle', value: {}, reason: 'test' }, null))
+        .toThrow(expect.objectContaining({ code: 'CONFIG_KEY_RESTRICTED' }));
+    });
+
     it('throws InvalidInputError when key is missing', () => {
       expect(() => mod.execute({ value: 'x', reason: 'test' }, null)).toThrow(InvalidInputError);
     });
@@ -130,6 +168,15 @@ describe('UpdateConfigModule', () => {
   });
 
   describe('successful update', () => {
+    it('writes a qualified framework key to the effective setting', () => {
+      const cfg = new Config({ executor: { default_timeout: 1200 } });
+      const update = new UpdateConfigModule(cfg, emitter);
+      expect(update.execute({ key: 'apcore.executor.default_timeout', value: 2400, reason: 'adjust budget' }, null)).toEqual({
+        success: true, key: 'apcore.executor.default_timeout', old_value: 1200, new_value: 2400,
+      });
+      expect(cfg.get('executor.default_timeout')).toBe(2400);
+    });
+
     it('updates the config value and returns correct result', () => {
       const result = mod.execute({ key: 'some.name', value: 'new_value', reason: 'testing' }, null);
 
@@ -142,13 +189,13 @@ describe('UpdateConfigModule', () => {
       expect(config.get('some.name')).toBe('new_value');
     });
 
-    it('returns undefined as old_value when key did not exist', () => {
+    it('returns null as old_value when key did not exist', () => {
       const result = mod.execute({ key: 'brand.new', value: 'hello', reason: 'adding' }, null);
 
       expect(result).toEqual({
         success: true,
         key: 'brand.new',
-        old_value: undefined,
+        old_value: null,
         new_value: 'hello',
       });
     });
@@ -168,6 +215,20 @@ describe('UpdateConfigModule', () => {
   });
 
   describe('sensitive value redaction', () => {
+    it('applies redaction rules to both spellings of a framework key', async () => {
+      const cfg = new Config({
+        executor: { default_timeout: 1200 }, obs: { redaction: { sensitive_keys: ['executor.default_*'] } },
+      });
+      const update = new UpdateConfigModule(cfg, emitter);
+      const payloads: unknown[] = [];
+      emitter.subscribe({ eventPattern: 'apcore.config.updated', async onEvent(event) { payloads.push(event.data); } });
+      const result = update.execute({ key: 'apcore.executor.default_timeout', value: 2400, reason: 'adjust budget' }, null);
+      expect(result).toMatchObject({ old_value: REDACTED_VALUE, new_value: REDACTED_VALUE });
+      expect(cfg.get('executor.default_timeout')).toBe(2400);
+      await emitter.flush();
+      expect(payloads).toEqual([expect.objectContaining({ old_value: REDACTED_VALUE, new_value: REDACTED_VALUE })]);
+    });
+
     // SYS-13: the mask is the framework's canonical `REDACTED_VALUE`
     // ('***REDACTED***'), which is what apcore-python and apcore-rust write.
     // These cases used to pin the bespoke '***' this SDK alone emitted.
@@ -210,6 +271,33 @@ describe('UpdateConfigModule', () => {
       expect(result.new_value).toBe('visible');
     });
 
+    it('uses configured key rules for the updated path and nested values in every published record', () => {
+      config.set('obs.redaction.sensitive_keys', ['sample.old_code', 'Private?Hint']);
+      config.set('sample.old_code', 'original');
+      const oldValue = { label: 'before', entries: [{ private_hint: 'one', key: 'first' }] };
+      const newValue = { label: 'after', entries: [{ private_hint: 'two', key: 'second' }] };
+      config.set('sample.section', oldValue);
+      const auditStore = new InMemoryAuditStore();
+      const control = new UpdateConfigModule(config, emitter, { auditStore });
+      const events: ApCoreEvent[] = [];
+      emitter.subscribe({ onEvent: (event) => { events.push(event); } });
+
+      const direct = control.execute({ key: 'sample.old_code', value: 'updated', reason: 'test' }, null);
+      expect(direct).toMatchObject({ old_value: REDACTED_VALUE, new_value: REDACTED_VALUE });
+
+      const before = { label: 'before', entries: [{ private_hint: REDACTED_VALUE, key: REDACTED_VALUE }] };
+      const after = { label: 'after', entries: [{ private_hint: REDACTED_VALUE, key: REDACTED_VALUE }] };
+      const nested = control.execute({ key: 'sample.section', value: newValue, reason: 'test' }, null);
+      expect(nested).toMatchObject({ old_value: before, new_value: after });
+      expect(events.map(({ data }) => [data.old_value, data.new_value])).toEqual([
+        [REDACTED_VALUE, REDACTED_VALUE], [before, after],
+      ]);
+      expect(auditStore.query().map(({ change }) => change)).toEqual([
+        { before: REDACTED_VALUE, after: REDACTED_VALUE }, { before, after },
+      ]);
+      expect(config.get('sample.section')).toEqual(newValue);
+    });
+
     it('is case-insensitive for sensitivity detection', () => {
       config.set('api.TOKEN', 'old');
       // The key segments are lowercased before checking; 'TOKEN' -> 'token'
@@ -232,14 +320,13 @@ describe('UpdateConfigModule', () => {
       expect(r2.new_value).toBe(REDACTED_VALUE);
     });
 
-    it('does not redact segments that merely contain sensitive words', () => {
-      // "keyboard" contains "key" and "authentication" contains "auth"
-      // but neither is a true sensitive compound segment
+    it('keeps the supplemental legacy key rule scoped to exact and underscore-compound segments', () => {
+      config.set('obs.redaction.sensitive_keys', []);
       const r1 = mod.execute({ key: 'input.keyboard', value: 'us', reason: 'test' }, null);
-      expect(r1.old_value).not.toBe(REDACTED_VALUE);
+      expect(r1.new_value).toBe('us');
 
       const r2 = mod.execute({ key: 'login.authentication', value: 'oauth', reason: 'test' }, null);
-      expect(r2.old_value).not.toBe(REDACTED_VALUE);
+      expect(r2.new_value).toBe('oauth');
     });
   });
 
@@ -315,6 +402,70 @@ describe('ReloadModule', () => {
   });
 
   describe('discover failure', () => {
+    it('waits for the previous module to unload before rediscovery', async () => {
+      let enter!: () => void;
+      let release!: () => void;
+      const unloading = new Promise<void>((resolve) => { enter = resolve; });
+      const blocked = new Promise<void>((resolve) => { release = resolve; });
+      const dummy = { ...createDummyModule(), onUnload: () => { enter(); return blocked; } };
+      await registry.registerInternal('system.test_mod', dummy);
+      const discover = vi.spyOn(registry, 'discover').mockResolvedValue(0);
+      const reload = expect(mod.execute({ module_id: 'system.test_mod', reason: 'restore test' }, null))
+        .rejects.toThrow(ReloadFailedError);
+      await unloading;
+      try {
+        await new Promise<void>((resolve) => { setImmediate(resolve); });
+        expect(discover).not.toHaveBeenCalled();
+      } finally {
+        release();
+        await reload;
+      }
+      expect(registry.get('system.test_mod')).toBe(dummy);
+    });
+
+    it.each([
+      { selector: { module_id: 'test.mod' }, discoveryThrows: true },
+      { selector: { module_id: 'test.mod' }, discoveryThrows: false },
+      { selector: { path_filter: 'test.*' }, discoveryThrows: true },
+      { selector: { path_filter: 'test.*' }, discoveryThrows: false },
+    ])('waits for the original registration to load for $selector (discovery throws $discoveryThrows)', async ({ selector, discoveryThrows }) => {
+      let entered!: () => void;
+      let release!: () => void;
+      const loading = new Promise<void>((resolve) => { entered = resolve; });
+      const blocked = new Promise<void>((resolve) => { release = resolve; });
+      const dummy = {
+        ...createDummyModule(),
+        inputSchema: { type: 'object' },
+        outputSchema: { type: 'object' },
+        onLoad: vi.fn<() => void | Promise<void>>()
+          .mockImplementationOnce(() => {})
+          .mockImplementation(() => { entered(); return blocked; }),
+      };
+      await registry.register('test.mod', dummy, '2.0.0', { description: 'Configured description', tags: ['configured'] });
+      const metadata = registry.getModuleMetadata('test.mod');
+      const discover = vi.spyOn(registry, 'discover');
+      if (discoveryThrows) discover.mockRejectedValue(new Error('disk error'));
+      else discover.mockResolvedValue(0);
+
+      let outcome: unknown;
+      const reload = mod.execute({ ...selector, reason: 'restore test' }, null).then(
+        (result) => { outcome = result; },
+        (error: unknown) => { outcome = error; },
+      );
+      await loading;
+      try {
+        await new Promise<void>((resolve) => { setImmediate(resolve); });
+        expect(outcome).toBeUndefined();
+        expect(registry.get('test.mod')).toBeNull();
+      } finally {
+        release();
+        await reload;
+      }
+      expect(outcome).toBeInstanceOf(ReloadFailedError);
+      expect(registry.get('test.mod')).toBe(dummy);
+      expect(registry.getModuleMetadata('test.mod')).toEqual(metadata);
+    });
+
     it('throws ReloadFailedError when discover fails', async () => {
       const dummy = createDummyModule('1.0.0');
       registry.registerInternal('system.test_mod', dummy);

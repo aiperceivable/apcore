@@ -22,6 +22,19 @@ __all__ = [
 ]
 
 
+_NATIVE_TYPE_MESSAGES = {
+    "bool_type": "Input should be a valid boolean",
+    "float_type": "Input should be a valid number",
+    "int_type": "Input should be a valid integer",
+    "string_type": "Input should be a valid string",
+}
+
+
+def _validation_failure_message(keyword: str, native_kind: str = "") -> str:
+    """Build a diagnostic from the constraint name without rendering instance data."""
+    return _NATIVE_TYPE_MESSAGES.get(native_kind, f"Value does not satisfy the {keyword} schema constraint")
+
+
 class SchemaStrategy(str, Enum):
     """Controls how SchemaLoader resolves schemas."""
 

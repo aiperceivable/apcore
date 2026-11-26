@@ -14,8 +14,9 @@ use crate::registry::types::DepInfo;
 /// Aligned with `apcore-python.load_metadata` and
 /// `apcore-typescript.loadMetadata`.
 pub fn load_metadata(meta_path: &Path) -> Result<HashMap<String, serde_json::Value>, ModuleError> {
-    if !meta_path.exists() {
-        return Ok(HashMap::new());
+    match meta_path.symlink_metadata() {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(HashMap::new()),
+        _ => {}
     }
 
     let content = std::fs::read_to_string(meta_path).map_err(|e| {
@@ -167,26 +168,10 @@ pub fn merge_module_metadata<S: std::hash::BuildHasher>(
     // field (`merge_annotations` / `mergeAnnotations`); the keys neither side
     // sets fall through to the `ModuleAnnotations` serde defaults, which is the
     // "> defaults" leg of the rule.
-    let yaml_annotations = yaml.get("annotations").filter(|v| !v.is_null());
-    let code_annotations = code.get("annotations").filter(|v| !v.is_null());
-    match (code_annotations, yaml_annotations) {
-        (Some(base), Some(overlay)) => {
-            let mut fields = base.as_object().cloned().unwrap_or_default();
-            if let Some(overlay) = overlay.as_object() {
-                for (key, value) in overlay {
-                    fields.insert(key.clone(), value.clone());
-                }
-                merged.insert("annotations".to_string(), serde_json::Value::Object(fields));
-            } else {
-                // A non-object YAML annotations value cannot be merged per
-                // field; keep the existing "YAML wins" behaviour for it.
-                merged.insert("annotations".to_string(), overlay.clone());
-            }
-        }
-        (None, Some(only)) | (Some(only), None) => {
-            merged.insert("annotations".to_string(), only.clone());
-        }
-        (None, None) => {}
+    if let Some(annotations) =
+        merge_annotation_fields(code.get("annotations"), yaml.get("annotations"))
+    {
+        merged.insert("annotations".to_string(), annotations);
     }
 
     // dependencies: YAML wins when present (an explicit empty list overrides
@@ -216,6 +201,23 @@ pub fn merge_module_metadata<S: std::hash::BuildHasher>(
     }
 
     merged
+}
+
+pub(crate) fn merge_annotation_fields(
+    code: Option<&serde_json::Value>,
+    yaml: Option<&serde_json::Value>,
+) -> Option<serde_json::Value> {
+    let code = code.filter(|value| !value.is_null());
+    let yaml = yaml.filter(|value| !value.is_null());
+    match (code, yaml) {
+        (Some(base), Some(serde_json::Value::Object(overlay))) => {
+            let mut fields = base.as_object().cloned().unwrap_or_default();
+            fields.extend(overlay.clone());
+            Some(serde_json::Value::Object(fields))
+        }
+        (_, Some(overlay)) => Some(overlay.clone()),
+        (base, None) => base.cloned(),
+    }
 }
 
 /// Load an ID Map YAML file for canonical ID overrides.

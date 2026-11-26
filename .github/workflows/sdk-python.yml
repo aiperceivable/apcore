@@ -18,14 +18,10 @@ jobs:
         working-directory: python
     env:
       CONFORMANCE_SPEC_REPO: ${{ github.workspace }}
-    # container:
-    #   image: python:${{ matrix.python-version }}
     strategy:
       fail-fast: false
       matrix:
-        # Pin CI to a single, consistent Python version to reduce version-related
-        # test flakiness. Use 3.12 for CI stability; expand matrix later if desired.
-        python-version: ["3.12"]
+        python-version: ["3.11", "3.12"]
 
     steps:
     - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2

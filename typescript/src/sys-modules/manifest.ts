@@ -85,7 +85,38 @@ function dependenciesWire(descriptor: ModuleDescriptor): unknown[] {
   }));
 }
 
-/** @internal */
+const manifestEntrySchema = {
+  type: 'object' as const,
+  additionalProperties: false,
+  properties: {
+    module_id: { type: 'string', description: 'Module identifier' },
+    description: { type: 'string', description: 'Module description' },
+    documentation: { type: ['string', 'null'], description: 'Module documentation (Markdown)' },
+    source_path: { type: ['string', 'null'], description: 'Computed source file path' },
+    input_schema: { type: ['object', 'null'], description: 'Module input JSON Schema' },
+    output_schema: { type: ['object', 'null'], description: 'Module output JSON Schema' },
+    annotations: { type: ['object', 'null'], description: 'Module annotations' },
+    tags: { type: 'array', items: { type: 'string' }, description: 'Module tags' },
+    dependencies: {
+      type: 'array',
+      description: 'Module dependencies',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['module_id'],
+        properties: {
+          module_id: { type: 'string' },
+          version: { type: 'string' },
+          optional: { type: 'boolean' },
+        },
+      },
+    },
+    metadata: { type: ['object', 'null'], description: 'Additional metadata' },
+  },
+  required: ['module_id', 'description'],
+};
+
+/** Report the manifest of one registered module. */
 export class ManifestModule {
   readonly description = 'Full manifest for a registered module including source path';
   readonly annotations = { readonly: true, destructive: false, idempotent: true, requiresApproval: false, openWorld: false, streaming: false, cacheable: false, cacheTtl: 0, cacheKeyFields: null, paginated: false, paginationStyle: 'cursor' as const };
@@ -96,22 +127,7 @@ export class ManifestModule {
     },
     required: ['module_id'],
   };
-  readonly outputSchema = {
-    type: 'object' as const,
-    properties: {
-      module_id: { type: 'string' as const, description: 'Module identifier' },
-      description: { type: 'string' as const, description: 'Module description' },
-      documentation: { type: ['string', 'null'], description: 'Module documentation (Markdown)' },
-      source_path: { type: ['string', 'null'], description: 'Computed source file path' },
-      input_schema: { type: ['object', 'null'], description: 'Module input JSON Schema' },
-      output_schema: { type: ['object', 'null'], description: 'Module output JSON Schema' },
-      annotations: { type: ['object', 'null'], description: 'Module annotations' },
-      tags: { type: 'array' as const, description: 'Module tags' },
-      dependencies: { type: 'array' as const, description: 'Module dependencies' },
-      metadata: { type: ['object', 'null'], description: 'Additional metadata' },
-    },
-    required: ['module_id', 'description'],
-  };
+  readonly outputSchema = manifestEntrySchema;
 
   private readonly _registry: Registry;
   private readonly _config: Config | null;
@@ -159,7 +175,7 @@ export class ManifestModule {
   }
 }
 
-/** @internal */
+/** Report the manifest of all registered modules. */
 export class ManifestFullModule {
   readonly description = 'Complete system manifest with filtering by prefix and tags';
   readonly annotations = { readonly: true, destructive: false, idempotent: true, requiresApproval: false, openWorld: false, streaming: false, cacheable: false, cacheTtl: 0, cacheKeyFields: null, paginated: false, paginationStyle: 'cursor' as const };
@@ -174,10 +190,11 @@ export class ManifestFullModule {
   };
   readonly outputSchema = {
     type: 'object' as const,
+    additionalProperties: false,
     properties: {
       project_name: { type: 'string' as const, description: 'Project name from config' },
       module_count: { type: 'integer' as const, description: 'Number of modules returned' },
-      modules: { type: 'array' as const, description: 'Module manifest entries' },
+      modules: { type: 'array' as const, items: manifestEntrySchema, description: 'Module manifest entries' },
     },
     required: ['project_name', 'module_count', 'modules'],
   };

@@ -20,15 +20,25 @@ export interface ObservabilityStore {
 }
 
 export class InMemoryObservabilityStore implements ObservabilityStore {
-  private _errors: unknown[] = [];
+  private readonly _errors = new Map<string | symbol, unknown>();
   private _metrics: MetricPoint[] = [];
 
   recordError(entry: unknown): void {
-    this._errors.push(entry);
+    this._errors.set(Symbol(), entry);
+  }
+
+  /** @internal Retain the latest snapshot of a collector-owned fingerprint. */
+  retainError(fingerprint: string, entry: unknown): void {
+    this._errors.set(fingerprint, entry);
+  }
+
+  /** @internal Remove the snapshot when the owning collector evicts it. */
+  evictError(fingerprint: string): void {
+    this._errors.delete(fingerprint);
   }
 
   getErrors(moduleId?: string | null, limit?: number | null): unknown[] {
-    let entries = [...this._errors];
+    let entries = [...this._errors.values()];
     if (moduleId != null) {
       entries = entries.filter((e) => (e as Record<string, unknown>)['moduleId'] === moduleId);
     }
@@ -53,7 +63,7 @@ export class InMemoryObservabilityStore implements ObservabilityStore {
   flush(): void {}
 
   clear(): void {
-    this._errors = [];
+    this._errors.clear();
     this._metrics = [];
   }
 }

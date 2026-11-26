@@ -492,6 +492,7 @@ class TestPublicAPIAll:
         "AlwaysDenyHandler",
         "AutoApproveHandler",
         "CallbackApprovalHandler",
+        "ScopedApprovalHandler",
         # Module types
         "Change",
         "DEFAULT_ANNOTATIONS",
@@ -683,7 +684,11 @@ class TestPublicAPIAll:
         "SysModulesDisabledError",
         "StreamingInterfaceError",
         # Streaming Protocol (apcore #62)
+        "StreamCompletion",
+        "StreamCompletionReason",
+        "StreamExecution",
         "StreamingModule",
+        "StreamStepOutcome",
         # Observability (added in 0.11.0, exported in 0.12.0)
         "ErrorEntry",
         "ErrorHistory",

@@ -888,11 +888,8 @@ impl BindingLoader {
 
             let annotations = annotations_with_resources(entry, module_id)?;
 
-            let display_meta = display_into_metadata(entry.display.as_ref());
             let mut metadata = entry.metadata.clone();
-            for (k, v) in display_meta {
-                metadata.entry(k).or_insert(v);
-            }
+            apply_display_metadata(&mut metadata, entry.display.as_ref());
 
             let description = entry.description.clone().unwrap_or_default();
             let documentation = entry.documentation.clone();
@@ -996,11 +993,8 @@ impl BindingLoader {
             }
 
             let annotations = annotations_with_resources(entry, module_id)?;
-            let display_meta = display_into_metadata(entry.display.as_ref());
             let mut metadata = entry.metadata.clone();
-            for (k, v) in display_meta {
-                metadata.entry(k).or_insert(v);
-            }
+            apply_display_metadata(&mut metadata, entry.display.as_ref());
 
             let description = entry.description.clone().unwrap_or_default();
             let documentation = entry.documentation.clone();
@@ -1209,17 +1203,17 @@ fn annotations_from_value(
     })
 }
 
-/// Move a `display` JSON value into the module's `metadata` namespace under
-/// the canonical key `apcore.display`. Surface adapters (CLI, MCP, A2A) read
-/// this when rendering the module on a given surface.
-fn display_into_metadata(
+/// Publish the canonical overlay and retain the Rust compatibility key.
+fn apply_display_metadata(
+    metadata: &mut HashMap<String, serde_json::Value>,
     display: Option<&serde_json::Value>,
-) -> HashMap<String, serde_json::Value> {
-    let mut out = HashMap::new();
+) {
     if let Some(value) = display {
-        out.insert("apcore.display".to_string(), value.clone());
+        metadata.insert("display".to_string(), value.clone());
+        metadata
+            .entry("apcore.display".to_string())
+            .or_insert_with(|| value.clone());
     }
-    out
 }
 
 #[cfg(test)]

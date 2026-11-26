@@ -11,6 +11,7 @@
 // around [`FileOverridesStore::load`] so existing callers compile unchanged.
 
 use std::collections::{BTreeMap, HashMap};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock, Weak};
 
@@ -18,8 +19,10 @@ use async_trait::async_trait;
 use parking_lot::{Mutex, RwLock};
 use thiserror::Error;
 
-use crate::config::Config;
+use crate::config::{canonical_config_key, Config};
 use crate::sys_modules::ToggleState;
+
+pub(crate) const TOGGLE_OVERRIDE_PREFIX: &str = "toggle.";
 
 // ---------------------------------------------------------------------------
 // OverridesError
@@ -215,6 +218,15 @@ pub fn load_overrides(
     config: &mut Config,
     toggle_state: Option<&ToggleState>,
 ) {
+    load_config_overrides(overrides_path, config, None, toggle_state);
+}
+
+pub(super) fn load_config_overrides(
+    overrides_path: &Path,
+    config: &mut Config,
+    executor_config: Option<&mut Config>,
+    toggle_state: Option<&ToggleState>,
+) {
     let loaded = match read_yaml_overrides_sync(overrides_path) {
         Ok(map) => map,
         Err(e) => {
@@ -226,7 +238,13 @@ pub fn load_overrides(
             return;
         }
     };
-    apply_overrides(loaded, config, toggle_state, overrides_path);
+    apply_overrides(
+        loaded,
+        config,
+        executor_config,
+        toggle_state,
+        overrides_path,
+    );
 }
 
 /// Synchronous YAML reader shared by the legacy [`load_overrides`] entry
@@ -275,16 +293,34 @@ fn read_yaml_overrides_sync(
     Ok(out)
 }
 
+/// Give the canonical spelling precedence when a legacy store contains both
+/// spellings of a framework key. Boot and reload use the same ordering.
+pub(super) fn normalize_config_overrides(
+    loaded: HashMap<String, serde_json::Value>,
+) -> BTreeMap<String, serde_json::Value> {
+    let mut normalized = BTreeMap::new();
+    for (key, value) in loaded {
+        let canonical = canonical_config_key(&key);
+        if canonical == key {
+            normalized.insert(key, value);
+        } else {
+            normalized.entry(canonical.to_owned()).or_insert(value);
+        }
+    }
+    normalized
+}
+
 fn apply_overrides(
     loaded: HashMap<String, serde_json::Value>,
     config: &mut Config,
+    mut executor_config: Option<&mut Config>,
     toggle_state: Option<&ToggleState>,
     overrides_path: &Path,
 ) {
     let mut config_count = 0usize;
     let mut toggle_count = 0usize;
-    for (key, json_value) in loaded {
-        if let Some(module_id) = key.strip_prefix("toggle.") {
+    for (key, json_value) in normalize_config_overrides(loaded) {
+        if let Some(module_id) = key.strip_prefix(TOGGLE_OVERRIDE_PREFIX) {
             if let (Some(ts), Some(enabled)) = (toggle_state, json_value.as_bool()) {
                 if enabled {
                     ts.enable(module_id);
@@ -294,6 +330,9 @@ fn apply_overrides(
                 toggle_count += 1;
             }
         } else if !key.starts_with('_') {
+            if let Some(executor_config) = executor_config.as_deref_mut() {
+                executor_config.set(&key, json_value.clone());
+            }
             config.set(&key, json_value);
             config_count += 1;
         }
@@ -410,16 +449,24 @@ fn write_yaml_overrides_sync(
         .file_name()
         .and_then(|name| name.to_str())
         .unwrap_or("overrides");
-    let pid = std::process::id();
-    let nanos = chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0);
-    let tmp = dir.join(format!(".{filename}.{pid}.{nanos}.tmp"));
-
-    if let Err(source) = std::fs::write(&tmp, yaml).and_then(|()| std::fs::rename(&tmp, path)) {
+    let tmp = dir.join(format!(".{filename}.{}.tmp", uuid::Uuid::new_v4()));
+    let io_error = |source| OverridesError::Io {
+        path: path.to_path_buf(),
+        source,
+    };
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(&tmp).map_err(io_error)?;
+    let written = file.write_all(yaml.as_bytes());
+    drop(file);
+    if let Err(source) = written.and_then(|()| std::fs::rename(&tmp, path)) {
         let _ = std::fs::remove_file(&tmp);
-        return Err(OverridesError::Io {
-            path: path.to_path_buf(),
-            source,
-        });
+        return Err(io_error(source));
     }
     Ok(())
 }

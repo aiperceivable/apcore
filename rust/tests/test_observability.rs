@@ -55,6 +55,76 @@ async fn usage_keeps_distinct_calls_with_the_same_timestamp_in_storage() {
     assert_eq!(entries.len(), 2);
 }
 
+#[tokio::test]
+async fn default_usage_storage_follows_rollover_and_reset() {
+    use chrono::{Duration, Utc};
+
+    let collector = UsageCollector::new();
+    let storage = collector.storage_backend().expect("default usage storage");
+    let now = Utc::now();
+    for hour in 0..169 {
+        collector.record_at(
+            "test.mod",
+            Some("caller"),
+            1.0,
+            true,
+            now - Duration::hours(hour),
+        );
+    }
+    let stored = storage.list("usage", "test.mod:").await.unwrap();
+    assert_eq!(stored.len(), 168);
+    let oldest_key = format!(
+        "test.mod:{}:",
+        (now - Duration::hours(168)).timestamp_nanos_opt().unwrap()
+    );
+    assert!(storage.list("usage", &oldest_key).await.unwrap().is_empty());
+    collector.reset();
+    tokio::task::yield_now().await;
+    assert!(storage.list("usage", "").await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn default_error_storage_and_sink_follow_live_fingerprints_after_clear() {
+    use chrono::{Duration, Utc};
+
+    let history = ErrorHistory::with_limits(1, 2);
+    let storage = history.storage_backend().expect("default error storage");
+    let now = Utc::now();
+    history.record_at("mod.a", &make_error("first"), now);
+    for step in 1..=40 {
+        history.record_at(
+            "mod.a",
+            &make_error("repeat"),
+            now + Duration::milliseconds(step),
+        );
+    }
+    let expected = history.get("mod.a", None);
+    let stored = storage.list("error_history", "").await.unwrap();
+    assert_eq!(stored.len(), 1);
+    assert_eq!(stored[0].0, expected[0].fingerprint);
+    assert_eq!(stored[0].1["count"], 40);
+    let notifications = history.store().get_errors(None, None).await;
+    assert_eq!(notifications.len(), 1);
+    assert_eq!(notifications[0].count, 40);
+
+    history.clear(Some("mod.a"));
+    tokio::task::yield_now().await;
+    assert!(storage.list("error_history", "").await.unwrap().is_empty());
+    assert!(history.store().get_errors(None, None).await.is_empty());
+}
+
+#[tokio::test]
+async fn detached_error_history_stops_writing_to_the_previous_default_backend() {
+    let history = ErrorHistory::new(5);
+    let storage = history.storage_backend().expect("default error storage");
+    let history = history.with_storage(None);
+
+    history.record("mod.a", &make_error("collector only"));
+    assert_eq!(history.get("mod.a", None).len(), 1);
+    assert!(history.storage_backend().is_none());
+    assert!(storage.list("error_history", "").await.unwrap().is_empty());
+}
+
 // ===========================================================================
 // ErrorHistory
 // ===========================================================================
@@ -897,6 +967,36 @@ fn test_usage_export_prometheus_excludes_records_older_than_24h() {
         output.contains("apcore_usage_calls_total{module_id=\"mod.a\",status=\"success\"} 1"),
         "only the in-window record should be counted; got:\n{output}"
     );
+}
+
+#[test]
+fn test_usage_export_prometheus_groups_all_samples_by_family() {
+    let usage = UsageCollector::new();
+    usage.record("demo.first", Some("client"), 10.0, true);
+    usage.record("demo.second", Some("client"), 20.0, false);
+    let output = apcore::render_prometheus_metrics(&MetricsCollector::new(), Some(&usage));
+
+    let families = [
+        ("apcore_usage_calls_24h", 4),
+        ("apcore_usage_calls_total", 4),
+        ("apcore_usage_error_rate", 2),
+        ("apcore_usage_p50_latency_ms", 2),
+        ("apcore_usage_p95_latency_ms", 2),
+        ("apcore_usage_p99_latency_ms", 2),
+    ];
+    let lines: Vec<_> = output.lines().collect();
+    for (family, sample_count) in families {
+        let type_line = format!("# TYPE {family} gauge");
+        let start = lines
+            .iter()
+            .position(|line| *line == type_line)
+            .unwrap_or_else(|| panic!("Missing {type_line}"));
+        let sample_prefix = format!("{family}{{");
+        assert!(lines[start + 1..start + 1 + sample_count]
+            .iter()
+            .all(|line| line.starts_with(&sample_prefix)));
+    }
+    assert!(output.ends_with('\n'));
 }
 
 #[test]

@@ -16,6 +16,7 @@ import type { ExecutionPolicy } from './policy.js';
 import type { Middleware } from './middleware/index.js';
 import type { ModuleAnnotations, ModuleExample, PreflightResult, ResourceLimits } from './module.js';
 import type { MetricsCollector } from './observability/metrics.js';
+import type { StreamExecution } from './stream-completion.js';
 import { buildTracingMiddleware } from './observability/tracing-config.js';
 import { Registry } from './registry/registry.js';
 import type { RegisterSysModulesOptions, SysModulesContext } from './sys-modules/registration.js';
@@ -232,6 +233,7 @@ export class APCore {
   /**
    * Create and register a FunctionModule.
    *
+   * Await the returned module's `registration` before calling it with an asynchronous registry.
    * TypeScript version requires explicit schemas (no runtime type inference).
    */
   module(options: ModuleOptions): FunctionModule {
@@ -287,6 +289,16 @@ export class APCore {
     versionHint?: string | null,
   ): AsyncGenerator<Record<string, unknown>> {
     yield* this.executor.stream(moduleId, inputs, context, versionHint);
+  }
+
+  /** Stream one invocation and inspect its canonical completion. */
+  streamWithCompletion(
+    moduleId: string,
+    inputs?: Record<string, unknown> | null,
+    context?: Context | null,
+    versionHint?: string | null,
+  ): StreamExecution {
+    return this.executor.streamWithCompletion(moduleId, inputs, context, versionHint);
   }
 
   /**

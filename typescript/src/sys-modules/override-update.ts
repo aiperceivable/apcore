@@ -3,6 +3,10 @@ import type { OverridesStore } from './overrides.js';
 /** File-backed stores distinguish an empty file from a failed update read. */
 export const readOverridesForUpdate = Symbol('readOverridesForUpdate');
 
+/** Reserved persisted key namespace for module enablement. */
+export const TOGGLE_OVERRIDE_NAMESPACE = 'toggle';
+export const TOGGLE_OVERRIDE_PREFIX = `${TOGGLE_OVERRIDE_NAMESPACE}.`;
+
 type UpdateStore = OverridesStore & {
   [readOverridesForUpdate]?: () => ReturnType<OverridesStore['load']>;
 };

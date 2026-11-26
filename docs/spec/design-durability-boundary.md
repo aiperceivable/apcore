@@ -50,7 +50,7 @@ The approval gate (pipeline Step 5, [protocol-spec §7](./protocol-spec.md#7-app
 1. The gate fires when any governance source requires approval — the module's annotations, annotations the registry holds for it (binding file, `*_meta.yaml`, `metadata`), an ACL rule with `approval: required`, or `ExecutionPolicy.gate_destructive` for a destructive module ([protocol-spec §7.4, §6.9](./protocol-spec.md#74-executor-integration-step-5)). It calls the configured `ApprovalHandler`; with no handler the gate is skipped with a warning, unless `ExecutionPolicy(strict = true)` makes it fail closed.
 2. If the handler returns `pending`, the executor raises `ApprovalPendingError` carrying an `approval_id`.
 3. The caller persists `approval_id` and the original inputs (apcore does not), waits for an out-of-band approval signal, and re-invokes the same module with `_approval_token = approval_id` in the arguments.
-4. On resume the executor re-enters the pipeline **from Step 1**. The gate removes `_approval_token` from the arguments and calls `handler.check_approval(token)` instead of `request_approval()`.
+4. On resume the executor re-enters the pipeline **from Step 1**. The gate removes `_approval_token` from the arguments and calls `handler.check_approval_for_call(token, request)` with the current invocation.
 
 This pause/resume cycle crosses arbitrary time gaps and process restarts, provided the application persists the `approval_id` and the original inputs. Downstream layers that need human-in-the-loop or externally-decided execution **SHOULD** model their suspension on this contract rather than introduce their own.
 
@@ -164,7 +164,7 @@ For execution that must pause indefinitely waiting on a human, an external servi
 1. Make the call require approval — `requires_approval: true` on the module, or an ACL rule with `approval: required` for the callers that need it.
 2. Implement an `ApprovalHandler` that:
    - on `request_approval()`, persists the request to your durable store and returns `pending` with an `approval_id`;
-   - on `check_approval(token)`, looks up the persisted decision and returns `approved` / `rejected` / `timeout` / still-`pending`.
+   - on `check_approval_for_call(token, request)`, checks the persisted decision against the current principal, caller, target, and arguments, checks its expiry, and consumes an approved credential in the same transaction.
 3. The caller catches `ApprovalPendingError`, persists the original inputs alongside `approval_id`, and re-invokes with `_approval_token = approval_id` once the decision is recorded.
 
 This is the pause/resume contract of §2.2. It crosses crashes, restarts and arbitrary time gaps.

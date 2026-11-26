@@ -41,6 +41,9 @@ validation:
   unrecognized_links: warn
   anchors: warn
 
+hooks:
+  - scripts/mkdocs_schemas.py
+
 plugins:
   - search
   - redirects:

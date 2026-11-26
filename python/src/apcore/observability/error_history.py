@@ -179,14 +179,11 @@ class ErrorHistory:
 
         self._max_entries_per_module = max_entries_per_module
         self._max_total_entries = max_total_entries
-        self._store: ObservabilityStore = store if store is not None else InMemoryObservabilityStore()
-        # Optional generic storage backend (Issue #43 §1).  When supplied,
-        # error entries are mirrored to the ``"errors"`` namespace using the
-        # fingerprint as the key, enabling cross-process persistence.
-        # D-113: an OMITTED backend means the bundled in-memory one, not "no
-        # storage". Only apcore-typescript honoured that, so the same omission
-        # produced a working store there and a silent no-op here — and a caller
-        # reading records back got an empty list rather than an error.
+        self._default_store: InMemoryObservabilityStore | None = None
+        if store is None:
+            self._default_store = store = InMemoryObservabilityStore()
+        self._store = store
+        self._owns_storage = storage is None
         self._storage: StorageBackend = storage if storage is not None else InMemoryStorageBackend()
         self._lock = threading.Lock()
         self._fp_index: dict[str, ErrorEntry] = {}
@@ -258,28 +255,40 @@ class ErrorHistory:
                     (item.last_occurred, self._order[fp], item) for fp, item in self._fp_index.items()
                 ]
                 heapq.heapify(self._heap)
-        # Notify store outside the internal lock to avoid lock-ordering issues.
-        self._store.record_error(entry_to_notify)
-        if self._storage is not None:
-            # D-113: the canonical namespace. This SDK wrote `errors` and
-            # apcore-rust wrote `error_history`, so the same records were
-            # unqueryable across the two — a namespace IS the key a caller reads
-            # by, and an unnamed one made the argument write-only.
-            self._storage.save(
-                STORAGE_NAMESPACE_ERROR_HISTORY,
-                entry_to_notify.fingerprint,
-                {
-                    "module_id": entry_to_notify.module_id,
-                    "code": entry_to_notify.code,
-                    "message": entry_to_notify.message,
-                    "ai_guidance": entry_to_notify.ai_guidance,
-                    "timestamp": entry_to_notify.timestamp,
-                    "count": entry_to_notify.count,
-                    "first_occurred": entry_to_notify.first_occurred,
-                    "last_occurred": entry_to_notify.last_occurred,
-                    "fingerprint": entry_to_notify.fingerprint,
-                },
-            )
+            if fp in self._fp_index:
+                if self._default_store is not None:
+                    self._default_store._retain_error(entry_to_notify)
+                if self._owns_storage:
+                    self._persist_entry(entry_to_notify)
+
+        # Custom I/O stays outside the lock and keeps its own retention.
+        if self._default_store is None:
+            self._store.record_error(entry_to_notify)
+        if not self._owns_storage:
+            self._persist_entry(entry_to_notify)
+
+    def _persist_entry(self, entry: ErrorEntry) -> None:
+        self._storage.save(
+            STORAGE_NAMESPACE_ERROR_HISTORY,
+            entry.fingerprint,
+            {
+                "module_id": entry.module_id,
+                "code": entry.code,
+                "message": entry.message,
+                "ai_guidance": entry.ai_guidance,
+                "timestamp": entry.timestamp,
+                "count": entry.count,
+                "first_occurred": entry.first_occurred,
+                "last_occurred": entry.last_occurred,
+                "fingerprint": entry.fingerprint,
+            },
+        )
+
+    def _evict_default_backing(self, fingerprint: str) -> None:
+        if self._default_store is not None:
+            self._default_store._evict_error(fingerprint)
+        if self._owns_storage:
+            self._storage.delete(STORAGE_NAMESPACE_ERROR_HISTORY, fingerprint)
 
     def stored_entries(self) -> list[tuple[str, dict[str, Any]]]:
         """Every persisted error record, newest namespace first (D-113).
@@ -329,6 +338,7 @@ class ErrorHistory:
             evicted = module_entries.popleft()
             self._fp_index.pop(evicted.fingerprint, None)
             self._order.pop(evicted.fingerprint, None)
+            self._evict_default_backing(evicted.fingerprint)
         if not module_entries:
             self._module_index.pop(module_id, None)
 
@@ -345,6 +355,7 @@ class ErrorHistory:
             if self._order.get(entry.fingerprint) == sequence:
                 self._fp_index.pop(entry.fingerprint, None)
                 self._order.pop(entry.fingerprint, None)
+                self._evict_default_backing(entry.fingerprint)
                 module_entries = self._module_index.get(entry.module_id)
                 if module_entries is not None:
                     try:

@@ -9,9 +9,9 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
-from apcore.config import Config, _CONSTRAINTS
+from apcore.config import Config, _CONSTRAINTS, _DEFAULT_OBS_REDACTION_SENSITIVE_KEYS
 from apcore.utils.pattern import match_glob
-from apcore.utils.redaction import REDACTED_VALUE
+from apcore.utils.redaction import REDACTED_VALUE, _key_matches
 from apcore.errors import (
     ConfigError,
     InvalidInputError,
@@ -71,6 +71,13 @@ class ToggleState:
         """Clear all toggle state (useful for testing)."""
         with self._lock:
             self._disabled.clear()
+
+    def _copy(self) -> ToggleState:
+        """Make a separate snapshot without losing existing disable decisions."""
+        snapshot = ToggleState()
+        with self._lock:
+            snapshot._disabled = self._disabled.copy()
+        return snapshot
 
 
 # Default global instance for backward compatibility
@@ -139,20 +146,21 @@ class UpdateConfigModule:
         "type": "object",
         "properties": {
             "key": {"type": "string", "description": "Dot-path config key"},
-            "value": {"description": "New value"},
+            "value": {"description": "New value", "x-sensitive": True},
             "reason": {"type": "string", "description": "Audit reason"},
         },
         "required": ["key", "value", "reason"],
     }
     output_schema: dict[str, Any] = {
         "type": "object",
+        "additionalProperties": False,
         "properties": {
             "success": {
                 "type": "boolean",
                 "description": "Whether the update succeeded",
             },
             "key": {"type": "string", "description": "Updated config key"},
-            "old_value": {"description": "Previous value (redacted for sensitive keys)"},
+            "old_value": {"description": "Previous value, null if absent, or redacted for sensitive keys"},
             "new_value": {"description": "New value (redacted for sensitive keys)"},
         },
         "required": ["success", "key", "old_value", "new_value"],
@@ -175,38 +183,39 @@ class UpdateConfigModule:
     def execute(self, inputs: dict[str, Any], context: Any) -> dict[str, Any]:
         """Update a config value, emit event, and optionally persist + audit."""
         key, value, reason = self._validate_inputs(inputs)
-        constraint_key = key.removeprefix("apcore.")
-        self._check_restricted(constraint_key)
-        self._validate_value(constraint_key, value)
+        self._check_restricted(key.removeprefix("apcore."))
+        sensitive_keys = self._config.get("obs.redaction.sensitive_keys")
+        if not isinstance(sensitive_keys, list):
+            sensitive_keys = _DEFAULT_OBS_REDACTION_SENSITIVE_KEYS
+        self._validate_value(key, value, sensitive_keys)
 
-        old_value = self._config.get(key)
-        self._config.set(key, value)
-
-        self._emit_event(key, old_value, value, context)
-        self._log_change(key, old_value, value, reason)
+        storage_key, previous, committed = self._config._update_runtime_value(key, value)
+        safe_old_value = self._redact_config_value(key, previous, sensitive_keys)
+        safe_new_value = self._redact_config_value(key, committed, sensitive_keys)
 
         if self._overrides_store is not None:
-            _persist_override(self._overrides_store, key, value)
+            _persist_override(self._overrides_store, storage_key, committed)
         elif self._overrides_path:
-            _persist_override(FileOverridesStore(self._overrides_path), key, value)
+            _persist_override(FileOverridesStore(self._overrides_path), storage_key, committed)
 
-        redacted = self._is_sensitive_key(key)
+        self._emit_event(key, safe_old_value, safe_new_value, context)
+        logger.info(
+            "Config updated: key=%s old_value=%s new_value=%s reason=%s", key, safe_old_value, safe_new_value, reason
+        )
+
         if self._audit_store is not None:
             entry = _build_audit_entry(
                 action="update_config",
                 target_module_id="system.control.update_config",
                 context=context,
-                change={
-                    "before": REDACTED_VALUE if redacted else old_value,
-                    "after": REDACTED_VALUE if redacted else value,
-                },
+                change={"before": safe_old_value, "after": safe_new_value},
             )
             self._audit_store.append(entry)
         return {
             "success": True,
             "key": key,
-            "old_value": REDACTED_VALUE if redacted else old_value,
-            "new_value": REDACTED_VALUE if redacted else value,
+            "old_value": safe_old_value,
+            "new_value": safe_new_value,
         }
 
     # ------------------------------------------------------------------
@@ -230,33 +239,35 @@ class UpdateConfigModule:
     @staticmethod
     def _check_restricted(key: str) -> None:
         """Raise if key is in the restricted keys list."""
-        if key in _RESTRICTED_KEYS:
+        reserved_state = key in {"apcore", "toggle"} or key.startswith(("toggle.", "_"))
+        affects_restricted_key = any(
+            key == restricted or key.startswith(f"{restricted}.") or restricted.startswith(f"{key}.")
+            for restricted in _RESTRICTED_KEYS
+        )
+        if reserved_state or affects_restricted_key:
             raise ModuleError(
                 code="CONFIG_KEY_RESTRICTED",
                 message=f"Configuration key '{key}' cannot be changed at runtime",
                 details={"key": key},
             )
 
-    def _validate_value(self, key: str, value: Any) -> None:
+    def _validate_value(self, key: str, value: Any, sensitive_keys: list[str]) -> None:
         """Validate the candidate before publishing it to readers."""
-        if key not in _CONSTRAINTS:
+        constraint_key = key.removeprefix("apcore.")
+        if constraint_key not in _CONSTRAINTS:
             return
 
-        check_fn, err_msg = _CONSTRAINTS[key]
+        check_fn, err_msg = _CONSTRAINTS[constraint_key]
         if not check_fn(value):
+            safe_value = self._redact_config_value(key, value, sensitive_keys)
             raise ConfigError(
-                message=f"Invalid value for '{key}': {err_msg} (got {value!r})",
-                details={"key": key, "value": value},
+                message=f"Invalid value for '{constraint_key}': {err_msg} (got {safe_value!r})",
+                details={"key": constraint_key, "value": safe_value},
             )
 
     def _emit_event(self, key: str, old_value: Any, new_value: Any, context: Any = None) -> None:
         """Emit ``apcore.config.updated`` (canonical event) with caller identity."""
-        redacted = self._is_sensitive_key(key)
-        data: dict[str, Any] = {
-            "key": key,
-            "old_value": REDACTED_VALUE if redacted else old_value,
-            "new_value": REDACTED_VALUE if redacted else new_value,
-        }
+        data: dict[str, Any] = {"key": key, "old_value": old_value, "new_value": new_value}
         # Issue #45.2 — attach requester identity to the audit event payload.
         data.update(_audit_payload_extras(context))
         self._emitter.emit(
@@ -272,31 +283,28 @@ class UpdateConfigModule:
     _SENSITIVE_SEGMENTS = ("token", "secret", "key", "password", "auth", "credential")
 
     @classmethod
-    def _is_sensitive_key(cls, key: str) -> bool:
-        """Check if a config key path contains sensitive-sounding segments."""
-        return any(
+    def _redact_config_value(cls, key: str, value: Any, sensitive_keys: list[str]) -> Any:
+        """Copy a value for display, masking sensitive paths and descendants."""
+        segments = key.lower().split(".")
+        legacy_match = any(
             seg == s or seg.endswith(f"_{s}") or seg.startswith(f"{s}_")
-            for seg in key.lower().split(".")
+            for seg in segments
             for s in cls._SENSITIVE_SEGMENTS
         )
-
-    @classmethod
-    def _log_change(cls, key: str, old_value: Any, new_value: Any, reason: str) -> None:
-        """Log the configuration change at INFO level for audit."""
-        if cls._is_sensitive_key(key):
-            logger.info(
-                "Config updated: key=%s old_value=*** new_value=*** reason=%s",
-                key,
-                reason,
-            )
-        else:
-            logger.info(
-                "Config updated: key=%s old_value=%s new_value=%s reason=%s",
-                key,
-                old_value,
-                new_value,
-                reason,
-            )
+        if (
+            legacy_match
+            or _key_matches(key, sensitive_keys)
+            or (key.startswith("apcore.") and _key_matches(key.removeprefix("apcore."), sensitive_keys))
+            or any(_key_matches(seg, sensitive_keys) for seg in segments)
+        ):
+            return REDACTED_VALUE
+        if isinstance(value, dict):
+            return {
+                name: cls._redact_config_value(f"{key}.{name}", child, sensitive_keys) for name, child in value.items()
+            }
+        if isinstance(value, list):
+            return [cls._redact_config_value(key, child, sensitive_keys) for child in value]
+        return value
 
 
 class ReloadModule:
@@ -353,16 +361,34 @@ class ReloadModule:
                 "description": "ID of the reloaded module (null for bulk reload via path_filter)",
             },
             "previous_version": {
-                "type": "string",
+                "type": ["string", "null"],
                 "description": "Version before reload",
             },
-            "new_version": {"type": "string", "description": "Version after reload"},
+            "new_version": {"type": ["string", "null"], "description": "Version after reload"},
             "reload_duration_ms": {
                 "type": "number",
                 "description": "Reload duration in milliseconds",
             },
+            "reloaded_modules": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "IDs of the modules reloaded in bulk mode",
+            },
         },
         "required": ["success", "module_id"],
+        "additionalProperties": False,
+        "oneOf": [
+            {"properties": {"module_id": {"type": "string"}, "reloaded_modules": False}},
+            {
+                "required": ["reloaded_modules"],
+                "properties": {
+                    "module_id": {"type": "null"},
+                    "reloaded_modules": {"type": "array"},
+                    "previous_version": False,
+                    "new_version": False,
+                },
+            },
+        ],
     }
 
     def __init__(

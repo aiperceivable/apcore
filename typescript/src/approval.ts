@@ -7,7 +7,46 @@
  */
 
 import type { Context } from './context.js';
+import { InvalidInputError } from './errors.js';
 import type { ModuleAnnotations } from './module.js';
+import type { PipelineContext } from './pipeline.js';
+
+// A pending credential is internal to one pipeline attempt. Step middleware
+// can inspect PipelineContext and application inputs, so neither carries it.
+const approvalCredentials = new WeakMap<PipelineContext, string | null>();
+
+/** @internal Return application inputs without exposing the approval credential. */
+export function stripApprovalToken(inputs: Record<string, unknown>): Record<string, unknown> {
+  if (!('_approval_token' in inputs)) return inputs;
+  const { _approval_token: _, ...argumentsOnly } = inputs;
+  return argumentsOnly;
+}
+
+/** @internal Extract the credential before the pipeline visits any steps. */
+export function prepareApprovalInputs(ctx: PipelineContext): void {
+  let credential: string | null = null;
+  if ('_approval_token' in ctx.inputs) {
+    const { _approval_token: token, ...argumentsOnly } = ctx.inputs;
+    ctx.inputs = argumentsOnly;
+    if (typeof token !== 'string') throw new InvalidInputError('_approval_token must be a string');
+    credential = token;
+  }
+  approvalCredentials.set(ctx, credential);
+}
+
+/** @internal Consume the credential at the approval gate. */
+export function takeApprovalToken(ctx: PipelineContext): string | null {
+  // Low-level callers can invoke the built-in step with a raw context.
+  if (!approvalCredentials.has(ctx)) prepareApprovalInputs(ctx);
+  const credential = approvalCredentials.get(ctx) ?? null;
+  approvalCredentials.set(ctx, null);
+  return credential;
+}
+
+/** @internal Release an unused credential at the end of an invocation. */
+export function discardApprovalToken(ctx: PipelineContext): void {
+  approvalCredentials.delete(ctx);
+}
 
 /**
  * Carries invocation context to the approval handler.
@@ -72,6 +111,8 @@ export interface ApprovalResult {
   readonly approvedBy: string | null;
   readonly reason: string | null;
   readonly approvalId: string | null;
+  /** An optional, non-secret identifier for approval telemetry. */
+  readonly auditId?: string | null;
   readonly metadata: Record<string, unknown> | null;
 }
 
@@ -83,6 +124,7 @@ export function createApprovalResult(options: {
   approvedBy?: string | null;
   reason?: string | null;
   approvalId?: string | null;
+  auditId?: string | null;
   metadata?: Record<string, unknown> | null;
 }): ApprovalResult {
   return Object.freeze({
@@ -90,6 +132,7 @@ export function createApprovalResult(options: {
     approvedBy: options.approvedBy ?? null,
     reason: options.reason ?? null,
     approvalId: options.approvalId ?? null,
+    ...(options.auditId !== undefined ? { auditId: options.auditId } : {}),
     metadata: options.metadata ?? null,
   });
 }
@@ -103,6 +146,8 @@ export function createApprovalResult(options: {
 export interface ApprovalHandler {
   requestApproval(request: ApprovalRequest): Promise<ApprovalResult>;
   checkApproval(approvalId: string): Promise<ApprovalResult>;
+  /** Validate the current call's identity, target and arguments, then consume the approval. */
+  checkApprovalForCall?(approvalId: string, request: ApprovalRequest): Promise<ApprovalResult>;
 }
 
 /**

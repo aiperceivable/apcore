@@ -36,7 +36,7 @@ The Approval System is architecturally separate from the ACL System. ACL answers
 2. Compute whether approval is needed from the module's declarations, the execution policy, and the ACL decision for the call. An `ExecutionPolicy` emits `apcore.policy.override` if it changed the effective `requires_approval` or `destructive` annotation. See [Execution Policy](#execution-policy) for the order of evaluation.
 3. If approval is not needed, continue to Step 6. (A module whose effective `destructive` is true but that nothing gates is logged as a warning, once per module.)
 4. If no `ApprovalHandler` is configured: with `ExecutionPolicy(strict=true)` raise `ApprovalDeniedError` (and emit `apcore.approval.decision` with status `rejected`); otherwise log a warning once per module and continue to Step 6.
-5. If the inputs carried an `_approval_token`, call `approval_handler.check_approval(token)` (Phase B resume). Otherwise build an `ApprovalRequest` and call `approval_handler.request_approval(request)`.
+5. Build an `ApprovalRequest` from the current call. For a fresh call, use `request_approval(request)`. For Phase B, use `check_approval_for_call(token, request)` or its TypeScript equivalent, `checkApprovalForCall`. The gate rejects a resume when this method is unavailable.
 6. Emit `apcore.approval.decision`, then act on `ApprovalResult.status`:
     - `approved` → continue to Step 6;
     - `rejected` → raise `ApprovalDeniedError`;
@@ -76,7 +76,7 @@ The report reads current configuration without executing modules or calling an a
                           │       └─────────────────────┘        │
                           │                                      ▼
                           │                         ┌─────────────────────┐
-                          │                         │   check_approval()  │
+                          │                         │ scoped resume check │
                           │                         │   (Phase B resume)  │
                           │                         └──────────┬──────────┘
                           ▼                                    ▼
@@ -128,7 +128,12 @@ The report reads current configuration without executing modules or calling an a
             ...
 
         async def check_approval(self, approval_id: str) -> ApprovalResult:
-            """Check status of a previously pending approval (Phase B)."""
+            """Query the status of a pending approval."""
+            ...
+
+
+    class ScopedApprovalHandler(ApprovalHandler, Protocol):
+        async def check_approval_for_call(self, approval_id: str, request: ApprovalRequest) -> ApprovalResult:
             ...
     ```
 === "TypeScript"
@@ -138,6 +143,7 @@ The report reads current configuration without executing modules or calling an a
     interface ApprovalHandler {
         requestApproval(request: ApprovalRequest): Promise<ApprovalResult>;
         checkApproval(approvalId: string): Promise<ApprovalResult>;
+        checkApprovalForCall?(approvalId: string, request: ApprovalRequest): Promise<ApprovalResult>;
     }
     ```
 === "Rust"
@@ -149,10 +155,15 @@ The report reads current configuration without executing modules or calling an a
     pub trait ApprovalHandler: Send + Sync + std::fmt::Debug {
         async fn request_approval(&self, request: &ApprovalRequest) -> Result<ApprovalResult, ModuleError>;
         async fn check_approval(&self, approval_id: &str) -> Result<ApprovalResult, ModuleError>;
+        async fn check_approval_for_call(
+            &self, _approval_id: &str, _request: &ApprovalRequest,
+        ) -> Result<ApprovalResult, ModuleError> {
+            Ok(ApprovalResult::rejected("The approval handler does not support scoped resumption"))
+        }
     }
     ```
 
-A handler receives an `ApprovalRequest` and **returns** an `ApprovalResult` whose `status` is the decision. It does not raise `ApprovalDeniedError` / `ApprovalTimeoutError` / `ApprovalPendingError` itself — the gate raises those from the returned status. The handler may wait (for human input via UI, Slack, etc.) or return immediately (auto-approve for testing). Both methods are asynchronous in every SDK. A handler that does not implement Phase B returns `rejected` from `check_approval`.
+A handler receives an `ApprovalRequest` and returns an `ApprovalResult` whose `status` is the decision. The gate maps statuses to execution outcomes and errors. The handler may wait for a decision or return immediately. All methods are asynchronous. The ID-only method remains available for status queries.
 
 ### Data Types
 
@@ -163,7 +174,7 @@ A handler receives an `ApprovalRequest` and **returns** an `ApprovalResult` whos
 | `module_id` | `str` | Canonical module ID |
 | `caller_id` | `str \| None` | `Context.caller_id` of the call, unmodified — `None` for a top-level call (not the `@external` sentinel) |
 | `action` | `str` | The module ID being invoked (a flat duplicate of `module_id`) |
-| `arguments` | `dict` | Input arguments for the call, with `_approval_token` removed and **not yet schema-validated** (validation is Step 7) |
+| `arguments` | `dict` | Detached business arguments at the gate, before the standard before-middleware and input-validation steps |
 | `context` | `Context` | Execution context (trace_id, identity, call_chain); `Option<Context>` in Rust |
 | `annotations` | `ModuleAnnotations` | The **effective** annotations: `requires_approval` is always true here and `destructive` is the policy-effective value (§7.9.3) |
 | `description` | `str \| None` | Module's human-readable description |
@@ -177,9 +188,14 @@ A handler receives an `ApprovalRequest` and **returns** an `ApprovalResult` whos
 | `approved_by` | `str \| None` | No | Identifier of the approver (human, agent, policy) |
 | `reason` | `str \| None` | No | Human-readable explanation |
 | `approval_id` | `str \| None` | No | Phase B: token for async resume |
+| `audit_id` | `str \| None` | No | Non-secret identifier to correlate approval telemetry |
 | `metadata` | `dict \| None` | No | Additional metadata from the approval process |
 
 TypeScript builds these with `createApprovalRequest()` / `createApprovalResult()` (frozen objects, camelCase fields). Rust has `ApprovalResult::approved(by)` and `ApprovalResult::rejected(reason)` constructors; both Rust structs are `#[non_exhaustive]`.
+
+The initial request and scoped resume use the same gate-time argument snapshot. Keep `_approval_token` in the invocation's reserved credential field. The executor separates it from business arguments even when the selected strategy omits the gate. Preflight checks business arguments and can report `requires_approval` without consulting an approval handler.
+
+The standard pipeline allows before-middleware to transform inputs after the gate. If the transformation changes the resource or action a caller is being approved to use, normalize before the gate or authorize the transformed values separately.
 
 ### Error Types
 
@@ -189,7 +205,7 @@ TypeScript builds these with `createApprovalRequest()` / `createApprovalResult()
 | `ApprovalTimeoutError` | `APPROVAL_TIMEOUT` | Handler returned `timeout` |
 | `ApprovalPendingError` | `APPROVAL_PENDING` | Handler returned `pending` (Phase B); `details.approval_id` carries the resume token |
 
-In Python and TypeScript all three extend `ApprovalError` (a `ModuleError`) and carry the full `ApprovalResult` as `result`. In Rust they are `ModuleError`s with the corresponding `ErrorCode`.
+In Python and TypeScript all three extend `ApprovalError` (a `ModuleError`) and carry the full `ApprovalResult` as `result`. Rust returns a `ModuleError` with the corresponding `ErrorCode` and the approval result in `details.result`. Treat caller-facing approval results as confidential when they carry an `approval_id`.
 
 The status value `"rejected"` maps to error code `APPROVAL_DENIED` — the handler **rejects** a request, the framework reports approval was **denied**.
 
@@ -315,7 +331,7 @@ When the Executor has an event emitter, the approval gate publishes two events (
 
 | Event | Emitted when | Severity | Payload |
 |---|---|---|---|
-| `apcore.approval.decision` | The gate adjudicated a call (a handler decision, or a `strict` fail-closed rejection); never when the gate is skipped | `info` for `approved` / `pending`, `warn` for `rejected` / `timeout` | `module_id`, `status`, `approved_by`, `reason`, `approval_id`, `trace_id` |
+| `apcore.approval.decision` | The gate adjudicated a call through a handler decision or a fail-closed rejection | `info` for `approved` / `pending`, `warn` for `rejected` / `timeout` | `module_id`, `status`, `approved_by`, `reason`, `approval_id` (non-secret `audit_id` or null), `trace_id` |
 | `apcore.policy.override` | A policy rule changed the module's effective `requires_approval` or `destructive` | `info` | `module_id`, `pattern`, `requires_approval`, `destructive`, `needs_approval`, `reason`, `trace_id` |
 
 The emitter is the one given to the Executor: `Executor(registry, event_emitter=emitter)` in Python, `new Executor({ registry, eventEmitter })` in TypeScript, `executor.set_event_emitter(Some(emitter))` in Rust. Subscribe with the emitter's exact event type (see [Event System](./event-system.md)).
@@ -494,17 +510,19 @@ The emitter is the one given to the Executor: `Executor(registry, event_emitter=
 - async: true (approval may require human interaction or external service call)
 - thread_safe: true
 
-## Contract: ApprovalHandler.check_approval
+## Contract: ApprovalHandler.check_approval_for_call
 
 ### Inputs
 - `approval_id` (str/string/&str, required) — the token returned in a prior `ApprovalResult.approval_id` for a `pending` decision, taken from the caller's `_approval_token`
+- `request` (ApprovalRequest, required) — the current invocation's identity, `caller_id`, target, and arguments with the credential removed
 
 ### Errors
 - Any error the handler raises propagates to the caller unchanged.
 
 ### Returns
 - `ApprovalResult` with the current decision: `approved`, `rejected`, `timeout`, or still `pending` (the caller retries later with the same `_approval_token`)
-- A handler that does not implement Phase B returns `status="rejected"` rather than raising
+- The gate returns `APPROVAL_DENIED` when the handler does not support scoped resumption.
+- A handler that approves a resume verifies the scope and expiry and atomically consumes the credential.
 
 ### Properties
 - async: true (Phase B resume may itself require a round-trip to an external approval store)

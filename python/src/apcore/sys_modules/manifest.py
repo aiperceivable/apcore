@@ -8,8 +8,9 @@ from typing import Any
 from apcore.config import Config
 from apcore.errors import InvalidInputError, ModuleNotFoundError
 from apcore.module import ModuleAnnotations
-from apcore.schema.annotations import governance_union
 from apcore.registry.registry import Registry
+from apcore.registry.types import DependencyInfo
+from apcore.schema.annotations import governance_union
 
 __all__ = ["ManifestFullModule", "ManifestModule", "ManifestModuleModule"]
 
@@ -63,6 +64,16 @@ def _governance_view(
     return view
 
 
+def _dependency_items(dependencies: list[DependencyInfo]) -> list[dict[str, Any]]:
+    items = []
+    for dependency in dependencies:
+        item: dict[str, Any] = {"module_id": dependency.module_id, "optional": dependency.optional}
+        if dependency.version is not None:
+            item["version"] = dependency.version
+        items.append(item)
+    return items
+
+
 class ManifestModule:
     """Return the full manifest (metadata, schemas, annotations, source path) for a single registered module."""
 
@@ -83,26 +94,40 @@ class ManifestModule:
     }
     output_schema: dict[str, Any] = {
         "type": "object",
+        "additionalProperties": False,
         "properties": {
             "module_id": {"type": "string", "description": "Module identifier"},
             "description": {"type": "string", "description": "Module description"},
-            "documentation": {"description": "Module documentation (Markdown)"},
+            "documentation": {"type": ["string", "null"], "description": "Module documentation (Markdown)"},
             "source_path": {
-                "type": "string",
+                "type": ["string", "null"],
                 "description": "Computed source file path",
             },
             "input_schema": {
-                "type": "object",
+                "type": ["object", "null"],
                 "description": "Module input JSON Schema",
             },
             "output_schema": {
-                "type": "object",
+                "type": ["object", "null"],
                 "description": "Module output JSON Schema",
             },
-            "annotations": {"type": "object", "description": "Module annotations"},
-            "tags": {"type": "array", "description": "Module tags"},
-            "dependencies": {"type": "array", "description": "Module dependencies"},
-            "metadata": {"type": "object", "description": "Additional metadata"},
+            "annotations": {"type": ["object", "null"], "description": "Module annotations"},
+            "tags": {"type": "array", "items": {"type": "string"}, "description": "Module tags"},
+            "dependencies": {
+                "type": "array",
+                "description": "Module dependencies",
+                "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["module_id"],
+                    "properties": {
+                        "module_id": {"type": "string"},
+                        "version": {"type": "string"},
+                        "optional": {"type": "boolean"},
+                    },
+                },
+            },
+            "metadata": {"type": ["object", "null"], "description": "Additional metadata"},
         },
         "required": ["module_id", "description"],
     }
@@ -139,7 +164,6 @@ class ManifestModule:
 
         source_path = _compute_source_path(self._config, module_id)
         annotations_dict = _governance_view(self._registry, module_id, descriptor.annotations)
-        dependencies = self._get_dependencies(module_id)
         metadata = self._get_metadata(module_id)
 
         return {
@@ -151,14 +175,9 @@ class ManifestModule:
             "output_schema": descriptor.output_schema,
             "annotations": annotations_dict,
             "tags": descriptor.tags,
-            "dependencies": dependencies,
+            "dependencies": _dependency_items(descriptor.dependencies),
             "metadata": metadata,
         }
-
-    def _get_dependencies(self, module_id: str) -> list[dict[str, Any]]:
-        """Retrieve dependencies from registry metadata."""
-        meta = self._registry.get_module_metadata(module_id)
-        return meta.get("dependencies", [])
 
     def _get_metadata(self, module_id: str) -> dict[str, Any]:
         """Retrieve extra metadata from registry metadata."""
@@ -201,6 +220,7 @@ class ManifestFullModule:
     }
     output_schema: dict[str, Any] = {
         "type": "object",
+        "additionalProperties": False,
         "properties": {
             "project_name": {
                 "type": "string",
@@ -210,7 +230,11 @@ class ManifestFullModule:
                 "type": "integer",
                 "description": "Number of modules returned",
             },
-            "modules": {"type": "array", "description": "Module manifest entries"},
+            "modules": {
+                "type": "array",
+                "description": "Module manifest entries",
+                "items": ManifestModule.output_schema,
+            },
         },
         "required": ["project_name", "module_count", "modules"],
     }
@@ -281,7 +305,6 @@ class ManifestFullModule:
 
         source_path = _compute_source_path(self._config, module_id) if include_source_paths else None
         annotations_dict = _governance_view(self._registry, module_id, descriptor.annotations)
-        dependencies = self._get_dependencies(module_id)
         metadata = descriptor.metadata or {}
 
         return {
@@ -293,7 +316,7 @@ class ManifestFullModule:
             "output_schema": descriptor.output_schema if include_schemas else None,
             "annotations": annotations_dict,
             "tags": descriptor.tags,
-            "dependencies": dependencies,
+            "dependencies": _dependency_items(descriptor.dependencies),
             "metadata": metadata,
         }
 
@@ -309,8 +332,3 @@ class ManifestFullModule:
         if self._config is None:
             return self.DEFAULT_PROJECT_NAME
         return self._config.get("project.name", "") or self.DEFAULT_PROJECT_NAME
-
-    def _get_dependencies(self, module_id: str) -> list[dict[str, Any]]:
-        """Retrieve dependencies from registry metadata."""
-        meta = self._registry.get_module_metadata(module_id)
-        return meta.get("dependencies", [])

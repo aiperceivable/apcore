@@ -5,17 +5,28 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::task::{Context as TaskContext, Poll};
 
+use crate::observability::span::Span;
+
 static NEXT_EXECUTION: AtomicU64 = AtomicU64::new(1);
+
+#[derive(Debug, Clone)]
+pub(crate) struct SpanLink {
+    pub trace_id: String,
+    pub span_id: String,
+    pub sampled: bool,
+}
 
 #[derive(Debug, Default)]
 struct ExecutionState {
     active: Mutex<HashMap<u64, ExecutionRecord>>,
     changed: tokio::sync::Notify,
     cancelled: tokio::sync::Notify,
+    timeout_error: OnceLock<Box<ModuleError>>,
     middleware_timings: Mutex<HashMap<usize, std::time::Instant>>,
+    tracing_spans: parking_lot::Mutex<Vec<(usize, Span, bool)>>,
     abort_requested: AtomicBool,
 }
 
@@ -143,6 +154,7 @@ pub struct CancelToken {
     cancelled: Arc<AtomicBool>,
     parent: Option<Arc<CancelToken>>,
     executions: Arc<ExecutionState>,
+    parent_span: Option<SpanLink>,
 }
 
 impl CancelToken {
@@ -153,6 +165,7 @@ impl CancelToken {
             cancelled: Arc::new(AtomicBool::new(false)),
             parent: None,
             executions: Arc::new(ExecutionState::default()),
+            parent_span: None,
         }
     }
 
@@ -176,6 +189,57 @@ impl CancelToken {
             .remove(&middleware)
     }
 
+    fn active_span_link(&self, trace_id: Option<&str>) -> Option<SpanLink> {
+        let spans = self.executions.tracing_spans.lock();
+        let (_, span, sampled) = spans
+            .iter()
+            .rev()
+            .find(|(_, span, _)| trace_id.is_none_or(|id| id == span.trace_id))?;
+        Some(SpanLink {
+            trace_id: span.trace_id.clone(),
+            span_id: span.span_id.clone(),
+            sampled: *sampled,
+        })
+    }
+
+    pub(crate) fn span_link(&self, trace_id: &str) -> Option<SpanLink> {
+        self.active_span_link(Some(trace_id)).or_else(|| {
+            self.parent_span
+                .as_ref()
+                .filter(|span| span.trace_id == trace_id)
+                .cloned()
+        })
+    }
+
+    pub(crate) fn begin_span(&self, middleware: usize, span: Span, sampled: bool) {
+        self.executions
+            .tracing_spans
+            .lock()
+            .push((middleware, span, sampled));
+    }
+
+    pub(crate) fn take_span(&self, middleware: usize) -> Option<(Span, bool)> {
+        let mut spans = self.executions.tracing_spans.lock();
+        let index = spans.iter().rposition(|(id, _, _)| *id == middleware)?;
+        let (_, span, sampled) = spans.remove(index);
+        Some((span, sampled))
+    }
+
+    pub(crate) fn with_active_span(&self, trace_id: &str, apply: impl FnOnce(&mut Span)) -> bool {
+        for scope in std::iter::successors(Some(self), |scope| scope.parent.as_deref()) {
+            let mut spans = scope.executions.tracing_spans.lock();
+            if let Some((_, span, _)) = spans
+                .iter_mut()
+                .rev()
+                .find(|(_, span, _)| span.trace_id == trace_id)
+            {
+                apply(span);
+                return true;
+            }
+        }
+        false
+    }
+
     /// Derive an independently cancellable token that observes its parent.
     #[must_use]
     pub fn child(&self) -> Self {
@@ -183,6 +247,9 @@ impl CancelToken {
             cancelled: Arc::new(AtomicBool::new(false)),
             parent: Some(Arc::new(self.clone())),
             executions: Arc::new(ExecutionState::default()),
+            parent_span: self
+                .active_span_link(None)
+                .or_else(|| self.parent_span.clone()),
         }
     }
 
@@ -190,6 +257,17 @@ impl CancelToken {
     pub fn cancel(&self) {
         self.cancelled.store(true, Ordering::SeqCst);
         self.executions.cancelled.notify_waiters();
+    }
+
+    /// Publish the call's timeout before signalling its cooperative cancellation.
+    pub(crate) fn cancel_after_timeout(&self, error: &ModuleError) {
+        let _ = self.executions.timeout_error.set(Box::new(error.clone()));
+        self.cancel();
+    }
+
+    /// Timeout belonging to this call, rather than an ancestor's cancellation.
+    pub(crate) fn timeout_error(&self) -> Option<&ModuleError> {
+        self.executions.timeout_error.get().map(Box::as_ref)
     }
 
     /// Wait until this invocation or one of its parents is cancelled.
@@ -235,6 +313,37 @@ impl CancelToken {
         F: Future + Send + 'static,
         F::Output: Send + 'static,
     {
+        let registration = self.register_execution();
+        let id = registration.id;
+        let scopes = registration.scopes.clone();
+        let invocation = tokio::spawn(TrackedExecution {
+            future: Box::pin(future),
+            _registration: registration,
+        });
+        Self::store_abort_handle(id, scopes, &invocation.abort_handle());
+        invocation
+    }
+
+    pub(crate) fn spawn_blocking_tracked<F, Output>(
+        &self,
+        task: F,
+    ) -> tokio::task::JoinHandle<Output>
+    where
+        F: FnOnce() -> Output + Send + 'static,
+        Output: Send + 'static,
+    {
+        let registration = self.register_execution();
+        let id = registration.id;
+        let scopes = registration.scopes.clone();
+        let invocation = tokio::task::spawn_blocking(move || {
+            let _registration = registration;
+            task()
+        });
+        Self::store_abort_handle(id, scopes, &invocation.abort_handle());
+        invocation
+    }
+
+    fn register_execution(&self) -> ExecutionRegistration {
         let id = NEXT_EXECUTION.fetch_add(1, Ordering::Relaxed);
         let mut scopes = Vec::new();
         let mut current = Some(self);
@@ -255,14 +364,14 @@ impl CancelToken {
             scopes.push(token.executions.clone());
             current = token.parent.as_deref();
         }
-        let invocation = tokio::spawn(TrackedExecution {
-            future: Box::pin(future),
-            _registration: ExecutionRegistration {
-                id,
-                scopes: scopes.clone(),
-            },
-        });
-        let abort = invocation.abort_handle();
+        ExecutionRegistration { id, scopes }
+    }
+
+    fn store_abort_handle(
+        id: u64,
+        scopes: Vec<Arc<ExecutionState>>,
+        abort: &tokio::task::AbortHandle,
+    ) {
         for scope in scopes {
             let mut active = scope
                 .active
@@ -275,7 +384,6 @@ impl CancelToken {
                 }
             }
         }
-        invocation
     }
 
     /// Background task cancellation may interrupt only its own invocation tree.

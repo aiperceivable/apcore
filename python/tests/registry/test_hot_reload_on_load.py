@@ -28,6 +28,7 @@ from __future__ import annotations
 import textwrap
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 
 from pydantic import BaseModel
 
@@ -133,6 +134,17 @@ class _CapturingEmitter:
         self.events.append(event)
 
 
+def _discover_previous_revision(root: Path, instance: OldInstance) -> Registry:
+    class PreviousRevision(OldInstance):
+        def __new__(cls) -> OldInstance:
+            return instance
+
+    registry = Registry(extensions_dirs=[{"root": str(root), "namespace": "executor"}])
+    with patch("apcore.registry.registry.resolve_entry_point", return_value=PreviousRevision):
+        assert registry.discover() == 1
+    return registry
+
+
 class TestHotReloadRunsOnLoad:
     def test_reloaded_instance_runs_on_load(self, tmp_path: Path) -> None:
         """The successful path: the new revision's ``on_load`` actually runs.
@@ -144,9 +156,8 @@ class TestHotReloadRunsOnLoad:
         probe_path = tmp_path / "reload_probe.py"
         _write_probe(probe_path, marker=marker, version="2.0.0", fails=False)
 
-        registry = Registry()
         old = OldInstance(marker)
-        registry.register(MODULE_ID, old)
+        registry = _discover_previous_revision(tmp_path, old)
         assert _calls(marker) == ["on_load:old#1"]
 
         registry._handle_file_change(str(probe_path))
@@ -168,9 +179,8 @@ class TestHotReloadRunsOnLoad:
         probe_path = tmp_path / "reload_probe.py"
         _write_probe(probe_path, marker=marker, version="2.0.0", fails=True)
 
-        registry = Registry()
         old = OldInstance(marker)
-        registry.register(MODULE_ID, old)
+        registry = _discover_previous_revision(tmp_path, old)
 
         registry._handle_file_change(str(probe_path))
 
@@ -190,9 +200,8 @@ class TestHotReloadRunsOnLoad:
         probe_path = tmp_path / "reload_probe.py"
         _write_probe(probe_path, marker=marker, version="2.0.0", fails=True)
 
-        registry = Registry()
         old = OldInstance(marker)
-        registry.register(MODULE_ID, old)
+        registry = _discover_previous_revision(tmp_path, old)
 
         registry._handle_file_change(str(probe_path))
 
@@ -213,9 +222,8 @@ class TestHotReloadRunsOnLoad:
         probe_path = tmp_path / "reload_probe.py"
         _write_probe(probe_path, marker=marker, version="2.0.0", fails=True)
 
-        registry = Registry()
         old = OldInstance(marker, fail_from_call=2)
-        registry.register(MODULE_ID, old)
+        registry = _discover_previous_revision(tmp_path, old)
 
         registry._handle_file_change(str(probe_path))
 
@@ -235,10 +243,9 @@ class TestHotReloadRunsOnLoad:
         probe_path = tmp_path / "reload_probe.py"
         _write_probe(probe_path, marker=marker, version="2.0.0", fails=True)
 
-        registry = Registry()
+        registry = _discover_previous_revision(tmp_path, OldInstance(marker))
         emitter = _CapturingEmitter()
         registry.set_event_emitter(emitter)
-        registry.register(MODULE_ID, OldInstance(marker))
 
         registry._handle_file_change(str(probe_path))
 

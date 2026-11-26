@@ -114,7 +114,7 @@ function warnMultiClassEnabledArg(): void {
  * @param multiClassEnabled - **Deprecated and ignored.** Retained so existing
  *   4-argument call sites keep compiling; passing it warns once per process.
  *
- * @internal Prefer `Registry.discoverMultiClass` (D-15) for the canonical
+ * Prefer `Registry.discoverMultiClass` (D-15) for the canonical
  * cross-language API surface; this free function is retained for backwards
  * compatibility and direct use by the scanner.
  *

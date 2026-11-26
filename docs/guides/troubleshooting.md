@@ -49,7 +49,7 @@ Chunks are combined with a recursive deep merge ([Cookbook — Streaming Modules
 
 ### 1.5 Resuming an `APPROVAL_PENDING` call with `_approval_token` repeats ACL audit entries. Is that expected?
 
-Yes. A resume is a fresh call: it starts again at step 1 and runs context creation, the call-chain guard, module lookup, the ACL check (which audits again) and the approval gate, which removes `_approval_token` and asks the handler's `check_approval()`. Middleware `before` hooks come after the gate, so they run only on the call that gets through. Nothing from the pending call is carried over ([PROTOCOL_SPEC §7](../spec/protocol-spec.md#7-approval-system)).
+Yes. A resume starts again at step 1. The approval gate removes `_approval_token` and calls `check_approval_for_call(token, request)` with the current invocation. Middleware `before` hooks run only after approval. The handler checks the stored approval against the current request. See [PROTOCOL_SPEC §7](../spec/protocol-spec.md#7-approval-system).
 
 ### 1.6 Hot reload says it succeeded but my module's behavior didn't change.
 

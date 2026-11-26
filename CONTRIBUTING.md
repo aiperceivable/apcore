@@ -28,6 +28,8 @@ Clone this repository once. Each SDK has its own setup and test commands.
 
 Run the commands from the corresponding SDK directory. The test suites read the shared fixtures in `conformance/` at the repository root.
 
+The SDK workflows run the Python and Rust suites on their declared minimum versions as well as the primary versions. The TypeScript source suite uses the development Node toolchain, and the [distribution workflow](.github/workflows/packages.yml) installs the packed package on the minimum Node version. The distribution workflow extracts the marked Quick Start and governed-stream code blocks from the docs and runs them against all three installed SDKs. Update the code blocks directly when their public API calls change.
+
 ## Pull Request Process
 
 1. Fork the repository and create a branch from `main`

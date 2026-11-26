@@ -19,8 +19,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Pin CI to stable. Add `beta` / `nightly` later if desired.
-        rust: ["stable"]
+        rust: ["1.86.0", "stable"]
 
     steps:
       - name: Free disk space
@@ -46,29 +45,33 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             rust/target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-${{ matrix.rust }}-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-
 
       - name: Install apdev-rs
+        if: matrix.rust == 'stable'
         run: cargo install apdev-rs --version 0.2.0 --locked
 
       - name: Check characters
+        if: matrix.rust == 'stable'
         run: apdev-rs check-chars src/
 
       - name: Check formatting
+        if: matrix.rust == 'stable'
         run: cargo fmt --all -- --check
 
       - name: Lint with Clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings
+        if: matrix.rust == 'stable'
+        run: cargo clippy --locked --all-targets --all-features -- -D warnings
 
       - name: Build
-        run: cargo build --all-features
+        run: cargo build --locked --all-features
 
       - name: Run tests
-        run: cargo test --all-features
+        run: cargo test --locked --all-features
         env:
           CONFORMANCE_SPEC_REPO: ${{ github.workspace }}
 
       - name: Build examples
-        run: cargo build --examples
+        run: cargo build --locked --examples

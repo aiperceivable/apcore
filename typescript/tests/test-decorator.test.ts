@@ -19,6 +19,7 @@ describe('FunctionModule', () => {
     const ctx = Context.create(createIdentity('test-user'));
     const result = await fm.execute({ name: 'World' }, ctx);
     expect(result).toEqual({ greeting: 'Hello, World!' });
+    await expect(fm.registration).resolves.toBeUndefined();
   });
 
   it('exposes correct properties', () => {
@@ -172,7 +173,7 @@ describe('module() factory', () => {
     }
   });
 
-  it('auto-registers with registry', () => {
+  it('auto-registers with registry', async () => {
     const registry = new Registry();
     const fm = module({
       id: 'auto.registered',
@@ -183,6 +184,7 @@ describe('module() factory', () => {
     });
     expect(registry.has('auto.registered')).toBe(true);
     expect(registry.get('auto.registered')).toBe(fm);
+    await expect(fm.registration).resolves.toBeUndefined();
   });
 });
 

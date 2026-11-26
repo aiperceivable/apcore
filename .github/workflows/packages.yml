@@ -6,6 +6,8 @@ on:
       - 'python/**'
       - 'rust/**'
       - 'typescript/**'
+      - 'docs/**'
+      - 'conformance/extract_doc_examples.py'
       - '.github/workflows/packages.yml'
   push:
     branches: [main]
@@ -25,7 +27,7 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
         with:
-          python-version: '3.12'
+          python-version: '3.11'
       - name: Build wheel and sdist
         run: |
           python -m pip install build
@@ -41,6 +43,9 @@ jobs:
           "$temporary/venv/bin/python" -m pip check
           "$temporary/venv/bin/python" -c 'from apcore import APCore, Registry'
           "$temporary/venv/bin/python" -c 'from importlib.resources import files; assert files("apcore").joinpath("py.typed").is_file(), "installed wheel is missing apcore/py.typed"'
+          python3 "$GITHUB_WORKSPACE/conformance/extract_doc_examples.py" python "$temporary"
+          (cd quick-start && "$temporary/venv/bin/python" -I example.py)
+          (cd governed-stream && "$temporary/venv/bin/python" -I example.py)
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: core-python-distributions
@@ -55,8 +60,44 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
       - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc
         with:
-          toolchain: stable
-      - run: cargo package --locked
+          toolchain: 1.86.0
+      - run: cargo package --locked --all-features
+      - name: Run downstream examples against the packaged crate
+        shell: bash
+        env:
+          CARGO_RESOLVER_INCOMPATIBLE_RUST_VERSIONS: fallback
+        run: |
+          archives=( "$PWD"/target/package/*.crate )
+          temporary=$(mktemp -d)
+          cd "$temporary"
+          mkdir sdk
+          tar -xzf "${archives[0]}" --strip-components=1 -C sdk
+          cp sdk/Cargo.lock Cargo.lock
+          python3 "$GITHUB_WORKSPACE/conformance/extract_doc_examples.py" rust "$temporary"
+          cat > Cargo.toml <<'EOF'
+          [package]
+          name = "apcore-doc-examples"
+          version = "0.0.0"
+          edition = "2021"
+          rust-version = "1.86"
+
+          [dependencies]
+          apcore = { path = "sdk", features = ["events"] }
+          async-trait = "0.1.92"
+          futures-util = "0.3"
+          serde_json = "1"
+          tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+
+          [[bin]]
+          name = "quick-start"
+          path = "quick-start/example.rs"
+
+          [[bin]]
+          name = "governed-stream"
+          path = "governed-stream/example.rs"
+          EOF
+          (cd quick-start && cargo run --quiet --manifest-path ../Cargo.toml --bin quick-start)
+          (cd governed-stream && cargo run --locked --quiet --manifest-path ../Cargo.toml --bin governed-stream)
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: core-rust-distribution
@@ -77,19 +118,35 @@ jobs:
           version: '10.30.1'
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
-      - name: Verify packed Node and browser entry points
+      - name: Pack the distribution
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/dist-archives"
+          pnpm pack --pack-destination "$GITHUB_WORKSPACE/dist-archives"
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '20.0.0'
+      - name: Run installed package checks on the Node floor
         shell: bash
         run: |
           temporary=$(mktemp -d)
-          mkdir -p "$GITHUB_WORKSPACE/dist-archives"
-          pnpm pack --pack-destination "$GITHUB_WORKSPACE/dist-archives"
           archive=( "$GITHUB_WORKSPACE"/dist-archives/*.tgz )
           cd "$temporary"
           npm init -y
-          npm install --ignore-scripts "${archive[0]}"
+          npm pkg set type=module
+          npm install --ignore-scripts "${archive[0]}" typescript@5.5.4 @types/node@20
           node --input-type=module -e 'import {APCore} from "apcore-js"; import "apcore-js/context-keys"; if (!APCore) throw new Error("APCore is missing");'
-          node --conditions=browser --input-type=module -e 'if (!import.meta.resolve("apcore-js").endsWith("/dist/browser/index.js")) throw new Error("browser entry did not resolve"); await import("apcore-js");'
+          cat > verify-browser.mjs <<'EOF'
+          const url = await import.meta.resolve("apcore-js");
+          if (!url.endsWith("/dist/browser/index.js")) throw new Error("browser entry did not resolve");
+          await import("apcore-js");
+          EOF
+          node --conditions=browser --experimental-import-meta-resolve verify-browser.mjs
           node --input-type=module -e 'import {accessSync} from "node:fs"; for (const entry of ["index", "browser/index", "context-keys"]) accessSync(`node_modules/apcore-js/dist/${entry}.d.ts`);'
+          python3 "$GITHUB_WORKSPACE/conformance/extract_doc_examples.py" typescript "$temporary"
+          ./node_modules/.bin/tsc --strict --module NodeNext --target ES2022 --rootDir . --outDir compiled \
+            quick-start/example.ts governed-stream/example.ts
+          (cd quick-start && node ../compiled/quick-start/example.js)
+          (cd governed-stream && node ../compiled/governed-stream/example.js)
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: core-npm-distribution

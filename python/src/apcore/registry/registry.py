@@ -9,6 +9,7 @@ import re
 import threading
 import time
 from contextlib import contextmanager
+from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Iterator, Protocol, runtime_checkable
@@ -17,9 +18,11 @@ import inspect
 
 from apcore.config import Config
 from apcore.errors import (
+    DependencyVersionMismatchError,
     ErrorCodes,
     InvalidInputError,
     ModuleError,
+    ModuleLoadError,
     ModuleNotFoundError,
     StreamingInterfaceError,
 )
@@ -33,10 +36,10 @@ from apcore.registry.metadata import (
     merge_module_metadata,
     parse_dependencies,
 )
-from apcore.registry.scanner import scan_extensions, scan_multi_root
-from apcore.registry.types import DependencyInfo, ModuleDescriptor
+from apcore.registry.scanner import _companion_metadata_path, _watched_source, scan_extensions, scan_multi_root
+from apcore.registry.types import DependencyInfo, DiscoveredModule, ModuleDescriptor
 from apcore.registry.validation import validate_module
-from apcore.registry.version import VersionedStore
+from apcore.registry.version import VersionedStore, matches_version_hint
 
 if TYPE_CHECKING:
     from apcore.config import Config
@@ -56,6 +59,14 @@ class _RegistrationSnapshot:
     module: Any
     metadata: dict[str, Any]
     versions: dict[str, _ModuleRegistration]
+    source_path: Path | None
+
+
+@dataclass(frozen=True)
+class _DiscoveryCandidate:
+    source: DiscoveredModule
+    entry_point: type
+    metadata: dict[str, Any]
 
 
 def _canonical_deprecation(deprecation: dict[str, Any]) -> str:
@@ -111,25 +122,23 @@ class _DictSchemaAdapter:
                 the same code the Pydantic path produces, so a caller cannot
                 tell which way a module declared its schema.
         """
-        from apcore.errors import SchemaValidationError
         from apcore.schema.hardening import validate_schema_dict
 
         result = validate_schema_dict(data, self._schema)
         if not result.valid:
-            raise SchemaValidationError(
-                message=f"Input validation failed: {result.errors}",
-                errors=result.to_error().details["errors"],
-            )
+            raise result.to_error()
         return data
 
     def model_rebuild(self) -> None:
         pass
 
 
-def _ensure_schema_adapter(module: Any) -> None:
-    """Wrap raw dict schemas on *module* with ``_DictSchemaAdapter`` in-place."""
+def _ensure_schema_adapter(module: Any, *, normalize_legacy_none: bool = False) -> None:
+    """Adapt raw JSON Schema and explicit legacy permissive declarations."""
     for attr in ("input_schema", "output_schema"):
         value = getattr(module, attr, None)
+        if value is None and normalize_legacy_none:
+            value = {"type": "object"}
         if isinstance(value, dict):
             setattr(module, attr, _DictSchemaAdapter(value))
 
@@ -311,7 +320,7 @@ def _validate_module_id(module_id: str, *, allow_reserved: bool = False) -> None
     ``apcore::registry::registry::validate_module_id``.
     """
     # 1. empty check
-    if not module_id:
+    if not isinstance(module_id, str) or not module_id:
         raise InvalidInputError(
             message="module_id must be a non-empty string",
             code=ErrorCodes.INVALID_MODULE_ID,
@@ -509,6 +518,7 @@ class Registry:
         # Internal state
         self._modules: dict[str, Any] = {}
         self._module_meta: dict[str, dict[str, Any]] = {}
+        self._module_sources: dict[str, Path] = {}
         self._lowercase_map: dict[str, str] = {}
         # Versioned storage for multi-version module support (F18)
         self._versioned_modules: VersionedStore[_ModuleRegistration] = VersionedStore()
@@ -815,13 +825,14 @@ class Registry:
 
         1. ``_scan_roots`` -- walk extension root(s) for candidate files.
         2. ``_apply_path_filter`` -- narrow the candidate set (optional).
-        3. ``_apply_id_map_overrides`` -- apply explicit ID overrides.
+        3. ``_apply_id_map_overrides`` -- apply overrides and validate final IDs.
         4. ``_load_all_metadata`` -- read each module's metadata block.
         5. ``_resolve_all_entry_points`` -- import the entry-point classes.
-        6. ``_validate_all`` -- structural / schema validation.
+        6. ``_validate_all`` then ``_index_discovered_modules`` -- validate
+           candidate classes and check conflicts among final IDs in the batch.
         7. ``_resolve_load_order`` -- dependency-aware ordering.
-        8. ``_filter_id_conflicts`` then ``_register_in_order`` --
-           deduplicate and register in order.
+        8. ``_filter_id_conflicts`` then ``_register_in_order`` -- check the
+           published registry and register in order.
 
         Mirrors the structure of
         ``apcore-typescript/src/registry/registry.ts:_discoverDefault``.
@@ -831,12 +842,15 @@ class Registry:
         if path_filter is not None:
             discovered = self._apply_path_filter(discovered, path_filter)
         self._apply_id_map_overrides(discovered)
-        raw_metadata = self._load_all_metadata(discovered)
-        resolved_classes = self._resolve_all_entry_points(discovered, raw_metadata)
-        valid_classes = self._validate_all(resolved_classes)
+        valid_ids = self._filter_invalid_discovery_ids(discovered)
+        candidates = self._resolve_all_entry_points(self._load_all_metadata(valid_ids))
+        selected = self._index_discovered_modules(self._validate_all(candidates))
+        valid_classes = {module_id: candidate.entry_point for module_id, candidate in selected.items()}
+        raw_metadata = {module_id: candidate.metadata for module_id, candidate in selected.items()}
         load_order = self._resolve_load_order(valid_classes, raw_metadata)
         valid_classes = self._filter_id_conflicts(load_order, valid_classes)
-        registered_count = self._register_in_order(load_order, valid_classes, raw_metadata)
+        source_paths = {module_id: candidate.source.file_path for module_id, candidate in selected.items()}
+        registered_count = self._register_in_order(load_order, valid_classes, raw_metadata, source_paths)
 
         if registered_count == 0 and discovered:
             logger.warning(
@@ -872,7 +886,9 @@ class Registry:
             self._logged_follow_symlinks_warning = True
         return (max_depth, follow_symlinks, list(ignore_patterns))
 
-    def _scan_roots(self, max_depth: int, follow_symlinks: bool, ignore_patterns: list[str] | None = None) -> list[Any]:
+    def _scan_roots(
+        self, max_depth: int, follow_symlinks: bool, ignore_patterns: list[str] | None = None
+    ) -> list[DiscoveredModule]:
         """Stage 1 — walk extension root(s) and return DiscoveredModule entries."""
         has_namespace = any("namespace" in r for r in self._extension_roots)
         if len(self._extension_roots) > 1 or has_namespace:
@@ -893,8 +909,8 @@ class Registry:
         return discovered
 
     @staticmethod
-    def _reject_ephemeral_discoveries(discovered: list[Any]) -> None:
-        """Reject filesystem-derived IDs that fall in the reserved ``ephemeral.*`` namespace.
+    def _reject_ephemeral_discoveries(discovered: list[DiscoveredModule]) -> None:
+        """Reject scanned or mapped IDs in the reserved ``ephemeral.*`` namespace.
 
         Per protocol-spec §2.5.1, ``ephemeral.*`` is reserved
         for programmatically-registered modules synthesized at runtime. Any
@@ -902,26 +918,31 @@ class Registry:
         either the directory is misnamed or the namespace prefix is being
         misused.
         """
-        offenders = [dm for dm in discovered if _is_ephemeral(getattr(dm, "canonical_id", ""))]
-        if not offenders:
+        ids = sorted(
+            {
+                dm.canonical_id
+                for dm in discovered
+                if isinstance(dm.canonical_id, str) and _is_ephemeral(dm.canonical_id)
+            }
+        )
+        if not ids:
             return
-        ids = sorted({dm.canonical_id for dm in offenders})
         raise InvalidInputError(
             message=(
                 "Filesystem discovery produced module ID(s) in the reserved "
                 f"'ephemeral.*' namespace: {ids}. The ephemeral.* namespace is "
                 "reserved for programmatically-registered modules and may only "
                 "be used via Registry.register(). Rename the offending "
-                "directory or extension namespace."
+                "directory or extension namespace, or correct the ID map."
             ),
             code=ErrorCodes.INVALID_MODULE_ID,
         )
 
     def _apply_path_filter(
         self,
-        discovered: list[Any],
+        discovered: list[DiscoveredModule],
         path_filter: str | list[str],
-    ) -> list[Any]:
+    ) -> list[DiscoveredModule]:
         """Filter ``discovered`` entries to those matching ``path_filter``.
 
         Each entry's ``file_path`` is tested against the supplied glob
@@ -957,8 +978,8 @@ class Registry:
 
         return [dm for dm in discovered if _matches(dm.file_path)]
 
-    def _apply_id_map_overrides(self, discovered: list[Any]) -> None:
-        """Stage 2 — rewrite ``canonical_id`` for files listed in the ID map."""
+    def _apply_id_map_overrides(self, discovered: list[DiscoveredModule]) -> None:
+        """Apply ID-map overrides and check the resulting namespace."""
         if not self._id_map:
             return
         resolved_roots = [Path(r["root"]).resolve() for r in self._extension_roots]
@@ -972,46 +993,74 @@ class Registry:
                     continue
             if rel_path and rel_path in self._id_map:
                 dm.canonical_id = self._id_map[rel_path]["id"]
+        self._reject_ephemeral_discoveries(discovered)
 
-    def _load_all_metadata(self, discovered: list[Any]) -> dict[str, dict[str, Any]]:
-        """Stage 3 — read each module's optional companion ``*_meta.yaml``."""
-        raw_metadata: dict[str, dict[str, Any]] = {}
+    @staticmethod
+    def _filter_invalid_discovery_ids(discovered: list[DiscoveredModule]) -> list[DiscoveredModule]:
+        """Check the final ID grammar before reading metadata or importing a module."""
+        valid: list[DiscoveredModule] = []
         for dm in discovered:
-            raw_metadata[dm.canonical_id] = load_metadata(dm.meta_path) if dm.meta_path else {}
-        return raw_metadata
+            try:
+                _validate_module_id(dm.canonical_id)
+            except InvalidInputError as exc:
+                logger.warning(
+                    "Skipping discovered module with invalid ID '%s' at %s: %s", dm.canonical_id, dm.file_path, exc
+                )
+                continue
+            valid.append(dm)
+        return valid
+
+    @staticmethod
+    def _load_all_metadata(discovered: list[DiscoveredModule]) -> list[tuple[DiscoveredModule, dict[str, Any]]]:
+        """Read each optional companion ``*_meta.yaml`` and retain its candidate."""
+        return [(dm, load_metadata(dm.meta_path) if dm.meta_path else {}) for dm in discovered]
 
     def _resolve_all_entry_points(
         self,
-        discovered: list[Any],
-        raw_metadata: dict[str, dict[str, Any]],
-    ) -> dict[str, type]:
-        """Stage 4 — resolve each discovered file to its module class."""
-        resolved: dict[str, type] = {}
-        for dm in discovered:
-            meta = raw_metadata.get(dm.canonical_id, {})
+        candidates: list[tuple[DiscoveredModule, dict[str, Any]]],
+    ) -> list[_DiscoveryCandidate]:
+        """Resolve each discovered file with its own entry-point metadata."""
+        resolved: list[_DiscoveryCandidate] = []
+        for dm, meta in candidates:
             try:
-                resolved[dm.canonical_id] = resolve_entry_point(
-                    dm.file_path,
-                    meta=meta,
-                    pre_approval_hook=self._pre_approval_hook,
-                )
+                entry_point = resolve_entry_point(dm.file_path, meta=meta, pre_approval_hook=self._pre_approval_hook)
             except Exception as e:
                 logger.warning("Failed to resolve entry point for '%s': %s", dm.canonical_id, e)
+                continue
+            resolved.append(_DiscoveryCandidate(dm, entry_point, meta))
         return resolved
 
-    def _validate_all(self, resolved_classes: dict[str, type]) -> dict[str, type]:
-        """Stage 5 — run the (custom or built-in) validator over each class."""
-        valid: dict[str, type] = {}
-        for mod_id, cls in resolved_classes.items():
+    def _validate_all(self, candidates: list[_DiscoveryCandidate]) -> list[_DiscoveryCandidate]:
+        """Run the custom or built-in validator over each class."""
+        valid: list[_DiscoveryCandidate] = []
+        for candidate in candidates:
             if self._custom_validator is not None:
-                errors = self._custom_validator.validate(cls)
+                errors = self._custom_validator.validate(candidate.entry_point)
             else:
-                errors = validate_module(cls)
+                errors = validate_module(candidate.entry_point)
             if errors:
-                logger.warning("Module '%s' failed validation: %s", mod_id, "; ".join(errors))
+                logger.warning("Module '%s' failed validation: %s", candidate.source.canonical_id, "; ".join(errors))
                 continue
-            valid[mod_id] = cls
+            valid.append(candidate)
         return valid
+
+    @staticmethod
+    def _index_discovered_modules(candidates: list[_DiscoveryCandidate]) -> dict[str, _DiscoveryCandidate]:
+        """Keep the first valid candidate for each final ID in scan order."""
+        selected: dict[str, _DiscoveryCandidate] = {}
+        for candidate in candidates:
+            module_id = candidate.source.canonical_id
+            previous = selected.get(module_id)
+            if previous is not None:
+                logger.warning(
+                    "Duplicate module ID '%s' at %s, already found at %s. Skipping.",
+                    module_id,
+                    candidate.source.file_path,
+                    previous.source.file_path,
+                )
+                continue
+            selected[module_id] = candidate
+        return selected
 
     def _resolve_load_order(
         self,
@@ -1106,41 +1155,17 @@ class Registry:
         load_order: list[str],
         valid_classes: dict[str, type],
     ) -> dict[str, type]:
-        """Stage 7.5 — drop classes whose IDs are invalid or collide.
-
-        Two checks, in the order ``register()`` applies them:
-
-        1. **PROTOCOL_SPEC §2.7 grammar** (empty → pattern → length → reserved).
-           ``_validate_module_id`` used to be reachable only from ``register()``
-           and ``register_internal()``, so nothing on the discovery path enforced
-           the ID grammar at all. ``_apply_id_map_overrides`` is the concrete
-           vector: it rewrites ``canonical_id`` from the YAML ID map *after*
-           scanning and never re-validates, so ``{'id': 'Foo-Bar'}`` or a
-           200-character ID reached ``_modules`` intact. Hyphens in particular
-           are banned to keep MCP / OpenAI tool-name normalisation bijective.
-        2. **A03 batch conflict detection** (duplicate / reserved / case).
-
-        Both are non-fatal: the offending module is dropped with a warning and
-        the rest of the discovery run proceeds. Raising would let one bad ID-map
-        entry take down every module under the same root. Parity with
-        apcore-typescript ``_filterIdConflicts`` (validate-then-detect, skip on
-        failure) and apcore-rust, which validates each discovered entry.
-        """
+        """Drop discovery candidates that conflict with the published registry."""
         filtered = dict(valid_classes)
-        batch_ids: set[str] = set()
+        with self._lock:
+            existing_ids = set(self._modules)
+            lowercase_map = self._lowercase_map.copy()
         for mod_id in load_order:
-            try:
-                _validate_module_id(mod_id, allow_reserved=False)
-            except InvalidInputError as exc:
-                logger.warning("Skipping discovered module with invalid ID '%s': %s", mod_id, exc)
-                filtered.pop(mod_id, None)
-                continue
-
             conflict = detect_id_conflicts(
                 new_id=mod_id,
-                existing_ids=batch_ids | set(self._modules.keys()),
+                existing_ids=existing_ids,
                 reserved_words=RESERVED_WORDS,
-                lowercase_map=self._lowercase_map,
+                lowercase_map=lowercase_map,
             )
             if conflict is not None:
                 if conflict.severity == "error":
@@ -1148,7 +1173,6 @@ class Registry:
                     filtered.pop(mod_id, None)
                 else:
                     logger.warning("ID conflict: %s", conflict.message)
-            batch_ids.add(mod_id)
         return filtered
 
     def _register_in_order(
@@ -1156,6 +1180,7 @@ class Registry:
         load_order: list[str],
         valid_classes: dict[str, type],
         raw_metadata: dict[str, dict[str, Any]],
+        source_paths: dict[str, Path] | None = None,
     ) -> int:
         """Stage 8 — instantiate, register, and run on_load() for each module.
 
@@ -1196,13 +1221,26 @@ class Registry:
             # Aligned with manual register() / register_internal().
             merged_meta = merge_module_metadata(module, meta)
 
+            dependencies = parse_dependencies(meta.get("dependencies"))
             # Phase 1: reserve in-flight slot. Skip if already in-flight or
             # visible — concurrent discover invocations must not double-load.
             with self._lock:
                 if mod_id in self._in_flight or mod_id in self._modules:
                     logger.warning("Discover skipping '%s' — already registered or in-flight", mod_id)
                     continue
-                self._in_flight.add(mod_id)
+                error = self._discovery_dependency_error(mod_id, dependencies)
+                if error is None:
+                    self._in_flight.add(mod_id)
+                failed_optional = [
+                    dep.module_id
+                    for dep in dependencies
+                    if dep.optional and dep.module_id in valid_classes and dep.module_id not in self._modules
+                ]
+            if error is not None:
+                self._emit_module_load_failed(mod_id, error)
+                continue
+            for dependency_id in failed_optional:
+                logger.warning("Module '%s' is loading without optional dependency '%s'", mod_id, dependency_id)
 
             # Phase 2: run on_load OUTSIDE the lock. Module is NOT visible.
             if not self._invoke_on_load(mod_id, module, effective_version):
@@ -1213,14 +1251,41 @@ class Registry:
             # Phase 3: atomic publish.
             with self._lock:
                 self._in_flight.discard(mod_id)
-                self._versioned_modules.add(mod_id, effective_version, _ModuleRegistration(module, merged_meta, meta))
-                self._modules[mod_id] = module
-                self._module_meta[mod_id] = merged_meta
-                self._lowercase_map[mod_id.lower()] = mod_id
+                error = self._discovery_dependency_error(mod_id, dependencies)
+                if error is None:
+                    self._versioned_modules.add(
+                        mod_id, effective_version, _ModuleRegistration(module, merged_meta, meta)
+                    )
+                    self._modules[mod_id] = module
+                    self._module_meta[mod_id] = merged_meta
+                    self._lowercase_map[mod_id.lower()] = mod_id
+                    if source_paths is not None and mod_id in source_paths:
+                        self._module_sources[mod_id] = source_paths[mod_id]
+            if error is not None:
+                self._call_on_unload(mod_id, module)
+                self._emit_module_load_failed(mod_id, error)
+                continue
 
             self._trigger_event("register", mod_id, module)
             registered_count += 1
         return registered_count
+
+    def _discovery_dependency_error(self, module_id: str, dependencies: list[DependencyInfo]) -> ModuleError | None:
+        """Check published dependencies while the caller holds the registry lock."""
+        for dependency in dependencies:
+            if dependency.optional:
+                continue
+            provider = self._modules.get(dependency.module_id)
+            if provider is None:
+                return ModuleLoadError(module_id, f"Required dependency '{dependency.module_id}' did not load")
+            if dependency.version:
+                versions = self._versioned_modules.list_versions(dependency.module_id)
+                actual = versions[-1] if versions else self._effective_version(
+                    provider, self._module_meta.get(dependency.module_id, {})
+                )
+                if not matches_version_hint(actual, dependency.version):
+                    return DependencyVersionMismatchError(module_id, dependency.module_id, dependency.version, actual)
+        return None
 
     @staticmethod
     def _effective_version(module: Any, meta: dict[str, Any]) -> str:
@@ -1325,7 +1390,10 @@ class Registry:
         if ephemeral:
             self._warn_if_missing_approval(module_id, module, metadata)
 
-        _ensure_schema_adapter(module)
+        errors = validate_module(module, programmatic=True)
+        if errors:
+            raise InvalidInputError(message=f"Invalid module '{module_id}': {'; '.join(errors)}")
+        _ensure_schema_adapter(module, normalize_legacy_none=True)
 
         # D-86: structure/streaming BEFORE the custom validator, and both
         # before the duplicate check further down. Intrinsic-then-extrinsic —
@@ -1428,6 +1496,8 @@ class Registry:
             if latest is not None:
                 self._modules[module_id] = latest.module
                 self._module_meta[module_id] = latest.metadata
+                if latest is registration:
+                    self._module_sources.pop(module_id, None)
             self._lowercase_map[module_id.lower()] = module_id
 
         self._trigger_event("register", module_id, module)
@@ -1699,14 +1769,14 @@ class Registry:
         # canonical keys including the merged `annotations` slot. Read all
         # merged-meta fields straight from it. Schemas come straight from
         # the module instance because they are not part of the merged
-        # metadata payload. Aligned with apcore-typescript Registry.getDefinition.
+        # metadata payload. Return detached schemas for catalogue consumers.
         return ModuleDescriptor(
             module_id=module_id,
             name=meta.get("name"),
             description=meta.get("description") or "",
             documentation=meta.get("documentation"),
-            input_schema=input_json,
-            output_schema=output_json,
+            input_schema=deepcopy(input_json),
+            output_schema=deepcopy(output_json),
             version=meta.get("version") or DEFAULT_MODULE_VERSION,
             tags=list(meta.get("tags") or []),
             annotations=meta.get("annotations"),
@@ -1782,12 +1852,10 @@ class Registry:
         input_schema = descriptor.input_schema
         output_schema = descriptor.output_schema
         if strict:
-            import copy
-
             from apcore.schema.strict import to_strict_schema
 
-            input_schema = to_strict_schema(copy.deepcopy(input_schema))
-            output_schema = to_strict_schema(copy.deepcopy(output_schema))
+            input_schema = to_strict_schema(input_schema)
+            output_schema = to_strict_schema(output_schema)
 
         # Built directly rather than through ``SchemaExporter.export_generic``:
         # that helper also emits ``definitions``, which is a field of a
@@ -2161,9 +2229,27 @@ class Registry:
             True if the module was cleanly shut down (no in-flight executions
             remaining), False if it was force-unloaded after timeout.
         """
+        detached = self._detach_after_drain(module_id, timeout_ms=timeout_ms)
+        if detached is None:
+            return False
+        registration, clean = detached
+        self._notify_unregistered(module_id, registration.module)
+        return clean
+
+    def _detach_after_drain(
+        self,
+        module_id: str,
+        *,
+        timeout_ms: int = 5000,
+        reserve_replacement: bool = False,
+        source_path: Path | None = None,
+    ) -> tuple[_RegistrationSnapshot, bool] | None:
+        """Detach a module after its active leases have drained, before calling any hooks."""
         with self._lock:
             if module_id not in self._modules or module_id in self._draining:
-                return False
+                return None
+            if source_path is not None and self._module_sources.get(module_id) != source_path:
+                return None
             self._draining.add(module_id)
             event = self._drain_events[module_id] = threading.Event()
             if self._ref_counts.get(module_id, 0) == 0:
@@ -2172,9 +2258,13 @@ class Registry:
         clean = event.wait(timeout=timeout_ms / 1000.0)
         with self._lock:
             if self._drain_events.get(module_id) is not event:
-                return False
+                return None
             ref_count = self._ref_counts.get(module_id, 0)
-            module = self._inline_unregister(module_id)
+            registration = self._snapshot_registration(module_id)
+            assert registration is not None
+            self._inline_unregister(module_id)
+            if reserve_replacement:
+                self._in_flight.add(module_id)
         if not clean:
             logger.warning(
                 "Force-unloading module %s after %dms timeout (%d in-flight executions)",
@@ -2182,8 +2272,7 @@ class Registry:
                 timeout_ms,
                 ref_count,
             )
-        self._notify_unregistered(module_id, module)
-        return clean
+        return registration, clean
 
     # ----- Hot Reload -----
 
@@ -2230,6 +2319,7 @@ class Registry:
         """
         module = self._modules.pop(mid, None)
         self._module_meta.pop(mid, None)
+        self._module_sources.pop(mid, None)
         self._schema_cache.pop(mid, None)
         self._lowercase_map.pop(mid.lower(), None)
         self._versioned_modules.remove_all(mid)
@@ -2246,7 +2336,10 @@ class Registry:
             if module_id not in self._modules:
                 return None
             return _RegistrationSnapshot(
-                self._modules[module_id], self._module_meta[module_id], self._versioned_modules.snapshot(module_id)
+                self._modules[module_id],
+                self._module_meta[module_id],
+                self._versioned_modules.snapshot(module_id),
+                self._module_sources.get(module_id),
             )
 
     def _restore_registration(self, module_id: str, registration: _RegistrationSnapshot | None) -> bool:
@@ -2265,11 +2358,38 @@ class Registry:
             self._modules[module_id] = module
             self._module_meta[module_id] = registration.metadata
             self._lowercase_map[module_id.lower()] = module_id
+            if registration.source_path is not None:
+                self._module_sources[module_id] = registration.source_path
             for version, entry in registration.versions.items():
                 self._versioned_modules.add(module_id, version, entry)
             self._in_flight.discard(module_id)
         self._trigger_event("register", module_id, module)
         return True
+
+    def _watched_candidate(self, path: Path) -> DiscoveredModule | None:
+        max_depth, follow_symlinks, ignore_patterns = self._scan_params()
+        prefixed = len(self._extension_roots) > 1 or any("namespace" in r for r in self._extension_roots)
+        for root_config in self._extension_roots:
+            root = Path(root_config["root"])
+            source = _watched_source(path, root, max_depth, follow_symlinks, ignore_patterns)
+            if source is None:
+                continue
+            real_root = root.resolve()
+            canonical_id = str(source.relative_to(real_root).with_suffix("")).replace(os.sep, ".")
+            namespace = (root_config.get("namespace") or root.name) if prefixed else None
+            if namespace is not None:
+                canonical_id = f"{namespace}.{canonical_id}"
+            candidate = DiscoveredModule(
+                file_path=source,
+                canonical_id=canonical_id,
+                meta_path=_companion_metadata_path(source, real_root, follow_symlinks),
+                namespace=namespace,
+            )
+            self._reject_ephemeral_discoveries([candidate])
+            self._apply_id_map_overrides([candidate])
+            _validate_module_id(candidate.canonical_id)
+            return candidate
+        return None
 
     def _handle_file_change(self, path: str) -> None:
         """Handle a file modification or creation event.
@@ -2285,7 +2405,17 @@ class Registry:
         """
         # Phase 1 (outside lock): compile + instantiate + validate new module.
         try:
-            cls = resolve_entry_point(Path(path), pre_approval_hook=self._pre_approval_hook)
+            candidate = self._watched_candidate(Path(path))
+            if candidate is None:
+                return
+            new_id = candidate.canonical_id
+            source = candidate.file_path
+            with self._lock:
+                if new_id in self._modules and self._module_sources.get(new_id) != source:
+                    logger.warning("Hot reload skipped '%s' because it is registered from another source", new_id)
+                    return
+            metadata = load_metadata(candidate.meta_path) if candidate.meta_path is not None else {}
+            cls = resolve_entry_point(source, meta=metadata, pre_approval_hook=self._pre_approval_hook)
         except Exception as e:
             logger.warning("Hot reload failed to resolve entry point for %s: %s", path, e)
             return
@@ -2318,16 +2448,27 @@ class Registry:
                 logger.warning("Hot reload rejected module from %s: %s", path, "; ".join(errors))
                 return
 
-        # Phase 2 (under lock): snapshot old module + inline unregister from
-        # all stores. Do NOT call user hooks or fire events while holding the lock.
+        try:
+            effective_version = self._effective_version(instance, metadata)
+            merged_meta = merge_module_metadata(instance, metadata)
+        except Exception as error:
+            logger.warning("Hot reload failed to merge metadata for %s: %s", path, error)
+            return
+
+        # Reserve the new ID, or detach the previous registration after its
+        # leases drain. Hook execution and the drain wait both happen unlocked.
         with self._lock:
-            new_id = (
-                self._canonical_id_for_path(path)
-                or self._path_to_module_id(path)
-                or os.path.splitext(os.path.basename(path))[0]
-            )
-            old_registration = self._snapshot_registration(new_id)
-            self._inline_unregister(new_id)
+            if new_id in self._in_flight or new_id in self._draining:
+                return
+            exists = new_id in self._modules
+            if not exists:
+                self._in_flight.add(new_id)
+        old_registration = None
+        if exists:
+            detached = self._detach_after_drain(new_id, reserve_replacement=True, source_path=source)
+            if detached is None:
+                return
+            old_registration, _ = detached
 
         # Phase 3 (outside lock): user hooks on the old module + unregister event.
         suspended_state: dict[str, Any] | None = None
@@ -2336,17 +2477,6 @@ class Registry:
             suspended_state = self._call_on_suspend(new_id, old_module)
             self._call_on_unload(new_id, old_module)
             self._trigger_event("unregister", new_id, old_module)
-
-        # Phase 4 (under lock): insert the new instance into every store.
-        effective_version = getattr(instance, "version", None) or "1.0.0"
-        # `_module_meta` is rebuilt from the new instance here because Phase 2's
-        # `_inline_unregister` popped the old entry. Omitting it left every
-        # reloaded module with an empty descriptor: `get_definition()` fell back
-        # to description="" / version="1.0.0" / tags=[] and
-        # `get_module_metadata()` returned {} — which also silently degraded
-        # `ReloadModule._topo_sort_modules` (it reads the stored
-        # `dependencies`) to alphabetical order.
-        merged_meta = merge_module_metadata(instance, {})
 
         # Phase 4a (outside lock): D-123 — the new instance MUST run `on_load()`
         # before it becomes visible, the same precondition `Contract:
@@ -2364,10 +2494,12 @@ class Registry:
 
         # Phase 4b (under lock): insert the new instance into every store.
         with self._lock:
+            self._in_flight.discard(new_id)
             self._modules[new_id] = instance
             self._module_meta[new_id] = merged_meta
             self._lowercase_map[new_id.lower()] = new_id
-            registration = _ModuleRegistration(instance, merged_meta, {"version": effective_version})
+            self._module_sources[new_id] = source
+            registration = _ModuleRegistration(instance, merged_meta, metadata)
             self._versioned_modules.add(new_id, effective_version, registration)
 
         # Phase 5 (outside lock): register event + on_resume hook on new module.
@@ -2468,59 +2600,20 @@ class Registry:
             )
 
     def _handle_file_deletion(self, path: str) -> None:
-        """Handle a file deletion event.
-
-        Snapshots the module under the lock, removes it from every internal
-        store (including versioned), then calls ``on_unload`` and fires the
-        unregister event OUTSIDE the lock.
-        """
+        """Drain the module, then unload it when its source file is deleted."""
+        try:
+            source = Path(path).resolve()
+        except (OSError, RuntimeError):
+            logger.warning("Hot reload could not resolve deleted path %s", path)
+            return
+        if source.exists():
+            return
         with self._lock:
-            module_id = self._canonical_id_for_path(path)
-            if module_id not in self._modules:
-                module_id = self._path_to_module_id(path)
-            if not module_id or module_id not in self._modules:
-                return
-            module = self._modules.get(module_id)
-            self._inline_unregister(module_id)
-
-        if module is not None:
-            self._call_on_unload(module_id, module)
-        self._trigger_event("unregister", module_id, module)
-
-    def _canonical_id_for_path(self, path: str) -> str | None:
-        """Derive the module ID ``discover()`` would give the file at ``path``.
-
-        Applies the same rules as discovery — path relative to its extension
-        root, the root's namespace prefix when discovery would add one, and the
-        ID-map override — so a file first seen by the watcher gets the ID it
-        would have had if it had existed at startup. Returns None when ``path``
-        lies under no configured extension root.
-        """
-        real = Path(path).resolve()
-        prefixed = len(self._extension_roots) > 1 or any("namespace" in r for r in self._extension_roots)
-        for root_config in self._extension_roots:
-            root = Path(root_config.get("root", "")).resolve()
-            try:
-                rel = real.relative_to(root)
-            except ValueError:
-                continue
-            if self._id_map and str(rel) in self._id_map:
-                return str(self._id_map[str(rel)]["id"])
-            canonical_id = str(rel.with_suffix("")).replace(os.sep, ".")
-            if prefixed:
-                namespace = root_config.get("namespace") or Path(root_config.get("root", "")).name
-                canonical_id = f"{namespace}.{canonical_id}"
-            return canonical_id
-        return None
-
-    def _path_to_module_id(self, path: str) -> str | None:
-        """Map a file path to a registered module ID by basename, for paths under no extension root."""
-        basename = os.path.splitext(os.path.basename(path))[0]
-        # Check if any registered module ID ends with this basename
-        for mid in self.module_ids:
-            if mid.endswith(basename) or mid == basename:
-                return mid
-        return None
+            module_ids = [module_id for module_id, file_path in self._module_sources.items() if file_path == source]
+        for module_id in module_ids:
+            detached = self._detach_after_drain(module_id, source_path=source)
+            if detached is not None:
+                self._notify_unregistered(module_id, detached[0].module)
 
     # ----- Public accessors for internal state -----
 

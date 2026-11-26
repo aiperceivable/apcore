@@ -16,20 +16,58 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use apcore::config::Config;
 use apcore::context::{Context, Identity};
-use apcore::events::emitter::EventEmitter;
+use apcore::executor::Executor;
 use apcore::module::{Module, ModuleAnnotations};
 use apcore::registry::registry::{ModuleDescriptor, Registry};
-use apcore::sys_modules::control::ReloadModule;
-use serde_json::Value;
+use apcore::sys_modules::{register_sys_modules_with_options, SysModulesOptions};
+use apcore::{APCore, AutoApproveHandler};
+use serde_json::{json, Value};
 
-use crate::conformance_env::find_fixtures_root;
+use crate::conformance_env::{find_fixtures_root, find_schemas_root};
 
 fn fixture() -> Value {
     let path = find_fixtures_root().join("reload_path_filter.json");
     let raw = std::fs::read_to_string(&path)
         .unwrap_or_else(|e| panic!("reading {}: {e}", path.display()));
     serde_json::from_str(&raw).expect("reload_path_filter.json parses")
+}
+
+fn response_validator() -> jsonschema::Validator {
+    let path = find_schemas_root().join("sys-control-reload-module.schema.json");
+    let schema =
+        serde_json::from_slice(&std::fs::read(path).expect("read canonical reload schema"))
+            .expect("canonical reload schema parses");
+    jsonschema::draft202012::new(&schema).expect("build canonical reload validator")
+}
+
+#[tokio::test]
+async fn config_only_reload_matches_canonical_response_schema() {
+    let directory = tempfile::tempdir().expect("create config directory");
+    let path = directory.path().join("apcore.yaml");
+    std::fs::write(
+        &path,
+        "version: \"1.0\"\nproject:\n  name: reload-test\nsys_modules:\n  enabled: true\n  events:\n    enabled: true\n",
+    )
+    .expect("write reload config");
+    let client = APCore::with_config(Config::from_yaml_file(&path).expect("load config"));
+    let response = client
+        .call(
+            "system.control.reload_module",
+            json!({"reason": "test", "reload_config": true}),
+            None,
+            None,
+        )
+        .await
+        .expect("reload configuration through client");
+    assert_eq!(
+        response,
+        json!({"success": true, "module_id": null, "config_reloaded": true})
+    );
+    response_validator()
+        .validate(&response)
+        .unwrap_or_else(|err| panic!("config-only reload: {err}"));
 }
 
 fn dummy_ctx() -> Context<Value> {
@@ -112,6 +150,7 @@ async fn conformance_reload_path_filter() {
     let fx = fixture();
     let cases = fx["test_cases"].as_array().expect("test_cases is an array");
     assert!(!cases.is_empty(), "fixture must carry at least one case");
+    let validator = response_validator();
 
     for tc in cases {
         let id = tc["id"].as_str().expect("every case needs an id");
@@ -149,9 +188,41 @@ async fn conformance_reload_path_filter() {
 
         let audit_store: Arc<dyn apcore::sys_modules::audit::AuditStore> =
             Arc::new(apcore::sys_modules::audit::InMemoryAuditStore::new());
-        let reload = ReloadModule::new(Arc::clone(&registry), Arc::new(EventEmitter::new()))
-            .with_audit_store(Some(Arc::clone(&audit_store)));
-        let outcome = reload.execute(tc["input"].clone(), &dummy_ctx()).await;
+        let mut config = Config::default();
+        config.set("sys_modules.enabled", json!(true));
+        config.set("sys_modules.events.enabled", json!(true));
+        let mut executor = Executor::new(Arc::clone(&registry), Arc::new(config.clone()));
+        executor.set_approval_handler(Box::new(AutoApproveHandler));
+        register_sys_modules_with_options(
+            Arc::clone(&registry),
+            &executor,
+            &config,
+            None,
+            SysModulesOptions {
+                audit_store: Some(Arc::clone(&audit_store)),
+                ..SysModulesOptions::default()
+            },
+        )
+        .expect("register control modules");
+        let outcome = executor
+            .call(
+                "system.control.reload_module",
+                tc["input"].clone(),
+                Some(&dummy_ctx()),
+                None,
+            )
+            .await;
+        if let Ok(response) = &outcome {
+            let mut wire: Value = serde_json::from_slice(
+                &serde_json::to_vec(response).expect("serialize wire response"),
+            )
+            .expect("parse wire response");
+            validator
+                .validate(&wire)
+                .unwrap_or_else(|err| panic!("[{id}] reload response: {err} in {wire}"));
+            wire["unexpected"] = json!(true);
+            assert!(!validator.is_valid(&wire), "[{id}] accepts unknown fields");
+        }
 
         let expected = tc["expected"]
             .as_object()

@@ -831,14 +831,16 @@ class TestApprovalTokenStripping:
         await BuiltinApprovalGate().execute(ctx)
         assert ctx.inputs is caller_inputs
 
-    async def test_token_still_reaches_check_approval_on_the_gated_path(self) -> None:
+    async def test_token_reaches_scoped_approval_on_the_gated_path(self) -> None:
         from apcore.approval import ApprovalResult
         from apcore.module import ModuleAnnotations
 
         from apcore.context import Context
 
         handler = MagicMock()
-        handler.check_approval = AsyncMock(return_value=ApprovalResult(status="approved"))
+        handler.check_approval = AsyncMock()
+        handler.request_approval = AsyncMock()
+        handler.check_approval_for_call = AsyncMock(return_value=ApprovalResult(status="approved"))
         # A real Context: the gated path emits an approval audit, which reads
         # `context.data`.
         ctx = _make_ctx(
@@ -848,7 +850,10 @@ class TestApprovalTokenStripping:
         )
         result = await BuiltinApprovalGate(handler=handler).execute(ctx)
         assert result.action == "continue"
-        handler.check_approval.assert_awaited_once_with("tok")
+        handler.check_approval.assert_not_awaited()
+        credential, request = handler.check_approval_for_call.await_args.args
+        assert credential == "tok"
+        assert request.arguments == {"x": 1}
         assert "_approval_token" not in ctx.inputs
 
     async def test_non_string_token_is_rejected_before_reaching_the_handler(self) -> None:

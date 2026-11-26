@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import AsyncIterator
 from typing import Any
 
 import pytest
@@ -15,10 +16,12 @@ from apcore.approval import (
     AutoApproveHandler,
     CallbackApprovalHandler,
 )
+from apcore.config import Config
 from apcore.context import Context
-from apcore.errors import ApprovalDeniedError, ApprovalPendingError, ApprovalTimeoutError
+from apcore.errors import ApprovalDeniedError, ApprovalPendingError, ApprovalTimeoutError, InvalidInputError
 from apcore.executor import Executor
 from apcore.module import ModuleAnnotations
+from apcore.pipeline import PipelineState
 from apcore.registry import Registry
 
 
@@ -91,6 +94,99 @@ class AsyncApprovalRequiredModule:
 
     async def execute(self, inputs: dict[str, Any], context: Context) -> dict[str, Any]:
         return {"status": "async_executed"}
+
+
+class ReportInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    report: str
+
+
+class ReportModule:
+    input_schema = ReportInput
+    output_schema = PermissiveOutput
+    annotations = ModuleAnnotations(streaming=True)
+
+    def execute(self, inputs: dict[str, Any], context: Context) -> dict[str, Any]:
+        return inputs
+
+    async def stream(self, inputs: dict[str, Any], context: Context) -> AsyncIterator[dict[str, Any]]:
+        yield inputs
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stream", [False, True])
+async def test_approval_token_isolated_before_steps_without_approval_gate(stream: bool) -> None:
+    registry = Registry()
+    registry.register("test.report", ReportModule())
+    executor = Executor(registry=registry, config=Config({"pipeline": {"remove": ["approval_gate"]}}))
+    credential = "test-resume-marker"
+    inputs = {"report": "weekly", "_approval_token": credential}
+    observed: list[dict[str, Any]] = []
+
+    class ObserveInput:
+        def before_step(self, step_name: str, state: PipelineState) -> None:
+            observed.append(dict(state.context.inputs))
+            assert credential not in repr(state.context)
+
+    executor.current_strategy.step_middlewares.append(ObserveInput())
+    if stream:
+        assert [chunk async for chunk in executor.stream("test.report", inputs)] == [{"report": "weekly"}]
+    else:
+        assert await executor.call_async("test.report", inputs) == {"report": "weekly"}
+    assert observed and all(fields == {"report": "weekly"} for fields in observed)
+    assert inputs == {"report": "weekly", "_approval_token": credential}
+
+
+def test_malformed_token_is_rejected_without_approval_gate() -> None:
+    registry = Registry()
+    registry.register("test.report", ReportModule())
+    executor = Executor(registry=registry, config=Config({"pipeline": {"remove": ["approval_gate"]}}))
+    with pytest.raises(InvalidInputError, match="_approval_token must be a string") as exc:
+        executor.call("test.report", {"report": "weekly", "_approval_token": 1})
+    assert exc.value.code == "GENERAL_INVALID_INPUT"
+
+
+def test_preflight_ignores_token_and_only_reports_approval() -> None:
+    registry = Registry()
+    observed: list[dict[str, Any]] = []
+
+    class ApprovalReport(ReportModule):
+        annotations = ModuleAnnotations(streaming=True, requires_approval=True)
+
+        def preflight(self, inputs: dict[str, Any], context: Context) -> list[str]:
+            observed.append(dict(inputs))
+            return []
+
+        def preview(self, inputs: dict[str, Any], context: Context) -> None:
+            observed.append(dict(inputs))
+
+    async def handler(request: ApprovalRequest) -> ApprovalResult:
+        pytest.fail("Preflight must not request an approval")
+
+    registry.register("test.report", ApprovalReport())
+    executor = Executor(registry=registry, approval_handler=CallbackApprovalHandler(handler))
+    result = executor.validate("test.report", {"report": "weekly", "_approval_token": 1})
+    assert result.valid
+    assert result.requires_approval
+    assert observed == [{"report": "weekly"}] * 2
+
+
+def test_approval_request_arguments_are_detached_before_middleware_rewrite(registry: Registry) -> None:
+    captured: list[ApprovalRequest] = []
+
+    async def handler(request: ApprovalRequest) -> ApprovalResult:
+        captured.append(request)
+        return ApprovalResult(status="approved")
+
+    def rewrite(module_id: str, inputs: dict[str, Any], context: Context) -> None:
+        inputs["settings"]["columns"].append("subtotal")
+
+    executor = Executor(registry=registry, approval_handler=CallbackApprovalHandler(handler))
+    executor.use_before(rewrite)
+    inputs = {"settings": {"columns": ["date"]}}
+    assert executor.call("test.approval_required", inputs) == {"status": "executed"}
+    assert inputs["settings"]["columns"] == ["date", "subtotal"]
+    assert captured[0].arguments == {"settings": {"columns": ["date"]}}
 
 
 # ---------------------------------------------------------------------------
@@ -256,7 +352,7 @@ class TestApprovalGateSync:
         assert req.action == req.module_id
 
     def test_approval_token_is_consumed_without_mutating_the_callers_dict(self, registry: Registry) -> None:
-        """_approval_token drives check_approval and never reaches the module.
+        """_approval_token drives check_approval_for_call and never reaches the module.
 
         PROTOCOL_SPEC §7.4 requires the key to be gone "before passing to
         subsequent steps" — that is about what the pipeline sees downstream, not
@@ -275,6 +371,11 @@ class TestApprovalGateSync:
                 return ApprovalResult(status="approved")
 
             async def check_approval(self, approval_id: str) -> ApprovalResult:
+                raise AssertionError("The status query cannot authorize execution")
+
+            async def check_approval_for_call(self, approval_id: str, request: ApprovalRequest) -> ApprovalResult:
+                assert request.module_id == "test.approval_required"
+                assert "_approval_token" not in request.arguments
                 check_called_with.append(approval_id)
                 return ApprovalResult(status="approved", approved_by="token-check")
 
@@ -375,6 +476,11 @@ class TestApprovalGateAsync:
                 return ApprovalResult(status="approved")
 
             async def check_approval(self, approval_id: str) -> ApprovalResult:
+                raise AssertionError("The status query cannot authorize execution")
+
+            async def check_approval_for_call(self, approval_id: str, request: ApprovalRequest) -> ApprovalResult:
+                assert request.module_id == "test.approval_required"
+                assert "_approval_token" not in request.arguments
                 check_called_with.append(approval_id)
                 return ApprovalResult(status="approved")
 
@@ -538,6 +644,32 @@ class TestApprovalAuditEvents:
 
         assert len(mock_span_events) == 1
         assert mock_span_events[0]["status"] == "rejected"
+
+    def test_pending_credential_is_kept_out_of_observability(self, registry: Registry) -> None:
+        class Capture:
+            def __init__(self) -> None:
+                self.events: list[Any] = []
+
+            def emit(self, event: Any) -> None:
+                self.events.append(event)
+
+        class Span:
+            events: list[dict[str, Any]] = []
+
+        handler = CallbackApprovalHandler(
+            lambda request: _make_coro(ApprovalResult(status="pending", approval_id="test-resume-credential"))
+        )
+        emitter = Capture()
+        executor = Executor(registry=registry, approval_handler=handler, event_emitter=emitter)
+        context = Context.create()
+        context.data["_apcore.mw.tracing.spans"] = [Span()]
+
+        with pytest.raises(ApprovalPendingError) as error:
+            executor.call("test.approval_required", {}, context=context)
+        assert error.value.approval_id == "test-resume-credential"
+        assert Span.events[0]["approval_id"] == ""
+        decision = next(event for event in emitter.events if event.event_type == "apcore.approval.decision")
+        assert decision.data["approval_id"] is None
 
     def test_no_span_event_when_no_tracing(self, registry: Registry) -> None:
         """No span event when no tracing spans in context."""

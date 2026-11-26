@@ -21,6 +21,9 @@ from apcore.registry.registry import Registry
 class _StubModule:
     """Minimal module for hot-reload tests."""
 
+    input_schema = {"type": "object"}
+    output_schema = {"type": "object"}
+
     description = "stub"
 
     def execute(self, inputs: dict[str, Any], context: Any = None) -> dict[str, Any]:

@@ -11,11 +11,15 @@ from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
 from enum import Enum
 from collections.abc import Sequence
-from typing import Any, Callable, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Callable, Protocol, runtime_checkable
 
-from apcore.errors import ModuleError, ModuleTimeoutError
+from apcore.context import _APPROVAL_TOKEN_KEY
+from apcore.errors import InvalidInputError, ModuleError, ModuleTimeoutError
 from apcore.middleware.manager import MiddlewareChainError
 from apcore.utils.pattern import match_pattern
+
+if TYPE_CHECKING:
+    from apcore.streaming import _StreamObservation
 
 _logger = logging.getLogger(__name__)
 
@@ -137,6 +141,32 @@ class PipelineContext:
     invocation_deadline: float | None = None
     execution_scope: AsyncExitStack | None = None
     module_task: asyncio.Future[Any] | None = None
+    _stream_observation: _StreamObservation | None = field(default=None, repr=False, compare=False)
+    _acl_allowed: bool = field(default=False, repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        # Keep the resume credential outside the public dataclass state.
+        self._approval_token: str | None = None
+        self._running_pipeline = False
+
+    def _separate_approval_token(self) -> str | None:
+        """Separate the invocation's resume credential from module inputs."""
+        if _APPROVAL_TOKEN_KEY not in self.inputs:
+            return None
+        self.inputs = self.inputs.copy()
+        token = self.inputs.pop(_APPROVAL_TOKEN_KEY)
+        if self.dry_run:
+            return None
+        if not isinstance(token, str):
+            raise InvalidInputError(message="_approval_token must be a string", code="GENERAL_INVALID_INPUT")
+        return token
+
+    def _take_approval_token(self) -> str | None:
+        if not self._running_pipeline:
+            return self._separate_approval_token()
+        token = self._approval_token
+        self._approval_token = None
+        return token
 
 
 @dataclass
@@ -644,6 +674,21 @@ class PipelineEngine:
         run_until: Callable[[PipelineState], bool] | None = None,
     ) -> tuple[Any, PipelineTrace]:
         """Run all steps in the strategy, returning the final output and trace."""
+        ctx._approval_token = ctx._separate_approval_token()
+        ctx._running_pipeline = True
+        try:
+            return await self._run_steps(strategy, ctx, run_until=run_until)
+        finally:
+            ctx._approval_token = None
+            ctx._running_pipeline = False
+
+    async def _run_steps(
+        self,
+        strategy: ExecutionStrategy,
+        ctx: PipelineContext,
+        *,
+        run_until: Callable[[PipelineState], bool] | None = None,
+    ) -> tuple[Any, PipelineTrace]:
         trace = PipelineTrace(
             module_id=ctx.module_id,
             strategy_name=strategy.name,
@@ -658,16 +703,20 @@ class PipelineEngine:
         ctx.trace = trace
         start = time.monotonic()
         steps = strategy.steps
-        step_mws = strategy.step_middlewares
+        step_mws = [] if ctx.dry_run else strategy.step_middlewares
         name_to_idx = strategy._name_to_idx  # O(1) step lookup
         step_outputs: dict[str, Any] = {}
         unavailable: set[str] = set()
         effective_run_until = run_until or ctx.run_until
+        observation = ctx._stream_observation
         i = 0
 
         # Index-based loop (not for-each) to support skip_to.
         while i < len(steps):
             step = steps[i]
+            if observation is not None and observation.defer_step(step.name, ctx):
+                i += 1
+                continue
 
             # ── Read declarative metadata (getattr for backward compat) ──
             match_modules = getattr(step, "match_modules", None)
@@ -777,6 +826,9 @@ class PipelineEngine:
                     # PipelineStepError).
                     raise
 
+            if observation is not None:
+                observation.before_step(step.name, ctx)
+            recovered = False
             try:
                 if timeout_ms > 0:
                     result = await asyncio.wait_for(
@@ -870,6 +922,7 @@ class PipelineEngine:
                             explanation=f"Recovered from {type(exc).__name__}",
                         )
                     result = recovery
+                    recovered = True
                     # Fall through to the success path below.
                 else:
                     # (4) ignore_errors: log and continue
@@ -925,6 +978,11 @@ class PipelineEngine:
                 duration_ms=(time.monotonic() - step_start) * 1000,
                 result=result,
                 decision_point=result.confidence is not None,
+                skip_reason=(
+                    "error_recovered"
+                    if recovered and observation is not None and observation.captures_completion
+                    else None
+                ),
             )
             trace.steps.append(step_trace)
 

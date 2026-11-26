@@ -32,6 +32,8 @@ pub const TRACE_FLAGS_KEY: &str = "_apcore.trace.flags";
 /// inbound vendor state propagates rather than being dropped (D11-002b).
 pub const TRACE_STATE_KEY: &str = "_apcore.trace.state";
 
+const INBOUND_PARENT_KEY: &str = "_apcore.trace.parent";
+
 /// Pre-compiled regex for traceparent header parsing.
 static TRACEPARENT_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"^([0-9a-f]{2})-([0-9a-f]{32})-([0-9a-f]{16})-([0-9a-f]{2})$").unwrap()
@@ -40,20 +42,50 @@ static TRACEPARENT_RE: LazyLock<Regex> = LazyLock::new(|| {
 /// Pre-compiled regex matching a 16-char lowercase hex parent_id (W3C span id).
 static PARENT_ID_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[0-9a-f]{16}$").unwrap());
 
-/// Read the inbound `trace-flags` byte from a [`Context`]'s shared data map.
-///
-/// Honors the [`TRACE_FLAGS_KEY`] convention: the value is expected to be a
-/// 2-char lowercase hex string (`"00"` or `"01"`). Returns `None` when the
-/// key is absent or malformed.
-/// The `span_id` of the current span: the last entry of the tracing
-/// middleware's stack under `_apcore.mw.tracing.spans`, when it is a valid
-/// W3C parent ID.
-fn read_current_span_id<T>(context: &Context<T>) -> Option<String> {
-    let spans = crate::context_keys::TRACING_SPANS.get(context)?;
-    let span_id = spans.last()?.get("span_id")?.as_str()?;
-    PARENT_ID_RE.is_match(span_id).then(|| span_id.to_string())
+pub(crate) fn seed_inbound_parent(
+    data: &mut HashMap<String, serde_json::Value>,
+    trace_id: &str,
+    parent: &TraceParent,
+) {
+    if trace_id == parent.trace_id && valid_parent_id(&parent.parent_id) {
+        data.insert(
+            INBOUND_PARENT_KEY.to_owned(),
+            serde_json::json!({
+                "trace_id": trace_id,
+                "span_id": parent.parent_id,
+            }),
+        );
+    }
 }
 
+fn valid_parent_id(span_id: &str) -> bool {
+    PARENT_ID_RE.is_match(span_id) && span_id != "0000000000000000"
+}
+
+pub(crate) fn inbound_parent_id<T>(context: &Context<T>) -> Option<String> {
+    let data = context.data.read();
+    let parent = data.get(INBOUND_PARENT_KEY)?;
+    let span_id = parent.get("span_id")?.as_str()?;
+    (parent.get("trace_id")?.as_str()? == context.trace_id && valid_parent_id(span_id))
+        .then(|| span_id.to_owned())
+}
+
+/// Use the invocation's span or its known local ancestor. The legacy context
+/// key still supplies a span for callers that set it directly.
+fn read_current_span_id<T>(context: &Context<T>) -> Option<String> {
+    if let Some(span) = context
+        .cancel_token
+        .as_ref()
+        .and_then(|token| token.span_link(&context.trace_id))
+    {
+        return Some(span.span_id);
+    }
+    let spans = crate::context_keys::TRACING_SPANS.get(context)?;
+    let span_id = spans.last()?.get("span_id")?.as_str()?;
+    valid_parent_id(span_id).then(|| span_id.to_string())
+}
+
+/// Read the inbound `trace-flags` byte from a [`Context`]'s shared data map.
 fn read_inbound_flags<T>(context: &Context<T>) -> Option<u8> {
     let data = context.data.read();
     let raw = data.get(TRACE_FLAGS_KEY)?;
@@ -292,9 +324,9 @@ impl TraceContext {
     ///
     /// Extracts the `trace_id` from the context (stripping any UUID dashes to
     /// produce 32 lowercase hex characters). The parent span ID is the
-    /// `span_id` of the current span — the top of the tracing middleware's
-    /// stack under `_apcore.mw.tracing.spans` — or a random 8-byte ID when no
-    /// span is active. Returns a header map containing the `"traceparent"` key.
+    /// `span_id` of the current invocation or its known local ancestor, or a
+    /// random 8-byte ID when no local span is known. Returns a header map
+    /// containing the `"traceparent"` key.
     /// This mirrors `TraceContext.inject(context)` in the Python and TypeScript SDKs.
     ///
     /// **Inbound flag propagation.** When `context.data` contains

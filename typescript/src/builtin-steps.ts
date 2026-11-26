@@ -13,7 +13,7 @@ import { buildGovernanceProjection } from './acl-handlers.js';
 import { governanceUnion } from './schema/annotations.js';
 import { RedactionConfig } from './observability/context-logger.js';
 import type { ApprovalHandler, ApprovalResult } from './approval.js';
-import { createApprovalRequest, createApprovalResult } from './approval.js';
+import { createApprovalRequest, createApprovalResult, takeApprovalToken } from './approval.js';
 import type { Config } from './config.js';
 import { getDefault } from './config-defaults.js';
 import { CancelToken, awaitExecution } from './cancel.js';
@@ -31,7 +31,8 @@ import {
   SchemaValidationError,
 } from './errors.js';
 import { DEFAULT_TOGGLE_STATE, type ToggleState } from './sys-modules/toggle.js';
-import { CTX_TRACING_SPANS, redactSensitive } from './executor.js';
+import { redactSensitive } from './executor.js';
+import { auditSpan } from './execution-lifetime.js';
 import { type EventEmitter, createEvent } from './events/emitter.js';
 import type { ExecutionPolicy, PolicyDecision } from './policy.js';
 import { applyDecisionToAnnotations } from './policy.js';
@@ -140,6 +141,7 @@ export class BuiltinContextCreation implements Step {
     }
 
     ctx.context = derived;
+    ctx.onContextReady?.(derived);
     return { action: 'continue' };
   }
 }
@@ -302,6 +304,11 @@ export class BuiltinACLCheck implements Step {
     this._eventEmitter = eventEmitter;
   }
 
+  /** @internal Copy the gate, including any declared step configuration. */
+  copy(): BuiltinACLCheck {
+    return Object.create(Object.getPrototypeOf(this), Object.getOwnPropertyDescriptors(this)) as BuiltinACLCheck;
+  }
+
   /** Update the ACL provider at runtime. */
   setAcl(acl: ACL): void {
     this._acl = acl;
@@ -334,6 +341,7 @@ export class BuiltinACLCheck implements Step {
     // annotation silently ignores every rule carrying `approval` — the rule
     // loads, matches, and does nothing.
     ctx.aclApprovalRequired = decision.approvalRequired;
+    ctx.aclAllowed = decision.access === 'allow';
     if (decision.access !== 'allow') {
       // Publish a governance event on denial (canonical name proposed in
       // apcore#77). Guarded by dryRun so a validate() preflight probe never
@@ -452,6 +460,15 @@ export class BuiltinApprovalGate implements Step {
     this._eventEmitter = eventEmitter;
   }
 
+  /** @internal Keep step configuration and give the runtime its own warning state. */
+  copy(): BuiltinApprovalGate {
+    const properties: PropertyDescriptorMap = {
+      ...Object.getOwnPropertyDescriptors(this),
+      _warned: { value: new Set<string>() },
+    };
+    return Object.create(Object.getPrototypeOf(this), properties) as BuiltinApprovalGate;
+  }
+
   /** Update the approval handler at runtime. */
   setApprovalHandler(handler: ApprovalHandler): void {
     this._handler = handler;
@@ -479,12 +496,7 @@ export class BuiltinApprovalGate implements Step {
 
   async execute(ctx: PipelineContext): Promise<StepResult> {
     const mod = ctx.module as Record<string, unknown> | null;
-    // `_approval_token` is a protocol-level key (PROTOCOL_SPEC §7.4), not part
-    // of any module's input contract. Strip it before any exit — including the
-    // not-gated and no-handler-skip paths — so it never reaches input
-    // validation, where `additionalProperties: false` rejected it as an
-    // undeclared key, nor the module's own execute().
-    const approvalToken = this._takeApprovalToken(ctx);
+    const approvalToken = takeApprovalToken(ctx);
 
     // §6.9 row 4 — the ACL is a CALLER-scoped authorization layer and an
     // `ExecutionPolicy` is a MODULE-scoped platform override, so a policy may
@@ -515,11 +527,7 @@ export class BuiltinApprovalGate implements Step {
       // These arguments have NOT been schema-validated: this gate is Step 5
       // and input validation is Step 7 (§12.8).
       //
-      // `_approval_token` is already gone: `_takeApprovalToken` above strips it
-      // from `ctx.inputs` before this point, which §7.9.6 rule 5 requires
-      // explicitly — §7.4's "before passing to subsequent steps" does not reach
-      // a decision made INSIDE Step 5, so an implementation can satisfy §7.4
-      // literally and still hand the token to the policy.
+      // The executor isolates the credential before the pipeline starts.
       decision = this._policy.resolve(ctx.moduleId, governance, {
         arguments: ctx.inputs ?? null,
         context: ctx.context ?? null,
@@ -568,54 +576,26 @@ export class BuiltinApprovalGate implements Step {
       return { action: 'continue' };
     }
 
-    let result: ApprovalResult;
+    let annotations: ModuleAnnotations = governance ?? DEFAULT_ANNOTATIONS;
+    if (decision !== null) annotations = applyDecisionToAnnotations(annotations, decision);
+    if (!annotations.requiresApproval) annotations = Object.freeze({ ...annotations, requiresApproval: true });
 
-    if (approvalToken !== null) {
-      result = await this._handler.checkApproval(approvalToken);
-    } else {
-      // The handler must be told what the gate fired on: the union, not a
-      // second, narrower read of the live instance. Gating on one source and
-      // describing the call from another is the split D-96 closes.
-      let ann: ModuleAnnotations = governance ?? DEFAULT_ANNOTATIONS;
+    const request = createApprovalRequest({
+      moduleId: ctx.moduleId,
+      callerId: ctx.context.callerId,
+      action: ctx.moduleId,
+      arguments: structuredClone(ctx.inputs),
+      context: ctx.context,
+      annotations,
+      description: (mod?.['description'] as string) ?? null,
+      tags: (mod?.['tags'] as string[]) ?? [],
+    });
+    const result = approvalToken === null
+      ? await this._handler.requestApproval(request)
+      : await this._handler.checkApprovalForCall?.(approvalToken, request)
+        ?? createApprovalResult({ status: 'rejected', reason: 'The approval handler does not support scoped resumption' });
 
-      if (decision !== null) {
-        // Preserve the ApprovalRequest contract ("requiresApproval is guaranteed
-        // true", PROTOCOL_SPEC §7) under policy overrides: the handler sees the
-        // effective governance values, not the module's raw declaration.
-        // Reaching this point means the call needs approval, so requiresApproval
-        // is true by definition (covers rule overrides and gateDestructive).
-        ann = applyDecisionToAnnotations(ann, decision);
-      }
-
-      // §7.4 rule 3: the ApprovalRequest MUST carry the EFFECTIVE annotations,
-      // and an ACL-sourced requirement makes `requiresApproval` effectively
-      // true for this call. Without this the handler would be told the module
-      // does not require approval while being asked to adjudicate it — and the
-      // §7 contract that `requiresApproval` is guaranteed true on an
-      // ApprovalRequest would be broken by the one source that has no
-      // annotation to read.
-      if (!ann.requiresApproval) {
-        ann = Object.freeze({ ...ann, requiresApproval: true });
-      }
-
-      const request = createApprovalRequest({
-        moduleId: ctx.moduleId,
-        // D-03 (spec v2026-05): populated straight off this call's own
-        // Context and module ID — `callerId` is `null` for a top-level call
-        // (Context.callerId carries no "@external" substitution) and
-        // `action` always equals the module being invoked.
-        callerId: ctx.context.callerId,
-        action: ctx.moduleId,
-        arguments: ctx.inputs,
-        context: ctx.context,
-        annotations: ann,
-        description: (mod?.['description'] as string) ?? null,
-        tags: (mod?.['tags'] as string[]) ?? [],
-      });
-      result = await this._handler.requestApproval(request);
-    }
-
-    this._emitAudit(result, ctx.moduleId, ctx.context);
+    this._emitAudit(result, ctx.moduleId, ctx.context, approvalToken);
 
     if (result.status === 'approved') {
       return { action: 'continue' };
@@ -633,25 +613,6 @@ export class BuiltinApprovalGate implements Step {
     throw new ApprovalDeniedError(result, ctx.moduleId);
   }
 
-  /**
-   * Remove `_approval_token` from `ctx.inputs` and return it, or `null` when
-   * the caller sent none. `ctx.inputs` is replaced with a copy, never mutated
-   * in place, so the caller's own object is left untouched.
-   */
-  private _takeApprovalToken(ctx: PipelineContext): string | null {
-    if (!('_approval_token' in ctx.inputs)) return null;
-    const rawToken = ctx.inputs['_approval_token'];
-    // Security gate: reject a non-string token before it reaches the handler
-    // instead of coercing it (mirrors Python/Rust rejecting with
-    // GENERAL_INVALID_INPUT — the safest cross-language behavior).
-    if (typeof rawToken !== 'string') {
-      throw new InvalidInputError('_approval_token must be a string');
-    }
-    const { _approval_token: _, ...rest } = ctx.inputs;
-    ctx.inputs = rest;
-    return rawToken;
-  }
-
   /** Warn once per dedup key (module/kind pair). */
   private _warnOnce(key: string, message: string): void {
     if (this._warned.has(key)) return;
@@ -664,11 +625,9 @@ export class BuiltinApprovalGate implements Step {
     const rule = decision.rule;
     const pattern = rule ? rule.pattern : '';
     const reason = (rule ? rule.reason : null) ?? '';
-    const spansStack = ctx.data[CTX_TRACING_SPANS] as
-      | Array<{ events: Array<Record<string, unknown>> }>
-      | undefined;
-    if (spansStack && spansStack.length > 0) {
-      spansStack[spansStack.length - 1].events.push({
+    const span = auditSpan(ctx);
+    if (span) {
+      span.events.push({
         name: 'policy_override',
         module_id: decision.moduleId,
         pattern,
@@ -698,18 +657,24 @@ export class BuiltinApprovalGate implements Step {
    * Severity mirrors the outcome: approved/pending are `info`; rejected/timeout
    * (governance interventions) are `warn`.
    */
-  private _emitAudit(result: ApprovalResult, moduleId: string, ctx: Context): void {
-    const spansStack = ctx.data[CTX_TRACING_SPANS] as
-      | Array<{ events: Array<Record<string, unknown>> }>
-      | undefined;
-    if (spansStack && spansStack.length > 0) {
-      spansStack[spansStack.length - 1].events.push({
+  private _emitAudit(
+    result: ApprovalResult,
+    moduleId: string,
+    ctx: Context,
+    resumeCredential?: string | null,
+  ): void {
+    const auditId = result.auditId !== result.approvalId && result.auditId !== resumeCredential
+      ? result.auditId ?? null
+      : null;
+    const span = auditSpan(ctx);
+    if (span) {
+      span.events.push({
         name: 'approval_decision',
         module_id: moduleId,
         status: result.status,
         approved_by: result.approvedBy ?? '',
         reason: result.reason ?? '',
-        approval_id: result.approvalId ?? '',
+        approval_id: auditId ?? '',
       });
     }
     if (this._eventEmitter !== null) {
@@ -721,7 +686,7 @@ export class BuiltinApprovalGate implements Step {
           status: result.status,
           approved_by: result.approvedBy,
           reason: result.reason,
-          approval_id: result.approvalId,
+          approval_id: auditId,
           trace_id: ctx.traceId,
         }),
       );
@@ -830,17 +795,7 @@ export class BuiltinExecute implements Step {
   readonly provides = ['output'] as const;
   readonly pure = false;
 
-  private _defaultTimeout: number;
-
-  constructor(config: Config | null) {
-    if (config !== null) {
-      this._defaultTimeout =
-        (config.get('executor.default_timeout') as number) ??
-        (getDefault('executor.default_timeout') as number);
-    } else {
-      this._defaultTimeout = getDefault('executor.default_timeout') as number;
-    }
-  }
+  constructor(private readonly _config: Config | null) {}
 
   async execute(ctx: PipelineContext): Promise<StepResult> {
     const mod = ctx.module as Record<string, unknown>;
@@ -850,15 +805,13 @@ export class BuiltinExecute implements Step {
       ctx.context.cancelToken.check();
     }
 
-    // Streaming path: store the generator on ctx.outputStream, then skip to
-    // return_result. This matches apcore-python's StepResult(action="skip_to",
-    // skip_to="return_result") so PipelineTrace records steps 9/10 as skipped
-    // rather than normal-continue-with-null-output (sync finding A-D-019).
+    // The stream executor pauses the pipeline once the producer is available.
+    // Its next configured step runs after the chunks have been accumulated.
     if (ctx.stream) {
       const candidate = ctx.module as Module;
       if (isStreamingModule(candidate)) {
         ctx.outputStream = this._streamWithLease(ctx, () => candidate.stream(ctx.inputs, ctx.context));
-        return { action: 'skip_to', skipTo: 'return_result' };
+        return { action: 'continue' };
       }
       // fallback: execute normally and wrap as single-chunk
     }
@@ -871,7 +824,9 @@ export class BuiltinExecute implements Step {
     // module value when present; otherwise the executor default. The global
     // deadline (if any) further clamps the effective timeout so the call
     // cannot outrun an outer budget.
-    let timeoutMs = this._readModuleTimeoutMs(mod) ?? this._defaultTimeout;
+    let timeoutMs = this._readModuleTimeoutMs(mod) ??
+      (this._config?.get('executor.default_timeout') as number | undefined) ??
+      (getDefault('executor.default_timeout') as number);
     // D-100: read the first-class field, not a private `data` key. D-99: the
     // field is epoch SECONDS, so scale it before differencing against
     // `Date.now()` milliseconds.
@@ -918,16 +873,15 @@ export class BuiltinExecute implements Step {
       timeoutMs,
       isModuleIdempotent(mod),
     );
+    if (output == null) {
+      throw new ModuleExecuteError(ctx.moduleId, 'Return value cannot be None');
+    }
     const normalized = normalizeModuleObject(output);
-    if (output != null && normalized === null) {
+    if (normalized === null) {
       throw new ModuleExecuteError(ctx.moduleId, 'Return value must be Map');
     }
     ctx.output = normalized;
 
-    // MW-001: record that the module actually ran. `output == null` alone
-    // cannot tell "the module returned nothing" from "this step never ran",
-    // and the after-middleware chain has to distinguish them.
-    ctx.executeStepRan = true;
     return { action: 'continue' };
   }
 
@@ -1052,34 +1006,14 @@ export class BuiltinMiddlewareAfter implements Step {
   }
 
   async execute(ctx: PipelineContext): Promise<StepResult> {
-    // MW-001: skip only when the module never ran and produced nothing —
-    // a `runUntil` that stopped earlier, or a strategy without an execute
-    // step. Dry run and streaming Phase 1 never reach here at all (this step
-    // is `pure: false`, and the stream branch returns `skip_to:
-    // 'return_result'`); streaming Phase 3 re-enters with the accumulated
-    // output already on the context.
-    //
-    // The guard used to be `ctx.output == null`, which is the SAME null a
-    // module that returned nothing produces — so a void module skipped the
-    // ENTIRE after chain. `after()` is the closing half of `before()`
-    // (middleware-system.md), so a middleware that acquired state in
-    // `before()` never released it: metrics unrecorded, tracing span
-    // unpopped, audit line unwritten — and an `after()` returning a mapping
-    // could not replace the result. apcore-python runs the chain with `{}`
-    // and apcore-rust with the module's `null`.
-    if (ctx.output == null && ctx.executeStepRan !== true) {
+    if (ctx.output == null) {
       return { action: 'continue' };
     }
 
-    // A void module's output is normalised to `{}` for the chain, as
-    // apcore-python does: `after()` is typed to receive a mapping, and
-    // `Executor.call` already returns `{}` for such a module, so the
-    // observable result is unchanged when no middleware replaces it.
-    const output = ctx.output ?? {};
     const transformed = await this._middlewareManager.executeAfter(
       ctx.moduleId,
       ctx.inputs,
-      output,
+      ctx.output,
       ctx.context,
     );
     ctx.output = transformed;

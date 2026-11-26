@@ -45,11 +45,14 @@ import {
   CallDepthExceededError,
   CallFrequencyExceededError,
   ApprovalDeniedError,
+  ApprovalError,
   ApprovalPendingError,
+  ApprovalTimeoutError,
   ContextBindingError,
 } from '../src/errors.js';
 import { CancelToken } from '../src/cancel.js';
 import { SchemaLoader, jsonSchemaToTypeBox, contentHash } from '../src/schema/loader.js';
+import { RefResolver } from '../src/schema/ref-resolver.js';
 import { SchemaValidator } from '../src/schema/validator.js';
 import type { SchemaDefinition } from '../src/schema/types.js';
 import type { TSchema } from '@sinclair/typebox';
@@ -60,7 +63,7 @@ import {
   annotationsFromJSON,
 } from '../src/module.js';
 import { BuiltinApprovalGate, buildStandardStrategy } from '../src/builtin-steps.js';
-import type { ApprovalResult } from '../src/approval.js';
+import { AutoApproveHandler, type ApprovalResult } from '../src/approval.js';
 import { resolveDependencies } from '../src/registry/dependencies.js';
 import { parseDependencies } from '../src/registry/metadata-pure.js';
 import { classNameToSegment, discoverMultiClass } from '../src/registry/multi-class.js';
@@ -104,6 +107,7 @@ import {
 } from '../src/async-task.js';
 import type { TaskStore } from '../src/async-task.js';
 import { Executor } from '../src/executor.js';
+import { InMemoryOverridesStore } from '../src/sys-modules/overrides.js';
 import { Registry } from '../src/registry/registry.js';
 import { APCore } from '../src/client.js';
 import { ManifestFullModule } from '../src/sys-modules/manifest.js';
@@ -1052,6 +1056,7 @@ describe('apcore Conformance Suite (TypeScript)', () => {
         // all, i.e. it tested the wrong skip branch.)
         let handler: any = null;
         let handlerCalls = 0;
+        let resumeArguments: Record<string, unknown> | null = null;
         if (tc.approval_handler_configured) {
           const raw = tc.approval_result ?? { status: 'approved' };
           const result: ApprovalResult = {
@@ -1071,6 +1076,15 @@ describe('apcore Conformance Suite (TypeScript)', () => {
               return result;
             },
           };
+          if (tc.resume?.scoped_handler) {
+            handler.checkApprovalForCall = async (credential: string, request: { moduleId: string; arguments: Record<string, unknown> }) => {
+              expect(credential).toBe(tc.resume.credential);
+              expect(request.moduleId).toBe('test.module');
+              resumeArguments = request.arguments;
+              handlerCalls += 1;
+              return result;
+            };
+          }
         }
 
         const gate = new BuiltinApprovalGate(handler);
@@ -1087,7 +1101,7 @@ describe('apcore Conformance Suite (TypeScript)', () => {
         const pipeCtx: any = {
           moduleId: 'test.module',
           module: mod,
-          inputs: {},
+          inputs: tc.resume ? { ...tc.resume.arguments, _approval_token: tc.resume.credential } : {},
           context: ctx,
         };
 
@@ -1111,11 +1125,21 @@ describe('apcore Conformance Suite (TypeScript)', () => {
           } else if (tc.expected.error_code === 'APPROVAL_PENDING') {
             expect(thrown).toBeInstanceOf(ApprovalPendingError);
             expect((thrown as ApprovalPendingError).approvalId).toBe(tc.expected.approval_id);
+          } else if (tc.expected.error_code === 'APPROVAL_TIMEOUT') {
+            expect(thrown).toBeInstanceOf(ApprovalTimeoutError);
+          }
+          if ('result' in tc.expected) {
+            const result = (thrown as ApprovalError).result as Record<string, unknown>;
+            const fields = Object.fromEntries(Object.entries(tc.expected.result).map(([key]) => [
+              key, result[key === 'approval_id' ? 'approvalId' : key],
+            ]));
+            expect(fields).toEqual(tc.expected.result);
           }
         }
         // Whether the gate actually consulted the handler — the discriminator
         // for both skip cases, which otherwise look identical to "proceed".
         expect(handlerCalls > 0).toBe(tc.expected.gate_invoked);
+        if ('resume_arguments' in tc.expected) expect(resumeArguments).toEqual(tc.expected.resume_arguments);
       });
     });
   });
@@ -3236,6 +3260,12 @@ describe('apcore Conformance Suite (TypeScript)', () => {
    * a spec-side addition into a failing test instead of a silent gap.
    */
   const SYS_HARDENING_COVERED_CASE_IDS = [
+    'manifest_responses_follow_canonical_schema',
+    'first_config_update_has_null_old_value',
+    'config_update_rejects_empty_path',
+    'config_update_redacts_configured_keys',
+    'config_update_rejects_persisted_toggle_keys',
+    'config_update_changes_default_execution_timeout',
     'overrides_persisted_on_update',
     'overrides_loaded_on_startup',
     'audit_entry_records_actor',
@@ -3265,6 +3295,82 @@ describe('apcore Conformance Suite (TypeScript)', () => {
       if (fs.existsSync(tmpOverridesPath)) {
         fs.unlinkSync(tmpOverridesPath);
       }
+    });
+
+    function validateWireResponse(name: string, response: Record<string, unknown>): Record<string, unknown> {
+      const schemaPath = path.join(SCHEMAS_ROOT, `${name}.schema.json`);
+      const schema = new RefResolver(SCHEMAS_ROOT).resolve(loadSchema(name), schemaPath);
+      const validator = new SchemaValidator();
+      const wire = JSON.parse(JSON.stringify(response)) as Record<string, unknown>;
+      const typebox = jsonSchemaToTypeBox(schema);
+      expect(validator.validate(wire, typebox)).toMatchObject({ valid: true });
+      expect(validator.validate({ ...wire, unexpected: true }, typebox).valid).toBe(false);
+      return wire;
+    }
+
+    it('manifest_responses_follow_canonical_schema', async () => {
+      const { setup, expected } = sysHardeningFixture.test_cases.find(
+        (test: { id: string }) => test.id === 'manifest_responses_follow_canonical_schema',
+      );
+      const client = new APCore({ config: new Config({ sys_modules: { enabled: true } }) });
+      await client.registry.register(setup.module_id, {
+        description: 'Conformance manifest module',
+        inputSchema: { type: 'object' },
+        outputSchema: { type: 'object' },
+        execute: () => ({}),
+      }, null, { dependencies: [setup.dependency] });
+      const single = await client.call('system.manifest.module', { module_id: setup.module_id });
+      expect(validateWireResponse('sys-manifest-module', single)).toMatchObject(expected.entry);
+      const full = await client.call('system.manifest.full', {
+        prefix: setup.module_id, include_schemas: false, include_source_paths: false,
+      });
+      expect(validateWireResponse('sys-manifest-full', full)).toMatchObject({
+        module_count: 1, modules: [{ ...expected.entry, ...expected.suppressed_fields }],
+      });
+    });
+
+    it('first_config_update_has_null_old_value', async () => {
+      const { action, expected } = sysHardeningFixture.test_cases.find(
+        (test: { id: string }) => test.id === 'first_config_update_has_null_old_value',
+      );
+      const config = new Config({ sys_modules: { enabled: true, events: { enabled: true } } });
+      const client = new APCore({ config });
+      client.executor.setApprovalHandler(new AutoApproveHandler());
+      const payloads: unknown[] = [];
+      const emitter = client.events!;
+      emitter.subscribe({
+        eventPattern: 'apcore.config.updated',
+        async onEvent(event) {
+          payloads.push(JSON.parse(JSON.stringify(event.data)));
+        },
+      });
+      const result = await client.call('system.control.update_config', action.input);
+      expect(validateWireResponse('sys-control-update-config', result)).toEqual(expected);
+      await emitter.flush();
+      const { success: _success, ...expectedPayload } = expected;
+      expect(payloads).toHaveLength(1);
+      expect(payloads[0]).toMatchObject(expectedPayload);
+    });
+
+    it('config_update_rejects_empty_path', async () => {
+      const { setup, action, expected } = sysHardeningFixture.test_cases.find(
+        (test: { id: string }) => test.id === 'config_update_rejects_empty_path',
+      );
+      const config = new Config({
+        extensions: { root: setup.initial_root }, sys_modules: { enabled: true, events: { enabled: true } },
+      });
+      const client = new APCore({ config });
+      client.executor.setApprovalHandler(new AutoApproveHandler());
+      const payloads: unknown[] = [];
+      const emitter = client.events!;
+      emitter.subscribe({
+        eventPattern: 'apcore.config.updated',
+        async onEvent(event) { payloads.push(event.data); },
+      });
+      await expect(client.call('system.control.update_config', action.input)).rejects.toMatchObject({ code: expected.error_code });
+      expect(config.get(action.input.key)).toBe(expected.effective_value);
+      await emitter.flush();
+      expect(payloads).toHaveLength(expected.update_events);
     });
 
     // --- 1. overrides_persisted_on_update ---
@@ -3341,6 +3447,60 @@ describe('apcore Conformance Suite (TypeScript)', () => {
       } finally {
         if (fs.existsSync(baseConfigPath)) fs.unlinkSync(baseConfigPath);
       }
+    });
+
+    it('config_update_redacts_configured_keys', () => {
+      const tc = sysHardeningFixture.test_cases.find((test: any) => test.id === 'config_update_redacts_configured_keys');
+      const input = tc.action.input;
+      const config = new Config({});
+      config.set('obs.redaction.sensitive_keys', tc.setup.sensitive_keys);
+      config.set(input.key, tc.setup.initial_value);
+      const auditStore = new InMemoryAuditStore();
+      const module = new UpdateConfigModule(config, new EventEmitter(), { auditStore });
+
+      const result = module.execute(input, Context.create());
+
+      expect(result).toMatchObject(tc.expected);
+      expect(auditStore.query()[0].change).toEqual({ before: tc.expected.old_value, after: tc.expected.new_value });
+      expect(config.get(input.key)).toEqual(input.value);
+    });
+
+    it('config_update_changes_default_execution_timeout', async () => {
+      const tc = sysHardeningFixture.test_cases.find((test: any) => test.id === 'config_update_changes_default_execution_timeout');
+      const client = new APCore({
+        config: new Config({
+          executor: { default_timeout: tc.setup.initial_default_timeout_ms },
+          sys_modules: { enabled: true, events: { enabled: true } },
+        }),
+      });
+      client.executor.setApprovalHandler(new AutoApproveHandler());
+      const probe = 'test.execution_budget';
+      await client.register(probe, {
+        description: 'Module using the configured execution budget',
+        inputSchema: Type.Object({}),
+        outputSchema: Type.Object({}),
+        async execute() {
+          await new Promise<void>((resolve) => setTimeout(resolve, tc.setup.probe_duration_ms));
+          return {};
+        },
+      });
+      const update = await client.call('system.control.update_config', tc.action.input);
+      expect(update['success']).toBe(tc.expected.call_success);
+      await expect(client.call(probe, {})).rejects.toMatchObject({ code: tc.expected.probe_error_code });
+    });
+
+    it('config_update_rejects_persisted_toggle_keys', async () => {
+      const tc = sysHardeningFixture.test_cases.find((test: any) => test.id === 'config_update_rejects_persisted_toggle_keys');
+      const store = new InMemoryOverridesStore();
+      const config = new Config({});
+      const registry = new Registry();
+      await registry.registerInternal('system.control.update_config', new UpdateConfigModule(
+        config, new EventEmitter(), { overridesStore: store },
+      ));
+      const executor = new Executor({ registry, approvalHandler: new AutoApproveHandler() });
+      await expect(executor.call('system.control.update_config', tc.action.input))
+        .rejects.toMatchObject({ code: tc.expected.error_code });
+      expect(store.load()).toEqual(tc.expected.overrides);
     });
 
     // --- 3. audit_entry_records_actor ---
@@ -4040,7 +4200,7 @@ describe('apcore Conformance Suite (TypeScript)', () => {
   const traceContextFixture = loadFixture('trace_context');
   describe('Trace Context (W3C, Issue #35)', () => {
     traceContextFixture.test_cases.forEach((tc: any) => {
-      it(tc.id, () => {
+      it(tc.id, async () => {
         // Build the headers map. Some cases use `tracestate_entry_count`
         // to request the harness synthesize N entries (vendorXX=opaqueXX).
         const headers: Record<string, string> = {};
@@ -4078,6 +4238,27 @@ describe('apcore Conformance Suite (TypeScript)', () => {
         }
         if (tp === null) {
           throw new Error(`extract returned null for ${tc.id}; headers=${JSON.stringify(headers)}`);
+        }
+
+        if (tc.id === 'inbound_parent_is_used_by_exported_span') {
+          const client = new APCore();
+          const exporter = new InMemoryExporter();
+          client.use(new TracingMiddleware(exporter));
+          await client.module({
+            id: 'demo.trace',
+            description: 'Inject the active execution span',
+            inputSchema: Type.Object({}),
+            outputSchema: Type.Object({ traceparent: Type.String() }),
+            execute: (_inputs, context) => TraceContext.inject(context),
+          }).registration;
+          const result = await client.call('demo.trace', {}, Context.create(null, tp));
+          expect(exporter.getSpans()).toHaveLength(1);
+          const [span] = exporter.getSpans();
+          expect(span.traceId).toBe(tc.expected.span_trace_id);
+          expect(span.parentSpanId).toBe(tc.expected.span_parent_id);
+          const injectedParent = (result.traceparent as string).split('-')[2];
+          expect(injectedParent === span.spanId).toBe(tc.expected.injected_parent_is_local_span);
+          return;
         }
 
         if (tc.expected.trace_id !== undefined) {

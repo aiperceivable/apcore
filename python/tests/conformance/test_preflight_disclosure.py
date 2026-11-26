@@ -20,10 +20,12 @@ from typing import Any
 import pytest
 
 from apcore.acl import ACL, ACLRule
+from apcore.builtin_steps import build_standard_strategy
 from apcore.config import Config
 from apcore.context import Context, Identity
 from apcore.executor import Executor
 from apcore.module import Change, PreviewResult
+from apcore.pipeline import PipelineState
 from apcore.registry import Registry
 from apcore.schema.loader import SchemaLoader
 from conformance.canonical_fixtures import load_fixture
@@ -143,3 +145,22 @@ def test_preflight_disclosure(tc: dict[str, Any]) -> None:
             f"otherwise the denial cases pass for an implementation that never "
             f"introspects at all{detail}"
         )
+
+
+def test_preflight_does_not_run_step_middleware() -> None:
+    class Middleware:
+        def before_step(self, step_name: str, state: PipelineState) -> None:
+            if step_name == "acl_check":
+                raise RuntimeError("step middleware must not run during preflight")
+
+    module = _DestructiveModule()
+    registry = Registry()
+    registry.register(_CONTRACT["module_id"], module)
+    strategy = build_standard_strategy(registry=registry)
+    strategy.add_step_middleware(Middleware())
+    executor = Executor(registry, acl=ACL(rules=[], default_effect="deny"), strategy=strategy)
+
+    result = executor.validate(_CONTRACT["module_id"], {})
+
+    assert any(error["code"] == "ACL_DENIED" for error in result.errors)
+    assert module.hooks_invoked == []

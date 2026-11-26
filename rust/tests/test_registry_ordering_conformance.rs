@@ -5,7 +5,9 @@
 use apcore::context::Context;
 use apcore::errors::{ErrorCode, ModuleError};
 use apcore::module::Module;
-use apcore::registry::registry::{ModuleDescriptor, Registry};
+use apcore::registry::registry::{
+    DependencyInfo, DiscoveredModule, Discoverer, ModuleDescriptor, Registry,
+};
 use async_trait::async_trait;
 use parking_lot::Mutex;
 use serde_json::{json, Value};
@@ -56,6 +58,121 @@ fn make_descriptor(id: &str) -> ModuleDescriptor {
         sunset_date: None,
         dependencies: vec![],
         enabled: true,
+    }
+}
+
+struct LoadedModule {
+    id: String,
+    fails: bool,
+    load_hooks: Arc<Mutex<Vec<String>>>,
+}
+
+#[async_trait]
+impl Module for LoadedModule {
+    fn description(&self) -> &str {
+        "Discovery test module"
+    }
+
+    fn input_schema(&self) -> Value {
+        json!({})
+    }
+
+    fn output_schema(&self) -> Value {
+        json!({})
+    }
+
+    fn on_load(&self) -> Result<(), ModuleError> {
+        self.load_hooks.lock().push(self.id.clone());
+        if self.fails {
+            return Err(ModuleError::new(
+                ErrorCode::ModuleLoadError,
+                "Provider unavailable",
+            ));
+        }
+        Ok(())
+    }
+
+    async fn execute(&self, _: Value, _: &Context<Value>) -> Result<Value, ModuleError> {
+        Ok(json!({}))
+    }
+}
+
+struct FixedDiscoverer(Vec<DiscoveredModule>);
+
+#[async_trait]
+impl Discoverer for FixedDiscoverer {
+    async fn discover(&self, _: &[String]) -> Result<Vec<DiscoveredModule>, ModuleError> {
+        Ok(self.0.clone())
+    }
+}
+
+#[tokio::test]
+async fn discovery_skips_dependents_of_failed_provider() {
+    let fixture = load_fixture();
+    let case = fixture_case(&fixture, "discovery_skips_dependents_of_failed_provider");
+    let expected = &case["expected"];
+    let load_hooks = Arc::new(Mutex::new(Vec::<String>::new()));
+    let modules = case["setup"]["modules"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|setup| {
+            let id = setup["id"].as_str().unwrap();
+            let mut descriptor = make_descriptor(id);
+            for dep in setup["dependencies"].as_array().into_iter().flatten() {
+                descriptor.dependencies.push(DependencyInfo {
+                    module_id: dep["module_id"].as_str().unwrap().to_owned(),
+                    version_constraint: dep["version"].as_str().unwrap_or_default().to_owned(),
+                    optional: dep["optional"].as_bool().unwrap_or_default(),
+                });
+            }
+            DiscoveredModule {
+                name: id.to_owned(),
+                source: id.to_owned(),
+                descriptor,
+                module: Arc::new(LoadedModule {
+                    id: id.to_owned(),
+                    fails: setup["fails"].as_bool().unwrap_or_default(),
+                    load_hooks: Arc::clone(&load_hooks),
+                }),
+            }
+        })
+        .collect();
+    let registry = Registry::new();
+    let published = Arc::new(Mutex::new(Vec::<String>::new()));
+    let published_callback = Arc::clone(&published);
+    registry
+        .on(
+            "register",
+            Box::new(move |id, _| published_callback.lock().push(id.to_owned())),
+        )
+        .unwrap();
+    let failures = Arc::new(Mutex::new(HashMap::new()));
+    let failure_callback = Arc::clone(&failures);
+    registry.on_load_failed(Arc::new(move |id, err| {
+        failure_callback
+            .lock()
+            .insert(id.to_owned(), err.wire_code().into_owned());
+    }));
+
+    assert_eq!(
+        json!(registry.discover(&FixedDiscoverer(modules)).await.unwrap()),
+        expected["post_register_count"],
+    );
+    assert_eq!(
+        json!(registry.list(None, None, None)),
+        expected["published_ids"]
+    );
+    published.lock().sort();
+    assert_eq!(json!(*published.lock()), expected["published_ids"]);
+    load_hooks.lock().sort();
+    assert_eq!(json!(*load_hooks.lock()), expected["load_hook_ids"]);
+    for id in expected["blocked_ids"].as_array().unwrap() {
+        let failures = failures.lock();
+        assert_eq!(
+            json!(failures.get(id.as_str().unwrap())),
+            expected["dependency_error_code"],
+        );
     }
 }
 

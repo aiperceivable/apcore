@@ -17,6 +17,7 @@
 //! nothing.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use serde_json::{json, Value};
@@ -24,6 +25,7 @@ use serde_json::{json, Value};
 use apcore::context::{Context, Identity};
 use apcore::executor::Executor;
 use apcore::module::{Change, Module, PreviewResult};
+use apcore::pipeline::{PipelineState, StepMiddleware};
 use apcore::registry::{ModuleDescriptor, Registry};
 use apcore::{ACLRule, ACL};
 
@@ -48,6 +50,21 @@ struct DestructiveModule {
     preflight_returns: Vec<String>,
     preview_change: Change,
     hooks: Arc<Mutex<Vec<String>>>,
+}
+
+#[derive(Default)]
+struct StepRecorder(AtomicUsize);
+
+#[async_trait::async_trait]
+impl StepMiddleware for StepRecorder {
+    async fn before_step(
+        &self,
+        _step_name: &str,
+        _state: &PipelineState<'_>,
+    ) -> Result<(), apcore::errors::ModuleError> {
+        self.0.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
 }
 
 #[async_trait::async_trait]
@@ -163,7 +180,11 @@ async fn conformance_preflight_disclosure() {
             None,
         );
 
-        let mut executor = Executor::new(registry, Arc::new(apcore::config::Config::default()));
+        let middleware = Arc::new(StepRecorder::default());
+        let mut strategy = apcore::builtin_steps::build_standard_strategy();
+        strategy.add_step_middleware(middleware.clone());
+        let mut executor =
+            Executor::with_strategy(registry, apcore::config::Config::default(), strategy);
         executor.set_acl(acl);
 
         let ctx = Context::<Value>::new(Identity::new(
@@ -177,8 +198,15 @@ async fn conformance_preflight_disclosure() {
             .validate(module_id, &spec["inputs"], Some(&ctx))
             .await
             .expect("validate must return a structured result");
+        assert_eq!(middleware.0.load(Ordering::SeqCst), 0);
 
         let names: Vec<&str> = result.checks.iter().map(|c| c.check.as_str()).collect();
+        if let (Some(acl), Some(schema)) = (
+            names.iter().position(|name| *name == "acl"),
+            names.iter().position(|name| *name == "schema"),
+        ) {
+            assert!(acl < schema);
+        }
         let mut record = |msg: String| {
             failures.push(format!(
                 "[{id}] {msg}\n  checks: {:?}\n  hooks: {:?}",

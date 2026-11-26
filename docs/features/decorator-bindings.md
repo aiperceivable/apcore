@@ -64,7 +64,7 @@ Both paths produce `FunctionModule` instances that run through the full executio
     const client = new APCore();
 
     // Supply TypeBox schemas when calling this API directly from JavaScript.
-    client.module({
+    const upper = client.module({
       id: "text.upper",
       description: "Convert text to uppercase",
       tags: ["text"],
@@ -73,6 +73,7 @@ Both paths produce `FunctionModule` instances that run through the full executio
       execute: (inputs) => ({ result: String(inputs.text).toUpperCase() }),
     });
 
+    await upper.registration;
     console.log(await client.call("text.upper", { text: "hi" })); // { result: 'HI' }
     ```
 === "Rust"
@@ -118,6 +119,7 @@ Both paths produce `FunctionModule` instances that run through the full executio
 Two registering shortcuts take arguments only (always call them, even with no arguments): `client.module(...)` registers on that `APCore` client, and the package-level `apcore.module(...)` registers on a default process-wide client (or on `registry=` if given).
 
 - **Input schema** — a Pydantic model built from the parameters' type hints. `self` / `cls`, `*args` and any `Context`-typed parameter (detected by type, not name) are skipped; the `Context` is injected at call time. `**kwargs` makes the model accept extra fields. A parameter with no type hint raises `FUNC_MISSING_TYPE_HINT`.
+- **Input values** — the Executor uses the native values from validation for supplied parameters with an inferred schema. For example, a JSON object becomes its declared Pydantic model and a UUID string becomes a `UUID` instance. Explicit JSON Schema bindings and class-based module inputs keep their JSON-shaped values.
 - **Output schema** — from the return annotation: `dict` gives a permissive model, a `BaseModel` subclass is used as is, `None` gives an empty permissive model, any other type gives a model with a single `result` field. A missing return annotation raises `FUNC_MISSING_RETURN_TYPE`.
 - **Result normalisation** — `None` → `{}`, `dict` unchanged, `BaseModel` → `model_dump()`, anything else → `{"result": value}`.
 - **Description** — the `description` argument, else the first docstring line, else `"Module <name>"`.
@@ -125,6 +127,8 @@ Two registering shortcuts take arguments only (always call them, even with no ar
 - **Async** — an `async def` function produces a module whose `execute` is a coroutine function.
 
 ### TypeScript schema inference
+
+Both `client.module(options)` and the package-level `module(options)` return a `FunctionModule` synchronously. When the factory registers the module, await its `registration` promise to observe completion and asynchronous registration errors. A standalone module's `registration` promise is already resolved.
 
 Use the `apcore-js/compiler` transformer with a TypeScript `Program` to infer schemas before the compiler erases types. Put the callable in the `execute` property of an inline options object passed to the named `module` export. The compiler takes the input schema from the callable's first parameter and the output schema from its awaited return type. An explicit schema in the options takes precedence.
 
@@ -408,12 +412,14 @@ Rust returns these as `ModuleError` with the corresponding `ErrorCode`. A `modul
 
 ### Returns
 - The list of `FunctionModule`s registered (Python, TypeScript). Rust splits loading (`load_from_yaml`) from registration (`register_into_with_*`, which returns the count).
+- A binding's `display` overlay is available under `metadata["display"]` on the registered descriptor.
 
 ### Properties
 - async: false (TypeScript: returns a promise, because targets are loaded with dynamic `import()`)
 - thread_safe: false (mutates the registry)
 - pure: false (reads files, imports code, registers modules)
 - idempotent: false (a second load re-registers and fails with `DUPLICATE_MODULE_ID`)
+- Python and TypeScript prepare all declarations in a file before registering any of them. A registry error during registration can still leave earlier entries registered.
 
 ## Contract: BindingLoader.load_binding_dir
 

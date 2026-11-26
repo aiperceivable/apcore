@@ -15,9 +15,10 @@ from pathlib import Path
 import pytest
 
 from apcore.acl import ACL
+from apcore.client import APCore
 from apcore.config import Config
 from apcore.context import Context
-from apcore.errors import ACLDeniedError
+from apcore.errors import ACLDeniedError, ConfigError
 from apcore.executor import Executor
 
 # An ACL that allows external callers to reach "greet" but denies everything
@@ -55,6 +56,13 @@ class TestACLDiscoverDefault:
 
 class TestACLDiscoverPresent:
     """A present ACL directory yields an enforcing ACL."""
+
+    def test_client_requires_a_regular_policy_file(self, tmp_path: Path) -> None:
+        (tmp_path / "global_acl.yaml").mkdir()
+        config = Config(data={"acl": {"root": str(tmp_path)}})
+
+        with pytest.raises(ConfigError, match="not a regular file"):
+            APCore(config=config)
 
     def test_discover_returns_acl_when_dir_present(self, tmp_path: Path) -> None:
         _write_global_acl(tmp_path / "acl")

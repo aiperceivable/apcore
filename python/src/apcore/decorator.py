@@ -268,6 +268,13 @@ class FunctionModule:
 
             self.execute = _sync_execute
 
+    def _validated_call_inputs(self, inputs: dict[str, Any], validated: BaseModel) -> dict[str, Any]:
+        """Use the native values produced by validation for supplied function fields."""
+        supplied_fields = validated.model_fields_set & type(validated).model_fields.keys()
+        # Preserve extras and the callable's own defaults. Dumping the model
+        # would flatten nested native models back into dictionaries.
+        return {key: getattr(validated, key) if key in supplied_fields else value for key, value in inputs.items()}
+
 
 def _attribute_host(func: Callable) -> Callable:
     """Return the callable that carries ``apcore_module`` and is handed back to the caller.

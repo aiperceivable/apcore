@@ -8,16 +8,24 @@
 //!   4. Schema validation failures in Phase 3 are surfaced as the final
 //!      `Err` item of the output stream.
 
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use apcore::context::Context;
+use apcore::errors::ErrorCode;
 use apcore::module::{Module, ModuleAnnotations};
-use apcore::{APCore, ChunkStream, ModuleError};
+use apcore::{
+    build_strategy_from_config, APCore, ChunkStream, Config, Executor, Middleware, ModuleError,
+    PipelineContext, PipelineState, Registry, Step, StepMiddleware, StepResult, StreamingModule,
+};
 use async_stream::stream;
 use async_trait::async_trait;
 use futures_util::StreamExt;
 use serde_json::{json, Value};
 use tokio::time::{sleep, timeout};
+
+mod conformance_env;
 
 // ---------------------------------------------------------------------------
 // Streaming test modules
@@ -62,10 +70,70 @@ impl Module for SlowStreamingModule {
 
 /// Non-streaming module: only implements `execute()`. Used to check that
 /// `stream()` on such a module yields the "not supported" error.
-struct NonStreamingModule;
+struct NonStreamingModule(Value);
+
+const OVERWRITING_CHUNKS: u64 = 96;
+
+struct OverwritingStream;
+
+#[async_trait]
+impl Module for OverwritingStream {
+    fn input_schema(&self) -> Value {
+        json!({"type": "object"})
+    }
+    fn output_schema(&self) -> Value {
+        json!({"type": "object"})
+    }
+    fn description(&self) -> &'static str {
+        "Stream successive versions of a fixed-size result"
+    }
+    async fn execute(&self, _inputs: Value, _ctx: &Context<Value>) -> Result<Value, ModuleError> {
+        Ok(json!({}))
+    }
+    fn stream(&self, inputs: Value, _ctx: &Context<Value>) -> Option<ChunkStream> {
+        let invalid_tail = inputs["invalid_tail"] == true;
+        Some(Box::pin(stream! {
+            let payload = "x".repeat(384 * 1024);
+            for revision in 0..OVERWRITING_CHUNKS {
+                yield Ok(json!({"payload": payload, "revision": revision}));
+            }
+            if invalid_tail {
+                yield Ok(Value::Null);
+            }
+        }))
+    }
+}
+
+#[tokio::test]
+async fn streaming_overwrites_repeated_values_and_keeps_the_chunk_index() {
+    let client = APCore::new();
+    let module_id = "test.overwriting_stream";
+    client
+        .register(module_id, Box::new(OverwritingStream))
+        .unwrap();
+
+    let (mut chunks, completion) = client.stream_with_completion(module_id, None, None, None);
+    for revision in 0..OVERWRITING_CHUNKS {
+        assert_eq!(chunks.next().await.unwrap().unwrap()["revision"], revision);
+    }
+    assert!(chunks.next().await.is_none());
+    let output = completion.await.output.unwrap();
+    assert_eq!(output["revision"], OVERWRITING_CHUNKS - 1);
+    assert_eq!(output["payload"].as_str().unwrap().len(), 384 * 1024);
+
+    let mut chunks = client.stream(module_id, Some(json!({"invalid_tail": true})), None, None);
+    for _ in 0..OVERWRITING_CHUNKS {
+        assert!(chunks.next().await.unwrap().is_ok());
+    }
+    let error = chunks.next().await.unwrap().unwrap_err();
+    assert_eq!(error.details["code"], "STREAM_CHUNK_NOT_OBJECT");
+    assert_eq!(error.details["chunk_index"], OVERWRITING_CHUNKS);
+    assert!(chunks.next().await.is_none());
+}
 
 struct GatedStreamingModule {
     next_chunk: std::sync::Arc<tokio::sync::Notify>,
+    opens: Arc<AtomicUsize>,
 }
 
 #[async_trait]
@@ -83,6 +151,7 @@ impl Module for GatedStreamingModule {
         Ok(json!({}))
     }
     fn stream(&self, _inputs: Value, _ctx: &Context<Value>) -> Option<ChunkStream> {
+        self.opens.fetch_add(1, Ordering::SeqCst);
         let next_chunk = self.next_chunk.clone();
         Some(Box::pin(stream! {
             yield Ok(json!({"chunk": 1}));
@@ -90,6 +159,227 @@ impl Module for GatedStreamingModule {
             yield Ok(json!({"chunk": 2}));
         }))
     }
+}
+
+struct ReplacementExecute(Arc<AtomicUsize>);
+
+#[async_trait]
+impl Step for ReplacementExecute {
+    fn name(&self) -> &'static str {
+        "execute"
+    }
+
+    fn description(&self) -> &'static str {
+        "Return a replacement result"
+    }
+
+    fn removable(&self) -> bool {
+        false
+    }
+
+    fn replaceable(&self) -> bool {
+        true
+    }
+
+    fn provides(&self) -> &[&str] {
+        &["output"]
+    }
+
+    async fn execute(&self, context: &mut PipelineContext) -> Result<StepResult, ModuleError> {
+        self.0.fetch_add(1, Ordering::SeqCst);
+        context.output = Some(json!({"replacement": true}));
+        Ok(StepResult::continue_step())
+    }
+}
+
+#[tokio::test]
+async fn test_stream_uses_the_configured_execute_step() {
+    let replacements = Arc::new(AtomicUsize::new(0));
+    let opens = Arc::new(AtomicUsize::new(0));
+    let mut strategy = build_strategy_from_config(&json!({})).unwrap();
+    strategy
+        .replace(
+            "execute",
+            Box::new(ReplacementExecute(replacements.clone())),
+        )
+        .unwrap();
+    let executor = Executor::with_strategy(Registry::new(), Config::default(), strategy);
+    let client = APCore::with_options(None, Some(executor), None, None);
+    client
+        .register(
+            "test.strategy_stream",
+            Box::new(GatedStreamingModule {
+                next_chunk: Default::default(),
+                opens: opens.clone(),
+            }),
+        )
+        .unwrap();
+
+    let mut chunks = client.stream("test.strategy_stream", None, None, None);
+    assert_eq!(
+        chunks.next().await.unwrap().unwrap(),
+        json!({"replacement": true})
+    );
+    assert!(chunks.next().await.is_none());
+    let (mut chunks, completion) =
+        client.stream_with_completion("test.strategy_stream", None, None, None);
+    assert_eq!(
+        chunks.next().await.unwrap().unwrap(),
+        json!({"replacement": true})
+    );
+    assert!(chunks.next().await.is_none());
+    assert_eq!(completion.await.output, Some(json!({"replacement": true})));
+    assert_eq!(opens.load(Ordering::SeqCst), 0);
+    assert_eq!(replacements.load(Ordering::SeqCst), 2);
+}
+
+struct TypedOnlyStream(Arc<AtomicUsize>);
+
+#[async_trait]
+impl Module for TypedOnlyStream {
+    fn input_schema(&self) -> Value {
+        json!({"type": "object"})
+    }
+    fn output_schema(&self) -> Value {
+        json!({"type": "object"})
+    }
+    fn description(&self) -> &'static str {
+        "Module with only a typed stream implementation"
+    }
+    fn annotations(&self) -> ModuleAnnotations {
+        ModuleAnnotations {
+            streaming: true,
+            ..ModuleAnnotations::default()
+        }
+    }
+    async fn execute(&self, _inputs: Value, _ctx: &Context<Value>) -> Result<Value, ModuleError> {
+        Ok(json!({"unary": true}))
+    }
+    fn as_streaming(&self) -> Option<&dyn StreamingModule> {
+        Some(self)
+    }
+}
+
+impl StreamingModule for TypedOnlyStream {
+    fn stream_typed(&self, _inputs: Value, _ctx: &Context<Value>) -> ChunkStream {
+        self.0.fetch_add(1, Ordering::SeqCst);
+        Box::pin(futures_util::stream::iter([Ok(json!({"typed": true}))]))
+    }
+}
+
+#[tokio::test]
+async fn test_stream_uses_the_typed_hook_without_a_legacy_override() {
+    let opens = Arc::new(AtomicUsize::new(0));
+    let client = APCore::new();
+    client
+        .register(
+            "test.typed_stream",
+            Box::new(TypedOnlyStream(opens.clone())),
+        )
+        .unwrap();
+    let (mut chunks, completion) =
+        client.stream_with_completion("test.typed_stream", None, None, None);
+    assert_eq!(
+        chunks.next().await.unwrap().unwrap(),
+        json!({"typed": true})
+    );
+    assert!(chunks.next().await.is_none());
+    assert_eq!(completion.await.output, Some(json!({"typed": true})));
+    assert_eq!(opens.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn test_unmatched_execute_step_does_not_open_a_stream() {
+    let opens = Arc::new(AtomicUsize::new(0));
+    let strategy = build_strategy_from_config(&json!({
+        "configure": {"execute": {"match_modules": ["other.*"]}}
+    }))
+    .unwrap();
+    let executor = Executor::with_strategy(Registry::new(), Config::default(), strategy);
+    let client = APCore::with_options(None, Some(executor), None, None);
+    client
+        .register(
+            "test.unmatched_stream",
+            Box::new(TypedOnlyStream(opens.clone())),
+        )
+        .unwrap();
+
+    let (mut chunks, completion) =
+        client.stream_with_completion("test.unmatched_stream", None, None, None);
+    let unary = client
+        .executor()
+        .call("test.unmatched_stream", json!({}), None, None)
+        .await
+        .unwrap();
+    assert_eq!(chunks.next().await.unwrap().unwrap(), unary);
+    assert!(chunks.next().await.is_none());
+    assert_eq!(completion.await.output, None);
+    assert_eq!(opens.load(Ordering::SeqCst), 0);
+}
+
+struct RecordStreamSteps(Arc<Mutex<Vec<&'static str>>>);
+
+#[async_trait]
+impl StepMiddleware for RecordStreamSteps {
+    async fn before_step(&self, name: &str, state: &PipelineState<'_>) -> Result<(), ModuleError> {
+        match name {
+            "execute" => {
+                assert!(state.outputs.contains_key("input_validation"));
+                self.0.lock().unwrap().push("before execute");
+            }
+            "output_validation" => {
+                assert!(state.outputs.contains_key("execute"));
+                self.0.lock().unwrap().push("before output validation");
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    async fn after_step(
+        &self,
+        name: &str,
+        _state: &PipelineState<'_>,
+        _result: &Value,
+    ) -> Result<(), ModuleError> {
+        if name == "execute" {
+            self.0.lock().unwrap().push("after execute");
+        }
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn test_stream_runs_execute_hooks_once_and_preserves_prior_step_outputs() {
+    let steps = Arc::new(Mutex::new(Vec::new()));
+    let opens = Arc::new(AtomicUsize::new(0));
+    let mut strategy = build_strategy_from_config(&json!({})).unwrap();
+    strategy.add_step_middleware(Arc::new(RecordStreamSteps(steps.clone())));
+    let executor = Executor::with_strategy(Registry::new(), Config::default(), strategy);
+    let client = APCore::with_options(None, Some(executor), None, None);
+    client
+        .register(
+            "test.hooked_stream",
+            Box::new(TypedOnlyStream(opens.clone())),
+        )
+        .unwrap();
+
+    let mut chunks = client.stream("test.hooked_stream", None, None, None);
+    assert_eq!(
+        chunks.next().await.unwrap().unwrap(),
+        json!({"typed": true})
+    );
+    assert_eq!(*steps.lock().unwrap(), ["before execute", "after execute"]);
+    assert!(chunks.next().await.is_none());
+    assert_eq!(
+        *steps.lock().unwrap(),
+        [
+            "before execute",
+            "after execute",
+            "before output validation"
+        ]
+    );
+    assert_eq!(opens.load(Ordering::SeqCst), 1);
 }
 
 #[tokio::test]
@@ -100,6 +390,7 @@ async fn test_stream_deadline_while_awaiting_next_chunk() {
             "gated.stream",
             Box::new(GatedStreamingModule {
                 next_chunk: Default::default(),
+                opens: Default::default(),
             }),
         )
         .unwrap();
@@ -125,6 +416,33 @@ async fn test_stream_deadline_while_awaiting_next_chunk() {
 }
 
 #[tokio::test]
+async fn test_expired_deadline_leaves_stream_producer_unopened() {
+    let client = APCore::new();
+    let opens = Arc::new(AtomicUsize::new(0));
+    client
+        .register(
+            "test.expired_stream",
+            Box::new(GatedStreamingModule {
+                next_chunk: Default::default(),
+                opens: opens.clone(),
+            }),
+        )
+        .unwrap();
+    let mut context = Context::anonymous();
+    context.global_deadline = Some(0.0);
+    let mut chunks =
+        client
+            .executor()
+            .stream("test.expired_stream", json!({}), Some(&context), None);
+    assert_eq!(
+        chunks.next().await.unwrap().unwrap_err().code,
+        ErrorCode::ModuleTimeout
+    );
+    assert!(chunks.next().await.is_none());
+    assert_eq!(opens.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
 async fn test_stream_wait_observes_cancellation_from_its_parent() {
     let apcore = APCore::new();
     apcore
@@ -132,6 +450,7 @@ async fn test_stream_wait_observes_cancellation_from_its_parent() {
             "gated.stream",
             Box::new(GatedStreamingModule {
                 next_chunk: Default::default(),
+                opens: Default::default(),
             }),
         )
         .unwrap();
@@ -167,7 +486,27 @@ impl Module for NonStreamingModule {
         "non-streaming module"
     }
     async fn execute(&self, _inputs: Value, _ctx: &Context<Value>) -> Result<Value, ModuleError> {
-        Ok(json!({"ok": true}))
+        Ok(self.0.clone())
+    }
+}
+
+#[tokio::test]
+async fn test_null_output_fails_unary_call_and_stream_fallback() {
+    let client = APCore::new();
+    let module_id = "test.null_output";
+    client
+        .register(module_id, Box::new(NonStreamingModule(Value::Null)))
+        .unwrap();
+    let executor = client.executor();
+    let unary = executor
+        .call(module_id, json!({}), None, None)
+        .await
+        .unwrap_err();
+    let mut chunks = executor.stream(module_id, json!({}), None, None);
+    let streaming = chunks.next().await.unwrap().unwrap_err();
+    assert!(chunks.next().await.is_none());
+    for error in [unary, streaming] {
+        assert_eq!(error.code, ErrorCode::ModuleExecuteError);
     }
 }
 
@@ -265,7 +604,10 @@ async fn all_chunks_arrive_in_order() {
 async fn streaming_falls_back_to_execute_when_module_does_not_support_streaming() {
     let apcore = APCore::new();
     apcore
-        .register("plain.mod", Box::new(NonStreamingModule))
+        .register(
+            "plain.mod",
+            Box::new(NonStreamingModule(json!({"ok": true}))),
+        )
         .unwrap();
 
     let mut s = apcore.executor().stream("plain.mod", json!({}), None, None);
@@ -427,6 +769,131 @@ async fn phase3_validation_failure_emits_post_validation_event() {
         "event payload must carry an error_type field: {:?}",
         events[0]
     );
+}
+
+struct FixtureStream(Vec<Value>);
+
+#[async_trait]
+impl Module for FixtureStream {
+    fn input_schema(&self) -> Value {
+        json!({"type": "object"})
+    }
+    fn output_schema(&self) -> Value {
+        json!({"type": "object"})
+    }
+    fn description(&self) -> &'static str {
+        "stream post-processing test module"
+    }
+    async fn execute(&self, _inputs: Value, _ctx: &Context<Value>) -> Result<Value, ModuleError> {
+        Ok(json!({}))
+    }
+    fn stream(&self, _inputs: Value, _ctx: &Context<Value>) -> Option<ChunkStream> {
+        Some(Box::pin(futures_util::stream::iter(
+            self.0.clone().into_iter().map(Ok),
+        )))
+    }
+}
+
+#[derive(Debug)]
+struct FailAfter {
+    code: ErrorCode,
+    on_error_calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+
+#[async_trait]
+impl Middleware for FailAfter {
+    fn name(&self) -> &'static str {
+        "FailAfter"
+    }
+    async fn before(
+        &self,
+        _module_id: &str,
+        _inputs: Value,
+        _ctx: &Context<Value>,
+    ) -> Result<Option<Value>, ModuleError> {
+        Ok(None)
+    }
+    async fn after(
+        &self,
+        _module_id: &str,
+        _inputs: Value,
+        _output: Value,
+        _ctx: &Context<Value>,
+    ) -> Result<Option<Value>, ModuleError> {
+        Err(ModuleError::new(self.code.clone(), "after failed"))
+    }
+    async fn on_error(
+        &self,
+        _module_id: &str,
+        _inputs: Value,
+        _error: &ModuleError,
+        _ctx: &Context<Value>,
+    ) -> Result<Option<Value>, ModuleError> {
+        self.on_error_calls
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Ok(None)
+    }
+}
+
+#[tokio::test]
+async fn test_stream_post_processing_failure_contract() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    let path = conformance_env::find_fixtures_root().join("stream_post_processing.json");
+    let fixture: Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+    for case in fixture["test_cases"].as_array().unwrap() {
+        let input = &case["input"];
+        let expected = &case["expected"];
+        let mut config = Config::default();
+        config.set("sys_modules.enabled", json!(true));
+        config.set("sys_modules.events.enabled", json!(true));
+        let mut client = APCore::with_options(None, None, Some(config), None);
+        client
+            .register(
+                "test.stream",
+                Box::new(FixtureStream(input["chunks"].as_array().unwrap().clone())),
+            )
+            .unwrap();
+        let on_error_calls = Arc::new(AtomicUsize::new(0));
+        client
+            .use_middleware(Box::new(FailAfter {
+                code: match input["after_error_code"].as_str().unwrap() {
+                    "EXECUTION_CANCELLED" => ErrorCode::ExecutionCancelled,
+                    "MODULE_EXECUTE_ERROR" => ErrorCode::ModuleExecuteError,
+                    code => panic!("unexpected fixture error code: {code}"),
+                },
+                on_error_calls: Arc::clone(&on_error_calls),
+            }))
+            .unwrap();
+        let event_count = Arc::new(AtomicUsize::new(0));
+        let captured = Arc::clone(&event_count);
+        client
+            .on("apcore.stream.post_validation_failed", move |_| {
+                captured.fetch_add(1, Ordering::Relaxed);
+            })
+            .unwrap();
+        let mut stream = client.stream("test.stream", json!({}), None, None);
+        let mut chunks = Vec::new();
+        let mut error_code = Value::Null;
+        while let Some(item) = stream.next().await {
+            match item {
+                Ok(chunk) => chunks.push(chunk),
+                Err(error) => error_code = json!(error.code.wire_str()),
+            }
+        }
+        client.events().unwrap().flush_default().await.unwrap();
+        assert_eq!(json!(chunks), expected["chunks"], "{}", case["id"]);
+        assert_eq!(error_code, expected["error_code"], "{}", case["id"]);
+        assert_eq!(
+            json!(on_error_calls.load(Ordering::Relaxed)),
+            expected["on_error_calls"]
+        );
+        assert_eq!(
+            json!(event_count.load(Ordering::Relaxed)),
+            expected["post_failure_events"]
+        );
+    }
 }
 
 /// A-D-002: the streaming path must honor the two-point cancellation invariant.

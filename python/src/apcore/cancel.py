@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import threading
+from collections.abc import Callable
+
 from apcore.errors import ModuleError
 
 
@@ -23,6 +26,8 @@ class CancelToken:
     def __init__(self, parent: CancelToken | None = None) -> None:
         self._cancelled: bool = False
         self._parent = parent
+        self._lock = threading.Lock()
+        self._listeners: set[Callable[[], None]] = set()
 
     @property
     def is_cancelled(self) -> bool:
@@ -35,7 +40,30 @@ class CancelToken:
 
     def cancel(self) -> None:
         """Request cancellation."""
-        self._cancelled = True
+        with self._lock:
+            if self._cancelled:
+                return
+            self._cancelled = True
+            listeners = tuple(self._listeners)
+        for listener in listeners:
+            listener()
+
+    def _listen(self, listener: Callable[[], None]) -> Callable[[], None]:
+        """Watch this token and its parents until the returned unsubscribe is called."""
+        with self._lock:
+            self._listeners.add(listener)
+            cancelled = self._cancelled
+        unsubscribe_parent = self._parent._listen(listener) if self._parent is not None else None
+        if cancelled:
+            listener()
+
+        def unsubscribe() -> None:
+            with self._lock:
+                self._listeners.discard(listener)
+            if unsubscribe_parent is not None:
+                unsubscribe_parent()
+
+        return unsubscribe
 
     def check(self) -> None:
         """Raise ExecutionCancelledError if cancelled.
@@ -57,4 +85,5 @@ class CancelToken:
 
     def reset(self) -> None:
         """Reset the token for reuse."""
-        self._cancelled = False
+        with self._lock:
+            self._cancelled = False

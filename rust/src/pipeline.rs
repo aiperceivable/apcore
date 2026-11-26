@@ -258,6 +258,15 @@ impl StepResult {
 // PipelineContext
 // ---------------------------------------------------------------------------
 
+#[derive(Default)]
+pub(crate) struct StreamPipelineState {
+    // Step hooks borrow the context across awaits. Keep it Sync while the
+    // producer itself only needs to be Send.
+    pub(crate) producer: Option<parking_lot::Mutex<crate::module::ChunkStream>>,
+    // Keep the step history visible to hooks when a stream invocation pauses.
+    step_outputs: HashMap<String, Option<serde_json::Value>>,
+}
+
 /// Shared mutable state flowing through all pipeline steps.
 ///
 /// Fields follow a two-tier model:
@@ -267,8 +276,11 @@ impl StepResult {
 pub struct PipelineContext {
     /// Module being invoked.
     pub module_id: String,
-    /// Original inputs (may be mutated by `middleware_before`).
+    /// Business inputs (may be mutated by `middleware_before`).
     pub inputs: serde_json::Value,
+    // A resume credential belongs to this invocation, not to business inputs
+    // or shared Context data. Only the built-in approval gate consumes it.
+    approval_credential: Option<serde_json::Value>,
     /// `APCore` execution context.
     pub context: Context<serde_json::Value>,
 
@@ -295,10 +307,12 @@ pub struct PipelineContext {
     /// `false` when no ACL is configured or the `acl_check` step was removed
     /// from the strategy — absence of the gate is not a requirement.
     pub acl_approval_required: bool,
+    pub(crate) acl_decision: Option<crate::acl::AccessDecision>,
     /// Set by `input_validation` step.
     pub validated_inputs: Option<serde_json::Value>,
     /// Set by `execute` step (non-streaming).
     pub output: Option<serde_json::Value>,
+    pub(crate) stream: Option<StreamPipelineState>,
     /// Set by `output_validation` step.
     pub validated_output: Option<serde_json::Value>,
 
@@ -362,23 +376,29 @@ impl PipelineContext {
     /// Create a new `PipelineContext` for a module invocation.
     pub fn new(
         module_id: impl Into<String>,
-        inputs: serde_json::Value,
+        mut inputs: serde_json::Value,
         context: Context<serde_json::Value>,
         strategy_name: impl Into<String>,
     ) -> Self {
         let module_id = module_id.into();
         let strategy_name = strategy_name.into();
+        let approval_credential = inputs
+            .as_object_mut()
+            .and_then(|object| object.remove(crate::policy::APPROVAL_TOKEN_KEY));
         Self {
             trace: PipelineTrace::new(module_id.clone(), strategy_name.clone()),
             module_id,
             inputs,
+            approval_credential,
             context,
             module: None,
             module_lease: None,
             governance_projection: None,
             acl_approval_required: false,
+            acl_decision: None,
             validated_inputs: None,
             output: None,
+            stream: None,
             validated_output: None,
             dry_run: false,
             preflight_errors: vec![],
@@ -397,6 +417,43 @@ impl PipelineContext {
             middleware_manager: None,
             strategy_name,
         }
+    }
+
+    pub(crate) fn validate_approval_credential(&self) -> Result<(), ModuleError> {
+        if self
+            .approval_credential
+            .as_ref()
+            .is_some_and(|value| !value.is_string())
+        {
+            return Err(ModuleError::new(
+                ErrorCode::GeneralInvalidInput,
+                "_approval_token must be a string",
+            ));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn take_approval_credential(&mut self) -> Result<Option<String>, ModuleError> {
+        self.validate_approval_credential()?;
+        Ok(match self.approval_credential.take() {
+            Some(serde_json::Value::String(token)) => Some(token),
+            _ => None,
+        })
+    }
+
+    pub(crate) fn discard_approval_credential(&mut self) -> bool {
+        self.approval_credential.take().is_some()
+    }
+
+    pub(crate) fn declared_module_annotations(&self) -> Option<crate::module::ModuleAnnotations> {
+        if let Some(lease) = &self.module_lease {
+            return lease.declared_annotations.clone();
+        }
+        // A standalone step can be given a registry without a pipeline lease.
+        self.registry
+            .as_ref()
+            .and_then(|registry| registry.get_definition(&self.module_id).ok().flatten())
+            .and_then(|descriptor| descriptor.annotations)
     }
 }
 
@@ -794,23 +851,29 @@ impl ExecutionStrategy {
 
     /// Insert a step immediately after the named anchor.
     pub fn insert_after(&mut self, anchor: &str, step: Box<dyn Step>) -> Result<(), ModuleError> {
-        reject_weakened_gate(step.as_ref())?;
-        self.validate_no_duplicate(step.name())?;
-        let idx = self.find_step_index(anchor)?;
-        self.steps.insert(idx + 1, step);
-        self.rebuild_index();
-        self.validate_dependencies()?;
-        Ok(())
+        self.insert_step(anchor, step, 1)
     }
 
     /// Insert a step immediately before the named anchor.
     pub fn insert_before(&mut self, anchor: &str, step: Box<dyn Step>) -> Result<(), ModuleError> {
+        self.insert_step(anchor, step, 0)
+    }
+
+    fn insert_step(
+        &mut self,
+        anchor: &str,
+        step: Box<dyn Step>,
+        offset: usize,
+    ) -> Result<(), ModuleError> {
         reject_weakened_gate(step.as_ref())?;
         self.validate_no_duplicate(step.name())?;
-        let idx = self.find_step_index(anchor)?;
+        let idx = self.find_step_index(anchor)? + offset;
         self.steps.insert(idx, step);
+        if let Err(error) = self.validate_dependencies() {
+            self.steps.remove(idx);
+            return Err(error);
+        }
         self.rebuild_index();
-        self.validate_dependencies()?;
         Ok(())
     }
 
@@ -1011,6 +1074,8 @@ impl ExecutionStrategy {
 /// the final output and a complete execution trace.
 pub struct PipelineEngine;
 
+type StepInputObserver<'a> = dyn FnMut(&str, &PipelineContext) + Send + 'a;
+
 /// Optional knobs for [`PipelineEngine::run_with_options`]. All fields are
 /// independent — set only what you need.
 #[derive(Default)]
@@ -1023,12 +1088,8 @@ pub struct RunOptions {
     /// running and without a trace record. `None` runs every step.
     ///
     /// The streaming path uses this to run a SEGMENT of an already-started
-    /// strategy — the tail after `execute` on the non-streaming fallback
-    /// (STR-1), and the post-stream steps in Phase 3 (STR-2) — against the same
-    /// `PipelineContext` the pre-execute steps ran against. It is the Rust
-    /// equivalent of apcore-python's `post_strategy` slice, which is built with
-    /// `validate_dependencies=False` for the same reason: the segment's
-    /// `requires` keys were seeded by the earlier steps, not by this run.
+    /// strategy. The segment starts at `execute` or processes the completed
+    /// stream. It uses the same `PipelineContext` as the preceding steps.
     pub only_steps: Option<Vec<String>>,
     /// Predicate evaluated **after** every successful step completes. Returning
     /// `true` halts the pipeline; the current step's output is preserved.
@@ -1110,6 +1171,22 @@ async fn observe_step_error_hooks(
     ctx: &PipelineContext,
     error: &ModuleError,
 ) {
+    let safe_error = if matches!(
+        error.code,
+        ErrorCode::ApprovalDenied | ErrorCode::ApprovalPending | ErrorCode::ApprovalTimeout
+    ) && (error.details.contains_key("result")
+        || error.details.contains_key("approval_id"))
+    {
+        // The decision payload and legacy pending credential are for the
+        // caller. Step-error hooks observe the failure for cleanup and audit.
+        let mut safe_error = error.clone();
+        safe_error.details.remove("result");
+        safe_error.details.remove("approval_id");
+        Some(safe_error)
+    } else {
+        None
+    };
+    let error = safe_error.as_ref().unwrap_or(error);
     let state = PipelineState {
         step_name,
         outputs: step_outputs,
@@ -1191,18 +1268,33 @@ impl PipelineEngine {
     }
 
     /// Run with full control over termination. See [`RunOptions`].
-    #[allow(clippy::too_many_lines)] // pipeline control loop is inherently stateful; splitting would reduce clarity
     pub async fn run_with_options(
         strategy: &ExecutionStrategy,
         ctx: &mut PipelineContext,
         options: RunOptions,
+    ) -> Result<(Option<serde_json::Value>, PipelineTrace), ModuleError> {
+        Self::run_with_step_input(strategy, ctx, options, None).await
+    }
+
+    // Expose exact step input to the streaming executor without widening the
+    // stable public RunOptions or PipelineContext structures.
+    #[allow(clippy::too_many_lines)] // pipeline control loop is inherently stateful
+    pub(crate) async fn run_with_step_input(
+        strategy: &ExecutionStrategy,
+        ctx: &mut PipelineContext,
+        options: RunOptions,
+        mut on_step_input: Option<&mut StepInputObserver<'_>>,
     ) -> Result<(Option<serde_json::Value>, PipelineTrace), ModuleError> {
         let pipeline_start = std::time::Instant::now();
         let steps = strategy.steps();
         let mut idx: usize = 0;
         // Snapshot of ctx.output keyed by step name, accumulated across the
         // run. Passed to run_until predicates as PipelineState::outputs.
-        let mut step_outputs: HashMap<String, Option<serde_json::Value>> = HashMap::new();
+        let mut step_outputs = ctx
+            .stream
+            .as_mut()
+            .map(|stream| std::mem::take(&mut stream.step_outputs))
+            .unwrap_or_default();
         let mut failed_capabilities: HashSet<String> = HashSet::new();
 
         while idx < steps.len() {
@@ -1292,7 +1384,11 @@ impl PipelineEngine {
             //      observes — a Step is `execute(ctx)`, so there is no inputs
             //      parameter it could rewrite and its return value is unused.
             let step_name_for_hooks = step.name().to_string();
-            let middlewares = strategy.step_middlewares();
+            let middlewares = if ctx.dry_run {
+                &[][..]
+            } else {
+                strategy.step_middlewares()
+            };
             let mut before_err: Option<ModuleError> = None;
             // Count of middlewares whose `before_step` actually ran, including
             // the one that failed. Middlewares past this point never entered
@@ -1351,6 +1447,10 @@ impl PipelineEngine {
                 });
                 ctx.trace.total_duration_ms = pipeline_start.elapsed().as_secs_f64() * 1000.0;
                 return Err(chain_err);
+            }
+
+            if let Some(observer) = &mut on_step_input {
+                observer(step.name(), ctx);
             }
 
             // (3) Execute with per-step timeout
@@ -1538,6 +1638,9 @@ impl PipelineEngine {
                             context: ctx,
                         };
                         if predicate(&state) {
+                            if let Some(stream) = &mut ctx.stream {
+                                stream.step_outputs = step_outputs;
+                            }
                             ctx.trace.total_duration_ms =
                                 pipeline_start.elapsed().as_secs_f64() * 1000.0;
                             ctx.trace.success = true;
@@ -1598,6 +1701,9 @@ impl PipelineEngine {
             }
         }
 
+        if let Some(stream) = &mut ctx.stream {
+            stream.step_outputs = step_outputs;
+        }
         ctx.trace.total_duration_ms = pipeline_start.elapsed().as_secs_f64() * 1000.0;
         ctx.trace.success = true;
         Ok((ctx.output.clone(), ctx.trace.clone()))

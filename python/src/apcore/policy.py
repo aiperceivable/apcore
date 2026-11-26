@@ -104,8 +104,8 @@ def strip_approval_token(arguments: dict[str, Any] | None) -> dict[str, Any] | N
     ``apcore.policy.override`` payload.
 
     The caller's mapping is never mutated: the token is the one difference
-    between a call and its ``_approval_token`` resume, and the pipeline's own
-    copy is stripped separately by the gate.
+    between a call and its ``_approval_token`` resume. The pipeline separates
+    the credential from module inputs at entry.
     """
     if arguments is None or _APPROVAL_TOKEN_KEY not in arguments:
         return arguments

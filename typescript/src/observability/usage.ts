@@ -4,6 +4,7 @@
 
 import { Middleware } from '../middleware/base.js';
 import type { Context } from '../context.js';
+import { startMiddlewareTiming, takeMiddlewareTiming } from '../execution-lifetime.js';
 import { randomHex } from '../utils/index.js';
 import {
   InMemoryStorageBackend,
@@ -16,6 +17,10 @@ export interface UsageRecord {
   readonly callerId: string;
   readonly latencyMs: number;
   readonly success: boolean;
+}
+
+interface StoredUsageRecord extends UsageRecord {
+  readonly storageKey: string;
 }
 
 export interface CallerUsageSummary {
@@ -85,10 +90,11 @@ export class UsageCollector {
   readonly retentionHours: number;
   private readonly _maxRecordsPerBucket: number;
   private readonly _storage: StorageBackend;
+  private readonly _ownsStorage: boolean;
   private readonly _storageWriterId = randomHex(16);
   private _storageSequence = 0;
   // moduleId -> bucketKey -> UsageRecord[]
-  private readonly _data: Map<string, Map<string, UsageRecord[]>> = new Map();
+  private readonly _data: Map<string, Map<string, StoredUsageRecord[]>> = new Map();
 
   /**
    * Construct a `UsageCollector`.
@@ -105,10 +111,12 @@ export class UsageCollector {
       const options = optionsOrRetentionHours;
       this.retentionHours = options.retentionHours ?? 168;
       this._maxRecordsPerBucket = options.maxRecordsPerBucket ?? 10000;
+      this._ownsStorage = options.storage == null;
       this._storage = options.storage ?? new InMemoryStorageBackend();
     } else {
       this.retentionHours = optionsOrRetentionHours ?? 168;
       this._maxRecordsPerBucket = maxRecordsPerBucket;
+      this._ownsStorage = true;
       this._storage = new InMemoryStorageBackend();
     }
   }
@@ -128,7 +136,8 @@ export class UsageCollector {
     const now = timestamp ? new Date(timestamp) : new Date();
     const ts = timestamp ?? now.toISOString();
     const bk = bucketKey(now);
-    const rec: UsageRecord = { timestamp: ts, callerId, latencyMs, success };
+    const key = `${moduleId}:${ts}:${this._storageWriterId}:${++this._storageSequence}`;
+    const rec: StoredUsageRecord = { timestamp: ts, callerId, latencyMs, success, storageKey: key };
 
     let mod = this._data.get(moduleId);
     if (!mod) {
@@ -140,14 +149,15 @@ export class UsageCollector {
       bucket = [];
       mod.set(bk, bucket);
     }
-    if (bucket.length < this._maxRecordsPerBucket) {
+    const admitted = bucket.length < this._maxRecordsPerBucket;
+    if (admitted) {
       bucket.push(rec);
     } else {
       console.warn(`[apcore:usage] Record buffer full for module '${moduleId}' bucket '${bk}' (max ${this._maxRecordsPerBucket}) — record dropped`);
     }
     this._cleanupExpired(moduleId);
+    if (this._ownsStorage && (!admitted || !mod.has(bk))) return;
 
-    const key = `${moduleId}:${ts}:${this._storageWriterId}:${++this._storageSequence}`;
     try {
       void Promise.resolve(this._storage.save(STORAGE_NAMESPACE_USAGE, key, {
         module_id: moduleId,
@@ -292,15 +302,16 @@ export class UsageCollector {
     const cutoffKey = bucketKey(cutoff);
     const mod = this._data.get(moduleId);
     if (!mod) return;
-    for (const bk of [...mod.keys()]) {
+    for (const [bk, records] of mod) {
       if (bk < cutoffKey) {
         mod.delete(bk);
+        if (this._ownsStorage) {
+          for (const record of records) this._storage.delete(STORAGE_NAMESPACE_USAGE, record.storageKey);
+        }
       }
     }
   }
 }
-
-const CTX_USAGE_STARTS = '_apcore.mw.usage.starts';
 
 /**
  * Middleware that records module call usage via UsageCollector.
@@ -318,9 +329,7 @@ export class UsageMiddleware extends Middleware {
     _inputs: Record<string, unknown>,
     context: Context,
   ): Record<string, unknown> | null {
-    const starts = (context.data[CTX_USAGE_STARTS] as number[] | undefined) ?? [];
-    starts.push(Date.now());
-    context.data[CTX_USAGE_STARTS] = starts;
+    startMiddlewareTiming(context, this, performance.now());
     return null;
   }
 
@@ -349,9 +358,7 @@ export class UsageMiddleware extends Middleware {
   }
 
   private _popElapsedMs(context: Context): number {
-    const starts = context.data[CTX_USAGE_STARTS] as number[] | undefined;
-    if (!starts || starts.length === 0) return 0;
-    const startTime = starts.pop()!;
-    return Date.now() - startTime;
+    const startTime = takeMiddlewareTiming(context, this);
+    return startTime === undefined ? 0 : performance.now() - startTime;
   }
 }

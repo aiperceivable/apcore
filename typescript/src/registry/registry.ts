@@ -7,9 +7,11 @@ import { getDefault } from '../config-defaults.js';
 import type { Context } from '../context.js';
 import type { ApCoreEvent, EventEmitter } from '../events/emitter.js';
 import {
+  DependencyVersionMismatchError,
   DuplicateModuleIdError,
   ErrorCodes,
   InvalidInputError,
+  type ModuleError,
   ModuleLoadError,
   ModuleNotFoundError,
   StreamingInterfaceError,
@@ -19,25 +21,40 @@ import type { ModuleAnnotations, ModuleExample } from '../module.js';
 import { detectIdConflicts } from './conflicts.js';
 import { resolveDependencies } from './dependencies.js';
 import { resolveEntryPoint } from './entry-point.js';
-import { mergeModuleMetadata, parseDependencies } from './metadata-pure.js';
+import { mergeModuleMetadata, parseDependencies, snapshotRegistryData } from './metadata-pure.js';
 import { governanceUnion } from '../schema/annotations.js';
 import { _discoverMultiClass } from './multi-class.js';
 import { getSchema } from './schema-export.js';
 import { toStrictSchema } from '../schema/strict.js';
-import { deepCopy } from '../utils/index.js';
-import type { DependencyInfo, ModuleDescriptor } from './types.js';
+import type { DependencyInfo, DiscoveredModule, ModuleDescriptor } from './types.js';
 import { validateModule } from './validation.js';
+import { matchesVersionHint } from './version.js';
+
+/** @internal Registration state used to compensate for a failed reload. */
+export interface RegistrationSnapshot {
+  readonly moduleId: string;
+  readonly module: unknown;
+  readonly metadata: Record<string, unknown>;
+  readonly sourceFile: string | undefined;
+}
 
 type RegistryFilesystem = {
   fs: Pick<typeof import('node:fs'), 'accessSync' | 'realpathSync'> & {
     watch(path: string, options: { recursive: boolean }, listener: (event: string, filename: string | null) => void): import('node:fs').FSWatcher;
   };
   path: typeof import('node:path');
+  entryPointSpecifier(filePath: string, reload: boolean): string;
   loadIdMap: typeof import('./metadata.js').loadIdMap;
   loadMetadata: typeof import('./metadata.js').loadMetadata;
   scanExtensions: typeof import('./scanner.js').scanExtensions;
   scanMultiRoot: typeof import('./scanner.js').scanMultiRoot;
 };
+
+interface DiscoveredRegistration {
+  readonly sourceFile: string;
+  readonly module: unknown;
+  readonly metadata: Record<string, unknown>;
+}
 
 let registryFilesystem: RegistryFilesystem | null = null;
 
@@ -356,6 +373,7 @@ export class Registry {
   private _refCounts: Map<string, number> = new Map();
   private readonly _sourceFiles = new Map<string, string>();
   private readonly _executionGenerations = new Map<string, object>();
+  private readonly _safeUnregisters = new WeakMap<object, Promise<boolean>>();
   private _draining: Set<string> = new Set();
   private _drainResolvers: Map<string, Array<() => void>> = new Map();
 
@@ -442,11 +460,11 @@ export class Registry {
     this._customValidator = validator;
   }
 
-  async discover(): Promise<number> {
+  async discover(options?: { reloadFiles?: readonly string[] }): Promise<number> {
     if (this._customDiscoverer !== null) {
       return this._discoverCustom();
     }
-    return this._discoverDefault();
+    return this._discoverDefault(new Set(options?.reloadFiles));
   }
 
   private async _discoverCustom(): Promise<number> {
@@ -541,20 +559,18 @@ export class Registry {
    *   8. _resolveLoadOrder + _registerInOrder
    *                              — topological sort then register.
    */
-  private async _discoverDefault(): Promise<number> {
+  private async _discoverDefault(reloadFiles: ReadonlySet<string>): Promise<number> {
     await this._ensureIdMap();
     const discovered = await this._scanRoots();
     await this._applyIdMapOverrides(discovered);
     this._rejectEphemeralDiscoveries(discovered);
 
     const rawMetadata = await this._loadAllMetadata(discovered);
-    const resolvedModules = await this._resolveAllEntryPoints(discovered, rawMetadata);
+    const resolvedModules = await this._resolveAllEntryPoints(discovered, rawMetadata, reloadFiles);
     const validModules = await this._validateAll(resolvedModules);
-    const filteredModules = this._filterIdConflicts(validModules, rawMetadata);
-    const loadOrder = this._resolveLoadOrder(filteredModules, rawMetadata);
-
-    const sourceFiles = new Map(discovered.map((module) => [module.canonicalId, module.filePath]));
-    return this._registerInOrder(loadOrder, filteredModules, rawMetadata, sourceFiles);
+    const filteredModules = this._filterIdConflicts(validModules);
+    const loadOrder = this._resolveLoadOrder(filteredModules);
+    return this._registerInOrder(loadOrder, filteredModules);
   }
 
   private async _scanRoots(): Promise<import('./types.js').DiscoveredModule[]> {
@@ -659,25 +675,27 @@ export class Registry {
   }
 
   private async _loadAllMetadata(
-    discovered: import('./types.js').DiscoveredModule[],
-  ): Promise<Map<string, Record<string, unknown>>> {
-    const rawMetadata = new Map<string, Record<string, unknown>>();
+    discovered: DiscoveredModule[],
+  ): Promise<Map<DiscoveredModule, Record<string, unknown>>> {
+    const rawMetadata = new Map<DiscoveredModule, Record<string, unknown>>();
     for (const dm of discovered) {
-      rawMetadata.set(dm.canonicalId, dm.metaPath ? requireRegistryFilesystem().loadMetadata(dm.metaPath) : {});
+      rawMetadata.set(dm, dm.metaPath ? requireRegistryFilesystem().loadMetadata(dm.metaPath) : {});
     }
     return rawMetadata;
   }
 
   private async _resolveAllEntryPoints(
-    discovered: import('./types.js').DiscoveredModule[],
-    rawMetadata: Map<string, Record<string, unknown>>,
-  ): Promise<Map<string, unknown>> {
-    const resolvedModules = new Map<string, unknown>();
+    discovered: DiscoveredModule[],
+    rawMetadata: Map<DiscoveredModule, Record<string, unknown>>,
+    reloadFiles: ReadonlySet<string>,
+  ): Promise<Array<[string, DiscoveredRegistration]>> {
+    const resolvedModules: Array<[string, DiscoveredRegistration]> = [];
     for (const dm of discovered) {
-      const meta = rawMetadata.get(dm.canonicalId) ?? {};
+      const metadata = rawMetadata.get(dm) ?? {};
       try {
-        const mod = await resolveEntryPoint(dm.filePath, meta);
-        resolvedModules.set(dm.canonicalId, mod);
+        const specifier = requireRegistryFilesystem().entryPointSpecifier(dm.filePath, reloadFiles.has(dm.filePath));
+        const module = await resolveEntryPoint(dm.filePath, metadata, specifier);
+        resolvedModules.push([dm.canonicalId, { module, metadata, sourceFile: dm.filePath }]);
       } catch (e) {
         console.warn(`[apcore:registry] Failed to resolve entry point for ${dm.canonicalId}:`, e);
       }
@@ -685,16 +703,19 @@ export class Registry {
     return resolvedModules;
   }
 
-  private async _validateAll(resolvedModules: Map<string, unknown>): Promise<Map<string, unknown>> {
-    const validModules = new Map<string, unknown>();
-    for (const [modId, mod] of resolvedModules) {
+  private async _validateAll(
+    resolvedModules: Array<[string, DiscoveredRegistration]>,
+  ): Promise<Array<[string, DiscoveredRegistration]>> {
+    const validModules: Array<[string, DiscoveredRegistration]> = [];
+    for (const entry of resolvedModules) {
+      const { module } = entry[1];
       if (this._customValidator !== null) {
-        const errors = await this._customValidator.validate(mod);
+        const errors = await this._customValidator.validate(module);
         if (errors.length === 0) {
-          validModules.set(modId, mod);
+          validModules.push(entry);
         }
-      } else if (validateModule(mod).length === 0) {
-        validModules.set(modId, mod);
+      } else if (validateModule(module, { allowStaticSchemas: false }).length === 0) {
+        validModules.push(entry);
       }
     }
     return validModules;
@@ -717,21 +738,17 @@ export class Registry {
    * existing behaviour is preserved. Only `error`-severity conflicts and
    * invalid IDs are filtered out.
    *
-   * `rawMetadata` is accepted for cross-language signature parity with
-   * the Rust/Python helpers (which may inspect metadata for additional
-   * checks); the TS implementation reads only the module ID.
+   * Keep candidates distinct until this stage so repeated IDs cannot erase
+   * an earlier module or its metadata before conflict detection.
    */
-  private _filterIdConflicts(
-    validModules: Map<string, unknown>,
-    _rawMetadata: Map<string, Record<string, unknown>>,
-  ): Map<string, unknown> {
-    const filtered = new Map<string, unknown>();
+  private _filterIdConflicts<T>(validModules: Iterable<[string, T]>): Map<string, T> {
+    const filtered = new Map<string, T>();
     // Track within-batch IDs (case-insensitive) so two newly-discovered
     // modules whose IDs collide on lowercase don't both slip through.
     const batchLowercase = new Map<string, string>(this._lowercaseMap);
     const batchIds = new Set<string>(this._modules.keys());
 
-    for (const [modId, mod] of validModules.entries()) {
+    for (const [modId, mod] of validModules) {
       try {
         validateModuleId(modId, false);
       } catch (e) {
@@ -767,17 +784,15 @@ export class Registry {
   }
 
   private _resolveLoadOrder(
-    validModules: Map<string, unknown>,
-    rawMetadata: Map<string, Record<string, unknown>>,
+    validModules: Map<string, DiscoveredRegistration>,
   ): string[] {
     const modulesWithDeps: Array<[string, DependencyInfo[]]> = [];
     const moduleVersions = new Map<string, string>();
-    for (const [modId, cls] of validModules.entries()) {
-      const meta = rawMetadata.get(modId) ?? {};
+    for (const [modId, { module, metadata: meta }] of validModules) {
       const depsRaw = (meta['dependencies'] as Array<Record<string, unknown>>) ?? [];
       modulesWithDeps.push([modId, depsRaw.length > 0 ? parseDependencies(depsRaw) : []]);
       const yamlVersion = meta['version'];
-      const codeVersion = (cls as { version?: unknown })?.version;
+      const codeVersion = (module as { version?: unknown })?.version;
       const resolvedVersion =
         (typeof yamlVersion === 'string' && yamlVersion) ||
         (typeof codeVersion === 'string' && codeVersion) ||
@@ -803,32 +818,50 @@ export class Registry {
 
   private async _registerInOrder(
     loadOrder: string[],
-    validModules: Map<string, unknown>,
-    rawMetadata: Map<string, Record<string, unknown>>,
-    sourceFiles: ReadonlyMap<string, string>,
+    validModules: Map<string, DiscoveredRegistration>,
   ): Promise<number> {
     let count = 0;
     for (const moduleId of loadOrder) {
-      const module = validModules.get(moduleId);
-      if (module === undefined) continue;
-      const metadata = rawMetadata.get(moduleId) ?? {};
+      const candidate = validModules.get(moduleId);
+      if (candidate === undefined) continue;
+      const { module, metadata, sourceFile } = candidate;
       try {
         const dependencies = parseDependencies((metadata['dependencies'] as Array<Record<string, unknown>>) ?? []);
-        const missing = dependencies.find((dep) => !dep.optional && !this.has(dep.moduleId));
-        if (missing) {
-          const error = new ModuleLoadError(moduleId, `Required dependency '${missing.moduleId}' did not load`);
+        const dependencyFailure = () => this._discoveryDependencyError(moduleId, dependencies);
+        const error = dependencyFailure();
+        if (error) {
           this._emitModuleLoadFailed(moduleId, error);
           throw error;
         }
+        for (const dep of dependencies) {
+          if (dep.optional && validModules.has(dep.moduleId) && !this.has(dep.moduleId)) {
+            console.warn(`[apcore:registry] Module '${moduleId}' is loading without optional dependency '${dep.moduleId}'`);
+          }
+        }
         this._assertModuleStructure(moduleId, module);
         this._assertNoIdConflict(moduleId);
-        await this._registerWithOnLoad(moduleId, module, null, metadata, { sourceFile: sourceFiles.get(moduleId) });
+        await this._registerWithOnLoad(moduleId, module, null, metadata, { sourceFile, dependencyFailure });
         count++;
       } catch (error) {
         console.warn(`[apcore:registry] Failed to load ${moduleId}, skipping:`, error);
       }
     }
     return count;
+  }
+
+  private _discoveryDependencyError(moduleId: string, dependencies: DependencyInfo[]): ModuleError | null {
+    for (const dependency of dependencies) {
+      if (dependency.optional) continue;
+      if (!this.has(dependency.moduleId)) {
+        return new ModuleLoadError(moduleId, `Required dependency '${dependency.moduleId}' did not load`);
+      }
+      const version = this._moduleMeta.get(dependency.moduleId)?.['version'];
+      const actual = typeof version === 'string' ? version : '1.0.0';
+      if (dependency.version && !matchesVersionHint(actual, dependency.version)) {
+        return new DependencyVersionMismatchError(moduleId, dependency.moduleId, dependency.version, actual);
+      }
+    }
+    return null;
   }
 
   /**
@@ -882,7 +915,7 @@ export class Registry {
     // declaring `streaming: true` without `stream()` reported
     // DuplicateModuleIdError in TypeScript where Python and Rust report
     // StreamingInterfaceError.
-    this._assertModuleStructure(moduleId, module, true);
+    this._assertModuleStructure(moduleId, module);
 
     // 3. Custom validator (may be async).
     //
@@ -960,17 +993,31 @@ export class Registry {
     module: unknown,
     version?: string | null,
     metadata?: Record<string, unknown> | null,
-    options?: { context?: Context | null; sourceFile?: string; throwSyncLoadFailure?: boolean },
+    options?: {
+      context?: Context | null;
+      sourceFile?: string;
+      throwSyncLoadFailure?: boolean;
+      mergedMetadata?: Record<string, unknown>;
+      dependencyFailure?: () => ModuleError | null;
+    },
     ephemeral?: boolean,
   ): Promise<void> {
     const overrides: Record<string, unknown> = { ...(metadata ?? {}) };
     if (version != null) overrides['version'] = version;
     const mod = module as Record<string, unknown>;
-    const merged = mergeModuleMetadata(mod, overrides);
+    const merged = options?.mergedMetadata ?? mergeModuleMetadata(mod, overrides);
 
     const publish = (): void => {
+      const error = options?.dependencyFailure?.();
+      if (error) {
+        this._inFlight.delete(moduleId);
+        if (typeof onLoad === 'function') void this._runOnUnload(moduleId, module);
+        this._emitModuleLoadFailed(moduleId, error);
+        throw error;
+      }
       this._inFlight.delete(moduleId);
       this._modules.set(moduleId, module);
+      this._executionGenerations.set(moduleId, {});
       this._moduleMeta.set(moduleId, merged);
       this._lowercaseMap.set(moduleId.toLowerCase(), moduleId);
       if (options?.sourceFile !== undefined) this._sourceFiles.set(moduleId, options.sourceFile);
@@ -1012,7 +1059,11 @@ export class Registry {
   }
 
   unregister(moduleId: string, options?: { context?: Context | null }): boolean {
-    if (!this._modules.has(moduleId)) return false;
+    return this._unregister(moduleId, options) !== null;
+  }
+
+  private _unregister(moduleId: string, options?: { context?: Context | null }): Promise<void> | null {
+    if (!this._modules.has(moduleId)) return null;
 
     const module = this._modules.get(moduleId)!;
     this._modules.delete(moduleId);
@@ -1027,20 +1078,11 @@ export class Registry {
     // re-registered module with the same id (mirrors apcore-python
     // registry.py:1217-1219 and apcore-rust registry.rs).
     this._draining.delete(moduleId);
-    this._drainResolvers.delete(moduleId);
     this._refCounts.delete(moduleId);
     this._executionGenerations.delete(moduleId);
+    this._resolveDrainWaiters(moduleId);
 
-    // Call onUnload if available
-    const modObj = module as Record<string, unknown>;
-    if (typeof modObj['onUnload'] === 'function') {
-      try {
-        (modObj['onUnload'] as () => void)();
-      } catch (e) {
-        console.warn(`[apcore:registry] onUnload failed for ${moduleId}:`, e);
-      }
-    }
-
+    const cleanup = this._runOnUnload(moduleId, module);
     this._triggerEvent(REGISTRY_EVENTS.UNREGISTER, moduleId, module);
     if (isEphemeralModuleId(moduleId)) {
       this._emitEphemeralAudit(
@@ -1049,7 +1091,25 @@ export class Registry {
         options?.context ?? null,
       );
     }
-    return true;
+    return cleanup;
+  }
+
+  private _runOnUnload(moduleId: string, module: unknown): Promise<void> {
+    const warnUnloadFailure = (error: unknown): void => {
+      console.warn(`[apcore:registry] onUnload failed for ${moduleId}:`, error);
+    };
+    const modObj = module as Record<string, unknown>;
+    const onUnload = modObj['onUnload'];
+    let cleanup = Promise.resolve();
+    if (typeof onUnload === 'function') {
+      try {
+        cleanup = Promise.resolve(onUnload.call(module)).catch(warnUnloadFailure);
+      } catch (e) {
+        warnUnloadFailure(e);
+      }
+    }
+
+    return cleanup;
   }
 
   /**
@@ -1271,6 +1331,7 @@ export class Registry {
     return (meta['annotations'] as ModuleAnnotations | null) ?? null;
   }
 
+  /** Return the module descriptor with detached schemas and metadata records. */
   getDefinition(moduleId: string, versionHint?: string | null): ModuleDescriptor | null {
     // Keep the same invalid-ID error as the instance lookup.
     if (moduleId === '') {
@@ -1305,7 +1366,7 @@ export class Registry {
       this._warnModuleDeprecated(moduleId, version, dep);
     }
 
-    return {
+    return snapshotRegistryData({
       moduleId,
       name: (meta['name'] as string | null) ?? null,
       description: (meta['description'] as string) ?? '',
@@ -1329,7 +1390,7 @@ export class Registry {
       // the top-level entry an empty array while the nested block holds them —
       // so fall through on empty, not merely on null.
       dependencies: parseDependencies(_pickDependencies(meta)),
-    };
+    });
   }
 
   /**
@@ -1619,7 +1680,7 @@ export class Registry {
    * Aligned with apcore-python `Registry.register_internal` and apcore-rust
    * `Registry::register_internal`.
    */
-  private _assertModuleStructure(moduleId: string, module: unknown, requireMetadata = false): void {
+  private _assertModuleStructure(moduleId: string, module: unknown, requireMetadata = true): void {
     const errors = validateModule(module, { requireMetadata, allowStaticSchemas: !requireMetadata });
     if (errors.length > 0) {
       throw new InvalidInputError(`Invalid module '${moduleId}': ${errors.join('; ')}`);
@@ -1654,16 +1715,39 @@ export class Registry {
     // STR-5: module-structure validation, before duplicate detection — the
     // order registry-system.md's "Side Effects (ordered)" states and D-86
     // settles (module_id -> structure/streaming -> validator -> duplicate).
-    this._assertModuleStructure(moduleId, module);
+    this._assertModuleStructure(moduleId, module, false);
 
     this._assertNoIdConflict(moduleId, new Set());
     return this._registerWithOnLoad(moduleId, module, null, null, { throwSyncLoadFailure: true });
   }
 
+  /** @internal Capture the published registration before unloading its module. */
+  snapshotRegistration(moduleId: string): RegistrationSnapshot | null {
+    if (!this._modules.has(moduleId)) return null;
+    return {
+      moduleId,
+      module: this._modules.get(moduleId),
+      metadata: this.getModuleMetadata(moduleId),
+      sourceFile: this._sourceFiles.get(moduleId),
+    };
+  }
+
+  /** @internal Republish a previous registration after its load hook completes. */
+  async restoreRegistration(snapshot: RegistrationSnapshot): Promise<void> {
+    const { moduleId, module, metadata, sourceFile } = snapshot;
+    validateModuleId(moduleId, true);
+    this._assertModuleStructure(moduleId, module, false);
+    this._assertNoIdConflict(moduleId, new Set());
+    await this._registerWithOnLoad(moduleId, module, null, null, {
+      sourceFile,
+      mergedMetadata: metadata,
+    }, isEphemeralModuleId(moduleId));
+  }
+
   /**
    * Export the JSON Schema for a registered module.
    *
-   * Returns the schema as a plain object (`Record<string, unknown> | null`),
+   * Returns a detached schema object (`Record<string, unknown> | null`),
    * matching Python's `dict | None` and Rust's `Option<Value>` return types.
    * Returns `null` if the module is not registered.
    * Use the standalone `exportSchema` function from `schema-export.ts` for
@@ -1676,10 +1760,8 @@ export class Registry {
     const schema = getSchema(this, moduleId);
     if (schema === null) return null;
     if (strict) {
-      const result = deepCopy(schema) as Record<string, unknown>;
-      result['input_schema'] = toStrictSchema(result['input_schema'] as Record<string, unknown>);
-      result['output_schema'] = toStrictSchema(result['output_schema'] as Record<string, unknown>);
-      return result;
+      schema['input_schema'] = toStrictSchema(schema['input_schema'] as Record<string, unknown>);
+      schema['output_schema'] = toStrictSchema(schema['output_schema'] as Record<string, unknown>);
     }
     return schema;
   }
@@ -1773,10 +1855,11 @@ export class Registry {
 
   /** @internal Hold an execution reference to the instance resolved by lookup. */
   acquireExecution(moduleId: string, expectedModule: unknown): () => void {
-    if (this._modules.get(moduleId) !== expectedModule) throw new ModuleNotFoundError(moduleId);
+    const generation = this._executionGenerations.get(moduleId);
+    if (generation === undefined || this._modules.get(moduleId) !== expectedModule) {
+      throw new ModuleNotFoundError(moduleId);
+    }
     this.acquire(moduleId);
-    const generation = this._executionGenerations.get(moduleId) ?? {};
-    this._executionGenerations.set(moduleId, generation);
     let released = false;
     return () => {
       if (released) return;
@@ -1797,11 +1880,7 @@ export class Registry {
     const count = current - 1;
     if (count <= 0) {
       this._refCounts.delete(moduleId);
-      const resolvers = this._drainResolvers.get(moduleId);
-      if (resolvers) {
-        for (const resolve of resolvers) resolve();
-        this._drainResolvers.delete(moduleId);
-      }
+      this._resolveDrainWaiters(moduleId);
     } else {
       this._refCounts.set(moduleId, count);
     }
@@ -1830,13 +1909,17 @@ export class Registry {
    */
   endDrain(moduleId: string): void {
     this._draining.delete(moduleId);
+    this._refCounts.delete(moduleId);
+    if (this._modules.has(moduleId)) this._executionGenerations.set(moduleId, {});
+    this._resolveDrainWaiters(moduleId);
+  }
+
+  private _resolveDrainWaiters(moduleId: string): void {
     const resolvers = this._drainResolvers.get(moduleId);
+    this._drainResolvers.delete(moduleId);
     if (resolvers) {
       for (const resolve of resolvers) resolve();
     }
-    this._drainResolvers.delete(moduleId);
-    this._refCounts.delete(moduleId);
-    this._executionGenerations.delete(moduleId);
   }
 
   /**
@@ -1870,14 +1953,6 @@ export class Registry {
     });
   }
 
-  /**
-   * Safely unregister a module with cooperative drain.
-   *
-   * Marks the module as draining, waits for in-flight executions to
-   * complete (up to timeoutMs), then unregisters the module.
-   *
-   * Returns true if drained cleanly, false if force-unloaded after timeout.
-   */
   // ── Ephemeral namespace pilot (protocol-spec §2.5.1) ──────
 
   /**
@@ -2044,11 +2119,22 @@ export class Registry {
     }
   }
 
+  /** Drain and remove the current registration, joining any drain already in progress. */
   async safeUnregister(moduleId: string, timeoutMs: number = 5000): Promise<boolean> {
-    if (!this._modules.has(moduleId)) return false;
+    const generation = this._executionGenerations.get(moduleId);
+    if (generation === undefined) return false;
+    const pending = this._safeUnregisters.get(generation);
+    if (pending !== undefined) return pending;
 
+    const removal = this._drainAndUnregister(moduleId, generation, timeoutMs);
+    this._safeUnregisters.set(generation, removal);
+    return removal;
+  }
+
+  private async _drainAndUnregister(moduleId: string, generation: object, timeoutMs: number): Promise<boolean> {
     this.beginDrain(moduleId);
     const clean = await this.waitDrained(moduleId, timeoutMs);
+    if (this._executionGenerations.get(moduleId) !== generation) return false;
 
     if (!clean) {
       console.warn(
@@ -2057,8 +2143,7 @@ export class Registry {
       );
     }
 
-    this.endDrain(moduleId);
-    this.unregister(moduleId);
+    await this._unregister(moduleId);
     return clean;
   }
 }

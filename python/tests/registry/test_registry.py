@@ -19,6 +19,7 @@ from apcore.errors import (
     InvalidInputError,
     ModuleNotFoundError,
 )
+from apcore.executor import Executor
 from apcore.registry.registry import (
     MAX_MODULE_ID_LENGTH,
     RESERVED_WORDS,
@@ -416,8 +417,8 @@ class TestGetDefinition:
         assert defn.input_schema == {"type": "object", "properties": {"name": {"type": "string"}}}
         assert defn.output_schema == {"type": "object", "properties": {"ok": {"type": "boolean"}}}
 
-    def test_no_schema(self) -> None:
-        """get_definition() returns empty dict when module has no schema."""
+    def test_missing_schemas_are_rejected(self) -> None:
+        """A module must declare its schemas before it can be published."""
 
         class NoSchemaModule:
             description = "Module without schemas"
@@ -428,11 +429,9 @@ class TestGetDefinition:
                 return {}
 
         reg = Registry()
-        reg.register("no.typed", NoSchemaModule())
-        defn = reg.get_definition("no.typed")
-        assert defn is not None
-        assert defn.input_schema == {}
-        assert defn.output_schema == {}
+        with pytest.raises(InvalidInputError, match="input_schema.*output_schema"):
+            reg.register("no.typed", NoSchemaModule())
+        assert reg.get("no.typed") is None
 
 
 # ===== Event Callbacks =====
@@ -1066,6 +1065,38 @@ class TestDescribe:
 
 
 class TestExportSchema:
+    @pytest.mark.parametrize("source", ["descriptor", "export"])
+    def test_schema_reads_are_detached_from_runtime_validation(self, source: str) -> None:
+        class DictSchemaModule:
+            description = "Copy a string value"
+            input_schema = {"type": "object", "properties": {"value": {"type": "string"}}, "required": ["value"]}
+            output_schema = {"type": "object", "properties": {"value": {"type": "string"}}}
+
+            def execute(self, inputs: dict[str, Any], context: Any) -> dict[str, Any]:
+                return inputs
+
+        registry = Registry()
+        registry.register("test.snapshot", DictSchemaModule())
+
+        if source == "descriptor":
+            descriptor = registry.get_definition("test.snapshot")
+            assert descriptor is not None
+            input_schema, output_schema = descriptor.input_schema, descriptor.output_schema
+        else:
+            exported = registry.export_schema("test.snapshot")
+            assert exported is not None
+            input_schema, output_schema = exported["input_schema"], exported["output_schema"]
+
+        input_schema["properties"]["value"]["type"] = "integer"
+        output_schema["properties"]["value"]["type"] = "integer"
+
+        executor = Executor(registry=registry)
+        assert executor.call("test.snapshot", {"value": "unchanged"}) == {"value": "unchanged"}
+        fresh = registry.export_schema("test.snapshot")
+        assert fresh is not None
+        assert fresh["input_schema"]["properties"]["value"]["type"] == "string"
+        assert fresh["output_schema"]["properties"]["value"]["type"] == "string"
+
     def test_export_schema_returns_dict_for_registered_module(self) -> None:
         """export_schema returns a dict with expected keys for a registered module."""
         reg = Registry()
@@ -1130,27 +1161,6 @@ class TestHotReload:
         # Call again to verify idempotent
         reg.unwatch()
 
-    def test_path_to_module_id_maps_basename(self) -> None:
-        """_path_to_module_id() maps a file path to a module ID correctly."""
-        reg = Registry()
-        reg.register("my_module", _ValidModule())
-        result = reg._path_to_module_id("/some/path/my_module.py")
-        assert result == "my_module"
-
-    def test_path_to_module_id_maps_with_namespace(self) -> None:
-        """_path_to_module_id() maps a namespaced module correctly."""
-        reg = Registry()
-        reg.register("ns.my_module", _ValidModule())
-        result = reg._path_to_module_id("/some/path/my_module.py")
-        assert result == "ns.my_module"
-
-    def test_path_to_module_id_returns_none_for_unknown(self) -> None:
-        """_path_to_module_id() returns None for an unknown file."""
-        reg = Registry()
-        reg.register("my_module", _ValidModule())
-        result = reg._path_to_module_id("/some/path/unknown_file.py")
-        assert result is None
-
     def test_module_change_handler_is_module_level(self) -> None:
         """_ModuleChangeHandler is hoisted out of watch() so it is testable."""
         from apcore.registry.registry import _ModuleChangeHandler
@@ -1181,6 +1191,7 @@ class TestHotReload:
         """_handle_file_deletion removes from both _modules and _versioned_modules."""
         reg = Registry()
         reg.register("my_module", _ValidModule())
+        reg._module_sources["my_module"] = Path("/some/path/my_module.py").resolve()
         # register() already populated _versioned_modules.
         assert reg._versioned_modules.has("my_module")
 
@@ -1194,6 +1205,7 @@ class TestHotReload:
         reg = Registry()
         mod = _ModuleWithOnUnload()
         reg.register("deletable", mod)
+        reg._module_sources["deletable"] = Path("/extensions/deletable.py").resolve()
         assert reg.has("deletable")
 
         reg._handle_file_deletion("/extensions/deletable.py")
@@ -1573,21 +1585,7 @@ class TestRegisterInternalValidation:
 
 
 class TestDiscoveryValidatesModuleIds:
-    """PROTOCOL_SPEC §2.7 module-ID grammar applies to the discovery path too.
-
-    ``_validate_module_id`` was reachable from ``register()`` and
-    ``register_internal()`` only. The filesystem-discovery chain ran A03
-    conflict detection (duplicate / reserved / case) and nothing else, so no
-    grammar or length check stood between a scanned or ID-map-overridden name
-    and ``_modules``. ``_apply_id_map_overrides`` is the concrete vector: it
-    rewrites ``canonical_id`` from the YAML map *after* scanning, with no
-    re-validation.
-
-    Hyphens are banned so MCP / OpenAI tool-name normalisation stays bijective.
-    apcore-typescript validates post-override in ``_filterIdConflicts``;
-    apcore-rust validates per entry. Both skip the offender with a warning
-    rather than failing the whole discovery run.
-    """
+    """Filesystem discovery validates final IDs and reports conflicts among candidates."""
 
     @staticmethod
     def _discover_with_id_map(tmp_path: Path, override_id: str, caplog: pytest.LogCaptureFixture) -> Registry:
@@ -1632,16 +1630,57 @@ class TestDiscoveryValidatesModuleIds:
     ) -> None:
         ext = tmp_path / "extensions"
         ext.mkdir()
-        _write_module_file(ext / "good.py", "GoodModule", "Good module")
+        good_path = ext / "good.py"
+        _write_module_file(good_path, "GoodModule", "Good module")
         _write_module_file(ext / "bad.py", "BadModule", "Bad module")
         id_map = tmp_path / "id_map.yaml"
         id_map.write_text(yaml.dump({"mappings": [{"file": "bad.py", "id": "not-valid"}]}))
-        reg = Registry(extensions_dir=str(ext), id_map_path=str(id_map))
+        approved_paths: list[Path] = []
+        reg = Registry(extensions_dir=str(ext), id_map_path=str(id_map), pre_approval_hook=approved_paths.append)
         with caplog.at_level(logging.WARNING):
             count = reg.discover()
         assert count == 1
         assert reg.has("good")
         assert not reg.has("not-valid")
+        assert approved_paths == [good_path.resolve()]
+
+    def test_remapped_duplicate_keeps_winner_source_and_metadata(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        first_root = tmp_path / "first"
+        second_root = tmp_path / "second"
+        first_root.mkdir()
+        second_root.mkdir()
+        first = first_root / "greeting.py"
+        second = second_root / "greeting.py"
+        _write_module_file(first, "FirstGreeting", "First greeting")
+        _write_module_file(second, "SecondGreeting", "Second greeting")
+        first.with_stem("greeting_meta").with_suffix(".yaml").write_text(
+            yaml.dump({"entry_point": "greeting:FirstGreeting", "version": "1.2.0", "tags": ["first"]})
+        )
+        second.with_stem("greeting_meta").with_suffix(".yaml").write_text(
+            yaml.dump({"entry_point": "greeting:SecondGreeting", "version": "2.0.0", "tags": ["second"]})
+        )
+        id_map = tmp_path / "id_map.yaml"
+        id_map.write_text(yaml.dump({"mappings": [{"file": "greeting.py", "id": "sample.greeting"}]}))
+        reg = Registry(extensions_dirs=[{"root": str(first_root)}, {"root": str(second_root)}], id_map_path=str(id_map))
+
+        assert reg.discover() == 1
+
+        descriptor = reg.get_definition("sample.greeting")
+        assert descriptor is not None
+        assert descriptor.description == "First greeting"
+        assert descriptor.version == "1.2.0"
+        assert descriptor.tags == ["first"]
+        assert any(
+            "Duplicate module ID 'sample.greeting'" in message
+            and str(first.resolve()) in message
+            and str(second.resolve()) in message
+            for message in caplog.messages
+        )
+
+        reg._handle_file_change(str(second))
+        assert reg.get_definition("sample.greeting") == descriptor
 
     def test_reserved_first_segment_from_the_id_map_is_skipped(
         self, tmp_path: Path, caplog: pytest.LogCaptureFixture

@@ -9,9 +9,15 @@ import { deepCopy } from '../utils/index.js';
 import { SchemaExporter } from '../schema/exporter.js';
 import { stripExtensions, toStrictSchema } from '../schema/strict.js';
 import { ExportProfile, type SchemaDefinition } from '../schema/types.js';
+import { snapshotRegistryData } from './metadata-pure.js';
 import type { Registry } from './registry.js';
 
+/** Return a detached schema object for a registered module. */
 export function getSchema(registry: Registry, moduleId: string): Record<string, unknown> | null {
+  return snapshotRegistryData(readSchema(registry, moduleId));
+}
+
+function readSchema(registry: Registry, moduleId: string): Record<string, unknown> | null {
   const module = registry.get(moduleId);
   if (module === null) return null;
 
@@ -41,7 +47,7 @@ export function exportSchema(
   compact: boolean = false,
   profile?: string | null,
 ): string {
-  const schemaDict = getSchema(registry, moduleId);
+  const schemaDict = readSchema(registry, moduleId);
   if (schemaDict === null) {
     throw new ModuleNotFoundError(moduleId);
   }
@@ -63,9 +69,13 @@ export function exportSchema(
 }
 
 export function getAllSchemas(registry: Registry): Record<string, Record<string, unknown>> {
+  return snapshotRegistryData(readAllSchemas(registry));
+}
+
+function readAllSchemas(registry: Registry): Record<string, Record<string, unknown>> {
   const result: Record<string, Record<string, unknown>> = {};
   for (const moduleId of registry.moduleIds) {
-    const schema = getSchema(registry, moduleId);
+    const schema = readSchema(registry, moduleId);
     if (schema !== null) {
       result[moduleId] = schema;
     }
@@ -80,7 +90,7 @@ export function exportAllSchemas(
   compact: boolean = false,
   profile?: string | null,
 ): string {
-  const allSchemas = getAllSchemas(registry);
+  const allSchemas = readAllSchemas(registry);
 
   if (strict || compact) {
     for (const [moduleId, schema] of Object.entries(allSchemas)) {

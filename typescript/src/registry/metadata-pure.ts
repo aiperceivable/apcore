@@ -12,6 +12,31 @@ import type { ModuleAnnotations, ModuleExample } from '../module.js';
 import { mergeAnnotations, mergeExamples } from '../schema/annotations.js';
 import type { DependencyInfo } from './types.js';
 
+/** Copy descriptor data while preserving TypeBox's symbol keys and opaque values. */
+export function snapshotRegistryData<T>(value: T, seen = new WeakMap<object, object>()): T {
+  if (typeof value !== 'object' || value === null) return value;
+
+  const previous = seen.get(value);
+  if (previous !== undefined) return previous as T;
+
+  const isArray = Array.isArray(value);
+  const prototype = Object.getPrototypeOf(value);
+  if (!isArray && prototype !== Object.prototype && prototype !== null) return value;
+
+  const copy = isArray ? new Array(value.length) : Object.create(prototype) as object;
+  seen.set(value, copy);
+  for (const key of Reflect.ownKeys(value)) {
+    if (isArray && key === 'length') continue;
+    Object.defineProperty(copy, key, {
+      value: snapshotRegistryData(Reflect.get(value, key), seen),
+      enumerable: Object.prototype.propertyIsEnumerable.call(value, key),
+      configurable: true,
+      writable: true,
+    });
+  }
+  return copy as T;
+}
+
 export function parseDependencies(depsRaw: Array<Record<string, unknown>>): DependencyInfo[] {
   if (!depsRaw || depsRaw.length === 0) return [];
 

@@ -20,6 +20,7 @@ __all__ = [
     "ApprovalRequest",
     "ApprovalResult",
     "ApprovalHandler",
+    "ScopedApprovalHandler",
     "AlwaysDenyHandler",
     "AutoApproveHandler",
     "CallbackApprovalHandler",
@@ -36,7 +37,8 @@ class ApprovalRequest:
 
     Attributes:
         module_id: Canonical module ID being invoked.
-        arguments: Input arguments for the call.
+        arguments: Detached call arguments at the approval gate, before module
+            middleware rewrites or input validation.
         context: Full execution context (trace_id, identity, call_chain).
         annotations: Module's annotation set (requires_approval is guaranteed true).
         description: Module's human-readable description.
@@ -74,6 +76,7 @@ class ApprovalResult:
         reason: Human-readable explanation for the decision.
         approval_id: Phase B token for async resume.
         metadata: Additional metadata from the approval process.
+        audit_id: Optional non-secret correlation ID for approval telemetry.
     """
 
     status: Literal["approved", "rejected", "timeout", "pending"]
@@ -81,6 +84,7 @@ class ApprovalResult:
     reason: str | None = None
     approval_id: str | None = None
     metadata: dict[str, Any] | None = None
+    audit_id: str | None = None
 
 
 @runtime_checkable
@@ -96,10 +100,19 @@ class ApprovalHandler(Protocol):
         ...
 
     async def check_approval(self, approval_id: str) -> ApprovalResult:
-        """Check status of a previously pending approval (Phase B).
+        """Query the status of a pending approval.
 
         Default implementations SHOULD return rejected.
         """
+        ...
+
+
+@runtime_checkable
+class ScopedApprovalHandler(ApprovalHandler, Protocol):
+    """An approval handler that supports resuming a specific invocation."""
+
+    async def check_approval_for_call(self, approval_id: str, request: ApprovalRequest) -> ApprovalResult:
+        """Validate the current call's identity, target and arguments, then consume the approval."""
         ...
 
 

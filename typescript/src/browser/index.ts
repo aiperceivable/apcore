@@ -32,6 +32,7 @@ export { APCore } from '../client.js';
 export type { APCoreOptions, ModuleOptions } from '../client.js';
 
 export { Executor, REDACTED_VALUE } from '../executor.js';
+export type { StreamCompletion, StreamCompletionReason, StreamExecution, StreamStepOutcome } from '../stream-completion.js';
 
 export {
   Registry,

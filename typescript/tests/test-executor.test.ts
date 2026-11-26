@@ -356,6 +356,31 @@ describe('Executor', () => {
     expect(result.checks.every((c: { passed: boolean }) => c.passed)).toBe(true);
   });
 
+  it('keeps module preview unavailable when authorization cannot be evaluated', async () => {
+    const registry = new Registry();
+    let previewCalls = 0;
+    await registry.register('test.preview', {
+      description: 'Previewable module',
+      inputSchema: Type.Object({}),
+      outputSchema: Type.Object({}),
+      execute: () => ({}),
+      preview() {
+        previewCalls++;
+        return { changes: [{ action: 'update', target: 'sample', summary: 'sample update' }] };
+      },
+    });
+    const acl = new class extends ACL {
+      override async asyncCheckAccess(): Promise<never> {
+        throw new Error('Authorization provider unavailable');
+      }
+    }([], 'deny');
+    const executor = new Executor({ registry, acl });
+    const result = await executor.validate('test.preview', {});
+    expect(result.valid).toBe(false);
+    expect(result.predictedChanges).toEqual([]);
+    expect(previewCalls).toBe(0);
+  });
+
   it('validate() returns schema failure for invalid inputs', async () => {
     const registry = new Registry();
     const mod = new FunctionModule({

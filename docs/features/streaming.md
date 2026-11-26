@@ -92,7 +92,7 @@ Each SDK exposes a language-idiomatic `StreamingModule` interface so that adapte
     A module that has a `stream()` method but no marker is still detected, with a one-time deprecation warning per module; add the marker to silence it.
 
 === "Rust"
-    The base `Module` trait's `stream()` returns `Option<ChunkStream>` (`None` means "not streaming — fall back to `execute()`"). A streaming module also implements the `StreamingModule` trait (`stream_typed`) and returns itself from `Module::as_streaming()`, which gives adapter code a typed handle.
+    Implement the `StreamingModule` trait and return `Some(self)` from `Module::as_streaming()`. The executor and adapters use the same typed handle. For legacy modules with no typed handle, the executor calls `Module::stream()`. A `None` result selects unary execution.
 
     ```rust
     use apcore::{ChunkStream, Context, Module, ModuleAnnotations, ModuleError, StreamingModule};
@@ -100,17 +100,6 @@ Each SDK exposes a language-idiomatic `StreamingModule` interface so that adapte
     use serde_json::{json, Value};
 
     struct ChatModule;
-
-    impl ChatModule {
-        fn chunks(prompt: String) -> ChunkStream {
-            Box::pin(async_stream::stream! {
-                for token in ["echo:".to_string(), prompt] {
-                    yield Ok(json!({ "content": token, "done": false }));
-                }
-                yield Ok(json!({ "content": "", "done": true }));
-            })
-        }
-    }
 
     #[async_trait]
     impl Module for ChatModule {
@@ -130,10 +119,6 @@ Each SDK exposes a language-idiomatic `StreamingModule` interface so that adapte
             Ok(json!({ "content": format!("echo:{}", inputs["prompt"].as_str().unwrap_or("")), "done": true }))
         }
 
-        fn stream(&self, inputs: Value, _ctx: &Context<Value>) -> Option<ChunkStream> {
-            Some(Self::chunks(inputs["prompt"].as_str().unwrap_or("").to_string()))
-        }
-
         fn as_streaming(&self) -> Option<&dyn StreamingModule> {
             Some(self)
         }
@@ -141,12 +126,18 @@ Each SDK exposes a language-idiomatic `StreamingModule` interface so that adapte
 
     impl StreamingModule for ChatModule {
         fn stream_typed(&self, inputs: Value, _context: &Context<Value>) -> ChunkStream {
-            Self::chunks(inputs["prompt"].as_str().unwrap_or("").to_string())
+            let prompt = inputs["prompt"].as_str().unwrap_or("").to_string();
+            Box::pin(async_stream::stream! {
+                for token in ["echo:".to_string(), prompt] {
+                    yield Ok(json!({ "content": token, "done": false }));
+                }
+                yield Ok(json!({ "content": "", "done": true }));
+            })
         }
     }
     ```
 
-    `as_streaming()` and `Module::stream()` must agree: both `Some` or both `None`. Registering a module whose `annotations.streaming` is `true` while `as_streaming()` returns `None` fails with `STREAMING_INTERFACE_MISMATCH`.
+    Registering a module whose `annotations.streaming` is `true` while `as_streaming()` returns `None` fails with `STREAMING_INTERFACE_MISMATCH`.
 
 ### Rules
 
@@ -166,11 +157,13 @@ Each SDK exposes a language-idiomatic `StreamingModule` interface so that adapte
 
 ## Three-phase streaming pipeline
 
-**Phase 1 — pipeline setup.** Steps 1–7 of the standard pipeline run as for `call()`: context creation, call-chain guard, module lookup, ACL, approval gate, middleware before, input validation. At step 8 the executor calls the module's `stream()` instead of `execute()`.
+**Phase 1 — pipeline setup.** Steps 1–7 of the standard pipeline run as for `call()`, from context creation through input validation. The built-in `execute` step opens the native producer when available. The configured step's scope and hooks apply to this invocation.
 
-**Phase 2 — chunk emission.** The executor iterates the module's stream and yields each chunk to the caller immediately, while deep-merging it into the accumulated output. A chunk that is not an object is rejected before delivery (see [Contract: Module.stream](#contract-modulestream)). The call deadline applies while waiting for the next chunk. If it expires, the executor cancels the call's token and returns the timeout.
+**Phase 2 — chunk emission.** The executor iterates the module's stream and yields each chunk to the caller immediately, while deep-merging it into the accumulated output. A chunk that is not an object is rejected before delivery (see [Contract: Module.stream](#contract-modulestream)). The execution deadline covers opening the producer, waiting for chunks, and processing the end of the stream. If it expires, the executor cancels the execution token and reports `MODULE_TIMEOUT`.
 
-**Phase 3 — post-processing.** After the last chunk, output validation (step 9) and middleware after (step 10) run on the accumulated output. A failure here cannot recall chunks already delivered: it is logged and reported as an event instead of being raised to the caller.
+**Phase 3 — post-processing.** After the last chunk, output validation (step 9) and middleware after (step 10) run on the accumulated output within the same execution deadline. An ordinary failure is logged and reported as `apcore.stream.post_validation_failed` when an event emitter is configured. Cancellation reaches the consumer as `EXECUTION_CANCELLED` and bypasses `on_error` (D-20).
+
+TypeScript resumes the same configured pipeline after the last chunk. Custom steps after the producer retain access to prior step outputs. The result step runs once after the stream drains.
 
 ## Consuming streams
 
@@ -195,7 +188,7 @@ Each SDK exposes a language-idiomatic `StreamingModule` interface so that adapte
     import { APCore } from "apcore-js";
 
     const client = new APCore();
-    client.register("llm.chat", new ChatModule()); // ChatModule from the example above
+    await client.register("llm.chat", new ChatModule()); // ChatModule from the example above
 
     for await (const chunk of client.stream("llm.chat", { prompt: "Hello" })) {
       process.stdout.write(String(chunk.content));
@@ -222,6 +215,388 @@ Each SDK exposes a language-idiomatic `StreamingModule` interface so that adapte
     }
     ```
 
+
+## Observe completion
+
+Use the opt-in stream completion API when the caller needs the canonical merged output and the post-processing result. The handle drives one invocation. Read the chunks to exhaustion or close the stream before awaiting completion. The legacy `stream()` entry retains its existing chunk and diagnostic behavior.
+
+The completion has a `reason` of `completed`, `failed`, `cancelled`, `timed_out`, or `consumer_closed`. A canonical error code is present when execution ended with an error. The output is a detached snapshot at the output-validation boundary. The snapshot is absent when execution ends before reaching that boundary. For native streams, it uses the same merge depth and array replacement as the executor. For unary fallback, the call still runs once. After-middleware can change the unary chunk without altering the snapshot.
+
+The completion reports separate outcomes for `output_validation` and `middleware_after`. Each outcome has a status of `passed`, `failed`, or `skipped`. A skipped outcome distinguishes a step that is absent, never reached, outside its match scope, or skipped by the strategy. A failure describes whether the pipeline ignored it, recovered it, or left it unhandled. A native stream can have a `completed` reason with an ordinary post-processing failure. A deadline or cancellation during post-processing yields `timed_out` or `cancelled`, respectively. Callers that require validated success check both the reason and the step outcomes.
+
+The consumer can close before the first chunk or during iteration. The first terminal outcome is retained and cleanup can finish separately. In Rust, dropping the owned chunk stream closes it. A loop that borrows the stream leaves ownership with the caller.
+
+=== "Python"
+    ```python
+    import asyncio
+
+    from apcore import APCore
+
+
+    async def main() -> None:
+        client = APCore()
+        client.register("llm.chat", ChatModule())  # ChatModule from the example above
+        execution = client.stream_with_completion("llm.chat", {"prompt": "Hello"})
+        try:
+            async for chunk in execution.chunks:
+                print(chunk)
+        finally:
+            await execution.aclose()
+            result = await execution.completion()
+            print(result.reason, result.output_validation.status, result.output)
+
+
+    asyncio.run(main())
+    ```
+
+=== "TypeScript"
+    ```typescript
+    import { APCore } from "apcore-js";
+
+    const client = new APCore();
+    await client.register("llm.chat", new ChatModule()); // ChatModule from the example above
+
+    const execution = client.streamWithCompletion("llm.chat", { prompt: "Hello" });
+    try {
+      for await (const chunk of execution.chunks) {
+        console.log(chunk);
+      }
+    } finally {
+      await execution.close();
+      const result = await execution.completion;
+      console.log(result.reason, result.outputValidation.status, result.output);
+    }
+    ```
+
+=== "Rust"
+    ```rust
+    use apcore::{APCore, ModuleError};
+    use futures::StreamExt;
+    use serde_json::json;
+
+    #[tokio::main]
+    async fn main() -> Result<(), ModuleError> {
+        let client = APCore::new();
+        client.register("llm.chat", Box::new(ChatModule))?; // ChatModule from the example above
+        let (mut chunks, completion) =
+            client.stream_with_completion("llm.chat", json!({ "prompt": "Hello" }), None, None);
+
+        while let Some(item) = chunks.next().await {
+            match item {
+                Ok(chunk) => println!("{chunk}"),
+                Err(error) => {
+                    eprintln!("{error}");
+                    break;
+                }
+            }
+        }
+        drop(chunks);
+        let result = completion.await;
+        println!("{:?}: {:?}", result.reason, result.output_validation);
+        Ok(())
+    }
+    ```
+
+Completion carries execution data for the trusted caller. Apply the surface's output projection and redaction before returning it through an external protocol.
+
+### Run a governed stream from configuration
+
+Use the SDK setup from [Getting Started](../getting-started.md#1-installation). In Rust, also run `cargo add futures-util`. Save the two files below in the directory from which you run the program. The SDK loads the ACL from `acl.root`. The rule allows an external caller to invoke `api.echo` and requires approval. The local example handler approves the expected input. The program checks that the ACL denies another registered module and that the stream's completion contains the merged output.
+
+<!-- executable-example: stream-config -->
+
+```yaml
+# apcore.yaml
+version: "1.0.0"
+project:
+  name: stream-demo
+acl:
+  root: ./acl
+```
+
+<!-- executable-example: stream-acl -->
+
+```yaml
+# acl/global_acl.yaml
+version: "1.0"
+default_effect: deny
+audit:
+  enabled: true
+  include_denied: true
+  log_level: info
+rules:
+  - callers: ["@external"]
+    targets: ["api.echo"]
+    effect: allow
+    approval: required
+```
+
+=== "Python"
+
+    <!-- executable-example: governed-stream -->
+
+    ```python
+    import asyncio
+    from collections.abc import AsyncIterator
+
+    from apcore import APCore, Config, Context, ModuleAnnotations, ModuleError
+    from apcore.approval import ApprovalRequest, ApprovalResult, CallbackApprovalHandler
+    from pydantic import BaseModel
+
+
+    class EchoInput(BaseModel):
+        text: str
+
+
+    class EchoOutput(BaseModel):
+        text: str
+        done: bool
+
+
+    class Echo:
+        description = "Stream the supplied text"
+        input_schema = EchoInput
+        output_schema = EchoOutput
+        annotations = ModuleAnnotations(streaming=True)
+
+        async def execute(self, inputs: dict, context: Context) -> dict:
+            return {"text": inputs["text"], "done": True}
+
+        async def stream(self, inputs: dict, context: Context) -> AsyncIterator[dict]:
+            yield {"text": inputs["text"], "done": False}
+            yield {"done": True}
+
+
+    async def main() -> None:
+        config = Config.load("apcore.yaml")
+        assert config.get("project.name") == "stream-demo"
+        client = APCore(config=config)
+        client.register("api.echo", Echo())
+        client.register("api.denied", Echo())
+        approved = []
+
+        async def approve(request: ApprovalRequest) -> ApprovalResult:
+            if request.module_id == "api.echo" and request.arguments == {"text": "hello"}:
+                approved.append(request.module_id)
+                return ApprovalResult(status="approved", approved_by="demo-policy")
+            return ApprovalResult(status="rejected", reason="Unexpected invocation")
+
+        client.executor.set_approval_handler(CallbackApprovalHandler(approve))
+        try:
+            await client.call_async("api.denied", {"text": "hello"})
+        except ModuleError as error:
+            assert error.code == "ACL_DENIED", error
+        else:
+            raise AssertionError("Expected the ACL to deny api.denied")
+
+        execution = client.stream_with_completion("api.echo", {"text": "hello"})
+        chunks = [chunk async for chunk in execution.chunks]
+        result = await execution.completion()
+        assert approved == ["api.echo"]
+        assert chunks == [{"text": "hello", "done": False}, {"done": True}]
+        assert result.reason == "completed"
+        assert result.output_validation.status == "passed"
+        assert result.output == {"text": "hello", "done": True}
+
+
+    asyncio.run(main())
+    ```
+
+=== "TypeScript"
+
+    <!-- executable-example: governed-stream -->
+
+    ```typescript
+    import { deepStrictEqual, equal, rejects } from "node:assert/strict";
+    import { Type } from "@sinclair/typebox";
+    import {
+      ACLDeniedError,
+      APCore,
+      CallbackApprovalHandler,
+      Config,
+      STREAMING_MARKER,
+      createApprovalResult,
+    } from "apcore-js";
+    import type { StreamingModule } from "apcore-js";
+
+    class EchoModule implements StreamingModule {
+      readonly [STREAMING_MARKER] = true as const;
+      inputSchema = Type.Object({ text: Type.String() });
+      outputSchema = Type.Object({ text: Type.String(), done: Type.Boolean() });
+      description = "Stream one text value and a completion flag";
+      annotations = { streaming: true };
+
+      async execute(inputs: Record<string, unknown>): Promise<Record<string, unknown>> {
+        return { text: inputs.text, done: true };
+      }
+
+      async *stream(inputs: Record<string, unknown>): AsyncGenerator<Record<string, unknown>> {
+        yield { text: inputs.text, done: false };
+        yield { done: true };
+      }
+    }
+
+    const config = Config.load("apcore.yaml");
+    equal(config.get("project.name"), "stream-demo");
+    const client = new APCore({ config });
+
+    let approvalCalls = 0;
+    client.executor.setApprovalHandler(new CallbackApprovalHandler(async (request) => {
+      approvalCalls += 1;
+      equal(request.moduleId, "api.echo");
+      deepStrictEqual(request.arguments, { text: "hello" });
+      return createApprovalResult({ status: "approved", approvedBy: "demo-reviewer" });
+    }));
+
+    await client.register("api.echo", new EchoModule());
+    await client.register("api.denied", new EchoModule());
+    await rejects(() => client.call("api.denied", { text: "hello" }), ACLDeniedError);
+
+    const execution = client.streamWithCompletion("api.echo", { text: "hello" });
+    const chunks: Record<string, unknown>[] = [];
+    try {
+      for await (const chunk of execution.chunks) {
+        chunks.push(chunk);
+      }
+    } finally {
+      await execution.close();
+    }
+
+    const completion = await execution.completion;
+    equal(approvalCalls, 1);
+    deepStrictEqual(chunks, [{ text: "hello", done: false }, { done: true }]);
+    equal(completion.reason, "completed");
+    equal(completion.outputValidation.status, "passed");
+    deepStrictEqual(completion.output, { text: "hello", done: true });
+    ```
+
+=== "Rust"
+
+    <!-- executable-example: governed-stream -->
+
+    ```rust
+    use std::path::Path;
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    };
+
+    use apcore::{
+        APCore, APCoreOptions, ApprovalResult, CallbackApprovalHandler, ChunkStream, Config, Context,
+        ErrorCode, Module, ModuleAnnotations, ModuleError, StreamEndReason, StreamStepOutcome,
+        StreamingModule,
+    };
+    use async_trait::async_trait;
+    use futures_util::{stream, StreamExt};
+    use serde_json::{json, Value};
+
+    struct Echo;
+
+    #[async_trait]
+    impl Module for Echo {
+        fn description(&self) -> &str {
+            "Echo the approved text"
+        }
+
+        fn input_schema(&self) -> Value {
+            json!({
+                "type": "object",
+                "properties": {"text": {"type": "string"}},
+                "required": ["text"]
+            })
+        }
+
+        fn output_schema(&self) -> Value {
+            json!({
+                "type": "object",
+                "properties": {"text": {"type": "string"}, "done": {"type": "boolean"}},
+                "required": ["text", "done"]
+            })
+        }
+
+        fn annotations(&self) -> ModuleAnnotations {
+            ModuleAnnotations {
+                streaming: true,
+                ..ModuleAnnotations::default()
+            }
+        }
+
+        async fn execute(
+            &self,
+            inputs: Value,
+            _context: &Context<Value>,
+        ) -> Result<Value, ModuleError> {
+            Ok(json!({"text": inputs["text"], "done": true}))
+        }
+
+        fn as_streaming(&self) -> Option<&dyn StreamingModule> {
+            Some(self)
+        }
+    }
+
+    impl StreamingModule for Echo {
+        fn stream_typed(&self, inputs: Value, _context: &Context<Value>) -> ChunkStream {
+            Box::pin(stream::iter([
+                Ok(json!({"text": inputs["text"], "done": false})),
+                Ok(json!({"done": true})),
+            ]))
+        }
+    }
+
+    #[tokio::main]
+    async fn main() -> Result<(), Box<dyn std::error::Error>> {
+        let config = Config::load(Path::new("apcore.yaml"))?;
+        assert_eq!(config.get("project.name"), Some(json!("stream-demo")));
+
+        let approvals = Arc::new(AtomicUsize::new(0));
+        let decisions = Arc::clone(&approvals);
+        let handler = CallbackApprovalHandler::new(move |request| {
+            decisions.fetch_add(1, Ordering::Relaxed);
+            async move {
+                if request.module_id == "api.echo" && request.arguments["text"] == "hello" {
+                    Ok(ApprovalResult::approved("local-policy"))
+                } else {
+                    Ok(ApprovalResult::rejected("Only hello is allowed"))
+                }
+            }
+        });
+
+        let client = APCore::try_start(APCoreOptions {
+            config: Some(config),
+            approval_handler: Some(Box::new(handler)),
+            ..APCoreOptions::default()
+        })?;
+        client.register("api.echo", Box::new(Echo))?;
+        client.register("api.denied", Box::new(Echo))?;
+
+        let denied = client
+            .call("api.denied", json!({"text": "hello"}), None, None)
+            .await
+            .expect_err("An unlisted module is denied by the ACL");
+        assert_eq!(denied.code, ErrorCode::ACLDenied);
+        assert_eq!(approvals.load(Ordering::Relaxed), 0);
+
+        let (mut chunks, completion) =
+            client.stream_with_completion("api.echo", json!({"text": "hello"}), None, None);
+        assert_eq!(
+            chunks.next().await.transpose()?,
+            Some(json!({"text": "hello", "done": false}))
+        );
+        assert_eq!(
+            chunks.next().await.transpose()?,
+            Some(json!({"done": true}))
+        );
+        assert!(chunks.next().await.is_none());
+
+        let result = completion.await;
+        assert_eq!(result.reason, StreamEndReason::Completed);
+        assert_eq!(result.output_validation, StreamStepOutcome::Passed);
+        assert_eq!(result.output, Some(json!({"text": "hello", "done": true})));
+        assert_eq!(approvals.load(Ordering::Relaxed), 1);
+        Ok(())
+    }
+    ```
+
 ## Deep merge
 
 Chunks are combined with a recursive deep merge (Algorithm A24):
@@ -231,7 +606,7 @@ Chunks are combined with a recursive deep merge (Algorithm A24):
 | object | object | merged recursively |
 | anything else | anything else | right value wins — arrays are replaced, not concatenated |
 
-Recursion stops at `stream.max_merge_depth` levels (default 32); at the cap the right value replaces the left without further merging.
+Recursion stops at `stream.max_merge_depth` levels (default 32). At the cap, an object is merged by assigning its keys at that level. For other values, the right side replaces the left. The accumulator is updated as each chunk arrives, so its retained data follows the size of the merged result.
 
 ```text
 Chunk 1: {"content": "Hello", "metadata": {"tokens": 1}}

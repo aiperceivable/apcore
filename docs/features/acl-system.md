@@ -385,10 +385,11 @@ Config-driven activation of the `acl.root` key (D-64). `discover()` resolves `ac
 - Returns a loaded `ACL` **iff** the resolved target file exists; otherwise returns the language's "no ACL" value.
 - No empty/synthesized ACL is ever returned for a missing path.
 - Skipped entirely when the caller supplies their own `Executor` to `APCore`, so an explicitly-wired ACL is never overwritten.
+- A policy that fails to load prevents execution. Python and TypeScript raise during client construction. Rust's `from_path` and `try_with_options` return an error. Its infallible constructors create a client that rejects execution requests until it is rebuilt with a usable configuration.
 
 ### Errors
 
-- `ACLRuleError` / `ConfigError` — only when a target file **exists but is invalid** (propagated from `ACL.load()`). A missing path is never an error.
+- `ACLRuleError` / `ConfigError` — when the policy cannot be read or parsed. A missing path returns the no-ACL value.
 
 ### Returns
 
@@ -676,6 +677,7 @@ Normative behavioral contract ([PROTOCOL_SPEC §6.8](../spec/protocol-spec.md#68
 
 - Rules are returned in definition order — the same order `check()` evaluates them in.
 - The returned value MUST NOT be a mutable reference into the ACL's own list. Return an immutable view or a copy, taken under the same snapshot discipline `check()` uses.
+- Python and TypeScript return detached rule values, including their pattern arrays and nested conditions. Use `add_rule()` / `addRule()`, removal, or reload to update the ACL.
 - After `reload()`, the list reflects the reloaded file.
 
 ### Errors

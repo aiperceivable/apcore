@@ -28,7 +28,9 @@ from typing import Any
 
 import pytest
 
+from apcore import APCore
 from apcore.context import Context
+from apcore.observability import InMemoryExporter, TracingMiddleware
 from apcore.trace_context import TraceContext, TraceParent
 
 from .canonical_fixtures import load_fixture
@@ -52,6 +54,9 @@ _KNOWN_EXPECTATIONS = {
     "injected_trace_flags",
     "injected_traceparent",
     "parent_id_in_output",
+    "span_trace_id",
+    "span_parent_id",
+    "injected_parent_is_local_span",
     "error",
 }
 
@@ -115,6 +120,23 @@ def test_trace_context_case(case: dict[str, Any]) -> None:
     if expected.get("extract_succeeded") is True:
         assert parsed is not None, f"[{cid}] extract() must succeed for headers {headers}"
     assert parsed is not None, f"[{cid}] extract() returned None for headers {headers}"
+
+    if cid == "inbound_parent_is_used_by_exported_span":
+        client = APCore()
+        exporter = InMemoryExporter()
+        client.use(TracingMiddleware(exporter))
+
+        @client.module(id="demo.trace", description="Inject the active execution span")
+        def trace(context: Context) -> dict[str, str]:
+            return {"traceparent": TraceContext.inject(context)["traceparent"]}
+
+        result = client.call("demo.trace", {}, _context_from(parsed))
+        (span,) = exporter.get_spans()
+        assert span.trace_id == expected["span_trace_id"]
+        assert span.parent_span_id == expected["span_parent_id"]
+        injected_parent = result["traceparent"].split("-")[2]
+        assert (injected_parent == span.span_id) == expected["injected_parent_is_local_span"]
+        return
 
     if "trace_id" in expected:
         assert parsed.trace_id == expected["trace_id"], f"[{cid}] trace_id mismatch"

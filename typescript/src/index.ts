@@ -60,6 +60,7 @@ export {
   CTX_GLOBAL_DEADLINE,
   CTX_TRACING_SPANS,
 } from './executor.js';
+export type { StreamCompletion, StreamCompletionReason, StreamExecution, StreamStepOutcome } from './stream-completion.js';
 
 // Module types
 export {

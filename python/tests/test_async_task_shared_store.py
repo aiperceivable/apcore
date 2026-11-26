@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from copy import copy
 from typing import Any
 
 import pytest
@@ -31,6 +32,7 @@ from apcore.async_task import (
     TaskInfo,
     TaskStatus,
 )
+from apcore.errors import TaskStoreError
 
 
 class _StubExecutor:
@@ -316,6 +318,55 @@ class TestRunnerDoesNotClobberTerminalStatus:
         assert info.result == {"ok": True}
         assert info.retry_count == 1
         assert executor.calls == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("failures", "retryable"), [(1, True), (3, True), (1, False)])
+async def test_completion_write_retries_without_reexecuting_the_module(failures: int, retryable: bool) -> None:
+    persisted = asyncio.Event()
+
+    class TransientWriteStore(InMemoryTaskStore):
+        completion_attempts = 0
+
+        async def get(self, task_id: str) -> TaskInfo | None:
+            return copy(await super().get(task_id))
+
+        async def save(self, task: TaskInfo) -> None:
+            if task.status is TaskStatus.COMPLETED:
+                self.completion_attempts += 1
+                if self.completion_attempts <= failures:
+                    raise TaskStoreError(operation="save", reason="test storage failure", retryable=retryable)
+            await super().save(copy(task))
+            if task.status in {TaskStatus.COMPLETED, TaskStatus.FAILED}:
+                persisted.set()
+
+    class CountingExecutor(_StubExecutor):
+        calls = 0
+
+        async def call_async(
+            self,
+            module_id: str,
+            inputs: dict[str, Any] | None = None,
+            context: Any = None,
+            version_hint: str | None = None,
+        ) -> dict[str, Any]:
+            self.calls += 1
+            return {"calls": self.calls}
+
+    store, executor = TransientWriteStore(), CountingExecutor()
+    manager = AsyncTaskManager(executor, store=store)
+    task_id = await manager.submit("mod.probe", {}, retry_policy=RetryConfig(max_retries=1, retry_delay_ms=0))
+    try:
+        await asyncio.wait_for(persisted.wait(), 1)
+        info = await manager.get_status_async(task_id)
+        assert info is not None
+        assert info.status is (TaskStatus.COMPLETED if retryable else TaskStatus.FAILED)
+        assert info.retry_count == 0
+        assert info.result == ({"calls": 1} if retryable else None)
+        assert executor.calls == 1
+        assert store.completion_attempts == failures + int(retryable)
+    finally:
+        await manager.shutdown()
 
 
 # ---------------------------------------------------------------------------

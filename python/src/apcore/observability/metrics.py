@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import logging
 import threading
 import time
+from datetime import datetime, timezone
 from typing import Any
 
-from apcore.context_keys import METRICS_STARTS
+from apcore.context_keys import METRICS_STARTS, _middleware_data
 from apcore.errors import ModuleError
 from apcore.middleware.base import Middleware
 from apcore.observability.storage import (
@@ -14,7 +16,9 @@ from apcore.observability.storage import (
     InMemoryStorageBackend,
     StorageBackend,
 )
-from apcore.observability.store import ObservabilityStore
+from apcore.observability.store import InMemoryObservabilityStore, MetricPoint, ObservabilityStore
+
+logger = logging.getLogger(__name__)
 
 METRIC_CALLS_TOTAL = "apcore_module_calls_total"
 METRIC_DURATION_SECONDS = "apcore_module_duration_seconds"
@@ -176,10 +180,10 @@ class MetricsCollector:
         store: ObservabilityStore | None = None,
         storage: StorageBackend | None = None,
     ) -> None:
-        from apcore.observability.store import InMemoryObservabilityStore
-
         self._buckets = sorted(buckets) if buckets is not None else list(self.DEFAULT_BUCKETS)
-        self._store: ObservabilityStore = store if store is not None else InMemoryObservabilityStore()
+        self._store = store if store is not None else InMemoryObservabilityStore()
+        # Forward individual points only to a caller-supplied sink.
+        self._explicit_store = store
         # D-113: an OMITTED backend means the bundled in-memory one, not "no
         # storage". Only apcore-typescript honoured that, so the same omission
         # produced a working store there and a silent no-op here — and a caller
@@ -199,6 +203,7 @@ class MetricsCollector:
         key = (name, self._labels_key(labels))
         with self._lock:
             self._counters[key] = self._counters.get(key, 0) + amount
+        self._notify_store(name, labels, amount)
 
     def observe(self, name: str, labels: dict[str, str], value: float) -> None:
         labels_key = self._labels_key(labels)
@@ -214,6 +219,8 @@ class MetricsCollector:
             inf_key = (name, labels_key, float("inf"))
             self._histogram_buckets[inf_key] = self._histogram_buckets.get(inf_key, 0) + 1
 
+        self._notify_store(name, labels, value)
+
         # D-113: persist under the canonical `metrics` namespace.
         #
         # The `storage` argument was accepted here and read by nothing — one of
@@ -228,6 +235,21 @@ class MetricsCollector:
                 f"{name}:{labels_key}",
                 {"name": name, "labels": dict(labels), "value": value},
             )
+
+    def _notify_store(self, name: str, labels: dict[str, str], value: float) -> None:
+        if self._explicit_store is None:
+            return
+        point = MetricPoint(
+            name=name,
+            value=value,
+            module_id=labels.get("module_id"),
+            labels=dict(labels),
+            timestamp=datetime.now(timezone.utc).isoformat(),
+        )
+        try:
+            self._explicit_store.record_metric(point)
+        except Exception:
+            logger.warning("Observability store write failed", exc_info=True)
 
     def snapshot(self) -> dict[str, Any]:
         with self._lock:
@@ -340,9 +362,7 @@ class MetricsMiddleware(Middleware):
         self._collector = collector
 
     def before(self, module_id: str, inputs: dict[str, Any], context: Any) -> dict[str, Any] | None:
-        starts = METRICS_STARTS.get(context, default=[])
-        starts.append(time.time())
-        METRICS_STARTS.set(context, starts)
+        _middleware_data(context).setdefault(METRICS_STARTS.name, []).append(time.time())
         return None
 
     def after(
@@ -352,7 +372,7 @@ class MetricsMiddleware(Middleware):
         output: dict[str, Any],
         context: Any,
     ) -> dict[str, Any] | None:
-        starts = METRICS_STARTS.get(context, default=[])
+        starts = _middleware_data(context).get(METRICS_STARTS.name, [])
         if not starts:
             return None
         start_time = starts.pop()
@@ -362,7 +382,7 @@ class MetricsMiddleware(Middleware):
         return None
 
     def on_error(self, module_id: str, inputs: dict[str, Any], error: Exception, context: Any) -> dict[str, Any] | None:
-        starts = METRICS_STARTS.get(context, default=[])
+        starts = _middleware_data(context).get(METRICS_STARTS.name, [])
         if not starts:
             return None
         start_time = starts.pop()

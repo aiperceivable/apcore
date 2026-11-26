@@ -25,6 +25,7 @@ import pytest
 from pydantic import BaseModel
 
 from apcore import APCore
+from apcore.approval import AutoApproveHandler
 from apcore.config import Config
 from apcore.context import Context
 from apcore.middleware.base import Middleware
@@ -98,6 +99,21 @@ def _run(client: APCore, seen: _Capture) -> _Capture:
 
 
 class TestConfiguredRulesReachTheCapturePoint:
+    def test_update_config_value_is_masked_before_execution(self) -> None:
+        config = Config({"sys_modules": {"enabled": True, "events": {"enabled": True}}})
+        client = APCore(config=config)
+        try:
+            client.executor.set_approval_handler(AutoApproveHandler())
+            seen = _Capture()
+            client.use(seen)
+            client.call("system.control.update_config", {"key": "fixture.label", "value": "sample", "reason": "test"})
+        finally:
+            client.close()
+
+        assert seen.early_inputs is not None
+        assert seen.early_inputs["value"] == "***REDACTED***"
+        assert config.get("fixture.label") == "sample"
+
     @pytest.mark.parametrize("configured", [False, True])
     def test_redaction_rules_apply_without_a_module_schema(self, configured: bool) -> None:
         class Echo:

@@ -1895,6 +1895,42 @@ async fn conformance_approval_gate() {
         }
     }
 
+    #[derive(Debug)]
+    struct ScopedHandler {
+        handler: ScriptedHandler,
+        credential: String,
+        arguments: Arc<std::sync::Mutex<Option<Value>>>,
+    }
+
+    #[async_trait]
+    impl ApprovalHandler for ScopedHandler {
+        async fn request_approval(
+            &self,
+            request: &ApprovalRequest,
+        ) -> Result<ApprovalResult, apcore::errors::ModuleError> {
+            self.handler.request_approval(request).await
+        }
+
+        async fn check_approval(
+            &self,
+            credential: &str,
+        ) -> Result<ApprovalResult, apcore::errors::ModuleError> {
+            self.handler.check_approval(credential).await
+        }
+
+        async fn check_approval_for_call(
+            &self,
+            credential: &str,
+            request: &ApprovalRequest,
+        ) -> Result<ApprovalResult, apcore::errors::ModuleError> {
+            assert_eq!(credential, self.credential);
+            assert_eq!(request.module_id, "executor.test.sensitive");
+            *self.arguments.lock().unwrap() = Some(request.arguments.clone());
+            self.handler.invocations.fetch_add(1, Ordering::SeqCst);
+            Ok(self.handler.result.clone())
+        }
+    }
+
     /// The fixture's `module_requires_approval` is declared on the LIVE module
     /// instance, because that is the binding PROTOCOL_SPEC §7.4 Step 5 gates on
     /// (`annotations = module.annotations`). The descriptor below carries the
@@ -1996,6 +2032,8 @@ async fn conformance_approval_gate() {
             .unwrap();
 
         let invocations = Arc::new(AtomicUsize::new(0));
+        let resume_arguments = Arc::new(std::sync::Mutex::new(None));
+        let resume = tc.get("resume");
         let mut executor = Executor::new(Arc::clone(&registry), Arc::new(Config::default()));
         if tc["approval_handler_configured"].as_bool().unwrap() {
             let raw = &tc["approval_result"];
@@ -2005,15 +2043,30 @@ async fn conformance_approval_gate() {
                 result.approved_by = raw["approved_by"].as_str().map(String::from);
                 result.reason = raw["reason"].as_str().map(String::from);
                 result.approval_id = raw["approval_id"].as_str().map(String::from);
+                result.metadata = serde_json::from_value(raw["metadata"].clone()).unwrap();
             }
-            executor.set_approval_handler(Box::new(ScriptedHandler {
+            let handler = ScriptedHandler {
                 result,
                 invocations: Arc::clone(&invocations),
-            }));
+            };
+            if resume.is_some_and(|value| value["scoped_handler"] == true) {
+                executor.set_approval_handler(Box::new(ScopedHandler {
+                    handler,
+                    credential: tc["resume"]["credential"].as_str().unwrap().to_owned(),
+                    arguments: Arc::clone(&resume_arguments),
+                }));
+            } else {
+                executor.set_approval_handler(Box::new(handler));
+            }
         }
 
+        let mut inputs = json!({"v": 1});
+        if let Some(resume) = resume {
+            inputs = resume["arguments"].clone();
+            inputs["_approval_token"] = resume["credential"].clone();
+        }
         let outcome: Result<Value, apcore::errors::ModuleError> =
-            executor.call(module_id, json!({"v": 1}), None, None).await;
+            executor.call(module_id, inputs, None, None).await;
 
         // `gate_invoked` — counted from the handler itself.
         assert_eq!(
@@ -2022,6 +2075,12 @@ async fn conformance_approval_gate() {
             "FAIL [{id}]: gate_invoked — handler ran {} time(s)",
             invocations.load(Ordering::SeqCst)
         );
+        if let Some(expected_args) = expected.get("resume_arguments") {
+            assert_eq!(
+                resume_arguments.lock().unwrap().as_ref(),
+                Some(expected_args)
+            );
+        }
 
         // `outcome`
         let actual_outcome = if outcome.is_ok() { "proceed" } else { "error" };
@@ -2058,6 +2117,15 @@ async fn conformance_approval_gate() {
                          details were {:?}",
                         err.details
                     );
+                }
+                if let Some(fields) = expected.get("result").and_then(Value::as_object) {
+                    let result = err
+                        .details
+                        .get("result")
+                        .expect("approval result on caller error");
+                    for (key, expected_field) in fields {
+                        assert_eq!(&result[key], expected_field, "FAIL [{id}]: result.{key}");
+                    }
                 }
 
                 // NOTE: `http_status` (403 / 202) is NOT asserted. No apcore SDK

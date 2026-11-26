@@ -52,7 +52,7 @@ import { APCore } from 'apcore-js';
 
 const client = new APCore();
 
-client.module({
+const addition = client.module({
   id: 'math.add',
   description: 'Add two numbers',
   inputSchema: Type.Object({ a: Type.Number(), b: Type.Number() }),
@@ -60,6 +60,7 @@ client.module({
   execute: (inputs) => ({ sum: (inputs.a as number) + (inputs.b as number) }),
 });
 
+await addition.registration;
 console.log(await client.call('math.add', { a: 10, b: 5 })); // { sum: 15 }
 ```
 
@@ -112,9 +113,11 @@ The [Getting Started guide](https://apcore.aiperceivable.com/getting-started/) c
 
 ## What the Runtime Enforces
 
+ACL checks require an attached ACL and an active `acl_check` step. The default client attaches no ACL when the ACL file is absent. Without an `ApprovalHandler`, the active approval gate warns and allows an approval-required call to continue by default. A strict execution policy makes that gate reject the call. See the [security setup guide](./docs/spec/security-considerations.md#2-detailed-threats-and-mitigations).
+
 | Concern | Mechanism | Reference |
 |---|---|---|
-| **Contract** | Every module declares `description`, `input_schema` and `output_schema` (JSON Schema Draft 2020-12); inputs and outputs are validated on every call | [Schema System](./docs/features/schema-system.md) |
+| **Contract** | Every module declares `description`, `input_schema` and `output_schema` (JSON Schema Draft 2020-12). The standard pipeline validates inputs and module output. | [Schema System](./docs/features/schema-system.md) |
 | **Behavior** | Annotations such as `readonly`, `destructive`, `idempotent`, `requires_approval`, `open_world`, `streaming`, `cacheable`, `paginated` | [Module Interface](./docs/features/module-interface.md) |
 | **Access** | Pattern-based ACL rules evaluated first-match-wins, with identity, role and call-depth conditions; `default_effect: deny` | [ACL System](./docs/features/acl-system.md) |
 | **Approval** | A human-in-the-loop gate for modules that require approval, through a pluggable `ApprovalHandler` | [Approval System](./docs/features/approval-system.md) |
@@ -123,7 +126,7 @@ The [Getting Started guide](https://apcore.aiperceivable.com/getting-started/) c
 | **Evidence** | W3C trace context, tracing, metrics, usage, redaction of `x-sensitive` fields, events and audit | [Observability](./docs/features/observability.md) |
 | **Recovery** | Structured errors with `retryable`, `ai_guidance`, `user_fixable` and `suggestion` | [Error System](./docs/features/error-system.md) |
 
-Every call runs the same eleven-step pipeline:
+The standard call uses this eleven-step pipeline:
 
 ```text
  1. context_creation    trace_id, caller_id, call_chain, identity

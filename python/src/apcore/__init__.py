@@ -16,6 +16,7 @@ from apcore.approval import (
     ApprovalResult,
     AutoApproveHandler,
     CallbackApprovalHandler,
+    ScopedApprovalHandler,
 )
 from apcore.cancel import CancelToken, ExecutionCancelledError
 from apcore.context import Context, ContextFactory, GovernanceProjection, Identity
@@ -73,7 +74,13 @@ from apcore.config import (
 
 # Error Formatter
 from apcore.error_formatter import ErrorFormatter, ErrorFormatterRegistry
-from apcore.streaming import StreamingModule
+from apcore.streaming import (
+    StreamCompletion,
+    StreamCompletionReason,
+    StreamExecution,
+    StreamingModule,
+    StreamStepOutcome,
+)
 
 # Errors
 from apcore.errors import (
@@ -631,6 +638,7 @@ __all__ = [
     "AlwaysDenyHandler",
     "AutoApproveHandler",
     "CallbackApprovalHandler",
+    "ScopedApprovalHandler",
     # Module types
     "Change",
     "DEFAULT_ANNOTATIONS",
@@ -658,7 +666,11 @@ __all__ = [
     "ErrorFormatter",
     "ErrorFormatterRegistry",
     # Streaming
+    "StreamCompletion",
+    "StreamCompletionReason",
+    "StreamExecution",
     "StreamingModule",
+    "StreamStepOutcome",
     # Registry protocols
     "Discoverer",
     "ModuleValidator",

@@ -5,7 +5,7 @@
 
 import type { Context } from './context.js';
 import { InvalidParentIdError } from './errors.js';
-import type { Span } from './observability/tracing.js';
+import { currentSpan, legacySpan } from './execution-lifetime.js';
 import { randomHex } from './utils/index.js';
 
 const TRACEPARENT_RE = /^([0-9a-f]{2})-([0-9a-f]{32})-([0-9a-f]{16})-([0-9a-f]{2})$/;
@@ -50,7 +50,7 @@ export class TraceContext {
    * Behavior:
    * - Uses `context.traceId` (already 32-hex) as the traceparent trace_id.
    * - When `parentId` is supplied it is used verbatim and MUST match `^[0-9a-f]{16}$`;
-   *   otherwise the last span on the tracing stack provides the id, falling back
+   *   otherwise the current invocation's span provides the id, falling back
    *   to a fresh random 16-hex value.
    * - When the Context carries an inbound TraceParent under
    *   `data['_apcore.trace.inbound']`, its `traceFlags` and `tracestate` are
@@ -70,12 +70,7 @@ export class TraceContext {
       }
       chosenParent = parentId;
     } else {
-      const spansStack = context.data['_apcore.mw.tracing.spans'] as Span[] | undefined;
-      if (spansStack && spansStack.length > 0) {
-        chosenParent = spansStack[spansStack.length - 1].spanId;
-      } else {
-        chosenParent = randomHex(8);
-      }
+      chosenParent = (currentSpan(context) ?? legacySpan(context))?.spanId ?? randomHex(8);
     }
 
     // Read the parsed inbound trace state from the two scalar keys, falling

@@ -11,8 +11,10 @@ import textwrap
 from pathlib import Path
 from typing import Any
 
+import pytest
 from pydantic import BaseModel
 
+from apcore.config import Config
 from apcore.registry.registry import Registry
 
 _SOURCE = textwrap.dedent(
@@ -48,6 +50,52 @@ def _write(path: Path) -> Path:
 
 
 class TestHotReloadCanonicalId:
+    @pytest.mark.parametrize("relative_path", ["_excluded/probe.py", "system/probe.py"])
+    def test_ineligible_source_is_not_passed_to_the_loader(self, tmp_path: Path, relative_path: str) -> None:
+        source = _write(tmp_path / relative_path)
+        seen: list[Path] = []
+        registry = Registry(extensions_dir=str(tmp_path), pre_approval_hook=seen.append)
+
+        registry._handle_file_change(str(source))
+
+        assert seen == []
+        assert registry.module_ids == []
+
+    def test_ignored_source_is_not_passed_to_the_loader(self, tmp_path: Path) -> None:
+        source = _write(tmp_path / "ignored.py")
+        seen: list[Path] = []
+        config = Config({"extensions": {"ignore_patterns": ["ignored.py"]}})
+        registry = Registry(config, extensions_dir=str(tmp_path), pre_approval_hook=seen.append)
+
+        registry._handle_file_change(str(source))
+
+        assert seen == []
+        assert registry.module_ids == []
+
+    @pytest.mark.parametrize("follow_symlinks", [False, True])
+    def test_outside_symlink_is_not_passed_to_the_loader(self, tmp_path: Path, follow_symlinks: bool) -> None:
+        root = tmp_path / "extensions"
+        root.mkdir()
+        alias = root / "probe.py"
+        alias.symlink_to(_write(tmp_path / "probe.py"))
+        seen: list[Path] = []
+        config = Config({"extensions": {"follow_symlinks": follow_symlinks}})
+        registry = Registry(config, extensions_dir=str(root), pre_approval_hook=seen.append)
+
+        registry._handle_file_change(str(alias))
+
+        assert seen == []
+        assert registry.module_ids == []
+
+    def test_watcher_does_not_remove_programmatically_registered_module(self, tmp_path: Path) -> None:
+        registry = Registry(extensions_dir=str(tmp_path))
+        registered = _Other()
+        registry.register("billing.refund", registered)
+
+        registry._handle_file_deletion(str(tmp_path / "billing" / "refund.py"))
+
+        assert registry.get("billing.refund") is registered
+
     def test_new_file_registers_under_path_derived_id(self, tmp_path: Path) -> None:
         root = tmp_path / "extensions"
         probe = _write(root / "billing" / "refund.py")
@@ -86,6 +134,7 @@ class TestHotReloadCanonicalId:
         registry.register("archive.refund", _Other())
         assert registry.has("billing.refund")
 
+        probe.unlink()
         registry._handle_file_deletion(str(probe))
 
         assert not registry.has("billing.refund")

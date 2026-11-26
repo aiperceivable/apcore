@@ -12,23 +12,28 @@ import hashlib
 import ipaddress
 import json
 import logging
+import math
 import re
+from copy import deepcopy
 from datetime import date, datetime, time
+from fractions import Fraction
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Iterator
     from referencing._core import Resolver
+    from referencing.jsonschema import Schema
 
 from jsonschema import Draft202012Validator
 from jsonschema.exceptions import ValidationError as JsonschemaError
+from jsonschema.validators import extend
 from pydantic import BaseModel
 from referencing import Registry
 from referencing.exceptions import Unresolvable
 from referencing.jsonschema import DRAFT202012
 
-from apcore.schema.types import SchemaValidationErrorDetail, SchemaValidationResult
+from apcore.schema.types import SchemaValidationErrorDetail, SchemaValidationResult, _validation_failure_message
 
 __all__ = ["content_hash", "validate_schema_dict", "warn_format_violations"]
 
@@ -42,6 +47,57 @@ _URI_SCHEME_RE = re.compile(r"^[a-zA-Z][a-zA-Z0-9+\-.]*://")
 # would otherwise recurse until the interpreter's own limit. A `format` deeper
 # than this goes unreported, which is acceptable for a SHOULD-level annotation.
 _MAX_WALK_DEPTH = 64
+
+
+def _validate_multiple_of(validator: Any, divisor: Any, instance: Any, schema: Any) -> Iterator[JsonschemaError]:
+    """Compare each JSON number's decimal representation as an exact fraction."""
+    if not validator.is_type(instance, "number"):
+        return
+    values = (instance, divisor)
+    if (
+        all(isinstance(value, int) or (isinstance(value, float) and math.isfinite(value)) for value in values)
+        and divisor > 0
+    ):
+        numerator, denominator = (
+            Fraction(str(value)) if isinstance(value, float) else Fraction(value) for value in values
+        )
+        if numerator % denominator != 0:
+            yield JsonschemaError("Value is not a multiple of the declared divisor")
+    else:
+        yield from Draft202012Validator.VALIDATORS["multipleOf"](validator, divisor, instance, schema)
+
+
+_Draft202012DecimalValidator = extend(Draft202012Validator, validators={"multipleOf": _validate_multiple_of})
+_DRAFT202012_URI = Draft202012Validator.META_SCHEMA["$id"]
+
+
+def _inherit_decimal_dialect(schema: dict[str, Any]) -> dict[str, Any]:
+    """Let explicit Draft 2020-12 subschemas inherit the extended validator."""
+    pending: list[Schema] = [schema]
+    seen: set[int] = set()
+    declarations: list[int] = []
+    while pending:
+        node = pending.pop()
+        if not isinstance(node, dict) or id(node) in seen:
+            continue
+        seen.add(id(node))
+        dialect = node.get("$schema")
+        if isinstance(dialect, str):
+            if dialect.rstrip("#") != _DRAFT202012_URI:
+                continue
+            declarations.append(id(node))
+        pending.extend(DRAFT202012.subresources_of(node))
+
+    if not declarations:
+        return schema
+    # jsonschema.evolve switches to the stock class at an explicit URI.
+    # Drop redundant declarations from the validation copy; the original
+    # schema remains available for references, export, and introspection.
+    copies: dict[int, Any] = {}
+    normalized = deepcopy(schema, copies)
+    for node_id in declarations:
+        del copies[node_id]["$schema"]
+    return normalized
 
 
 def _is_datetime(v: str) -> bool:
@@ -129,7 +185,8 @@ def validate_schema_dict(data: Any, schema: dict[str, Any]) -> SchemaValidationR
     Format violations (date-time, email, uri, …) emit a logger.warning but do NOT
     fail validation (SHOULD-level enforcement per PROTOCOL_SPEC §4.15.4).
     """
-    validator = Draft202012Validator(schema, registry=Registry())
+    validation_schema = _inherit_decimal_dialect(schema)
+    validator = _Draft202012DecimalValidator(validation_schema, registry=Registry())
     raw_errors = list(validator.iter_errors(data))
 
     if raw_errors:
@@ -137,7 +194,7 @@ def validate_schema_dict(data: Any, schema: dict[str, Any]) -> SchemaValidationR
         details = [_error_to_detail(e) for e in raw_errors]
         return SchemaValidationResult(valid=False, errors=details, error_code=error_code)
 
-    _check_formats_and_warn(data, schema)
+    _check_formats_and_warn(data, validation_schema)
     return SchemaValidationResult(valid=True, errors=[])
 
 
@@ -171,7 +228,7 @@ def warn_format_violations(data: Any, model: Any) -> None:
 
     if isinstance(data, BaseModel):
         data = data.model_dump(mode="json")
-    _check_formats_and_warn(data, source_schema)
+    _check_formats_and_warn(data, _inherit_decimal_dialect(source_schema))
 
 
 # Sub-schema keywords whose value is itself a schema (or a collection of them).
@@ -222,7 +279,7 @@ def _error_to_detail(error: JsonschemaError) -> SchemaValidationErrorDetail:
     constraint: str | None = str(raw_validator) if raw_validator is not None else None
     return SchemaValidationErrorDetail(
         path=path,
-        message=error.message,
+        message=_validation_failure_message(constraint or "type"),
         constraint=constraint,
         expected=None,
         actual=error.instance,
@@ -313,7 +370,7 @@ def _check_formats_and_warn(
                     branch_scope = resolver.in_subresource(DRAFT202012.create_resource(branch))
                     # jsonschema accepts the active resolver, but its typing
                     # omits the keyword. Keep the branch's document scope.
-                    predicate = Draft202012Validator(branch, _resolver=branch_scope)  # pyright: ignore[reportCallIssue]
+                    predicate = _Draft202012DecimalValidator(branch, _resolver=branch_scope)
                     try:
                         valid = predicate.is_valid(data)
                     except Unresolvable:

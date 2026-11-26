@@ -17,13 +17,16 @@ import json
 import logging
 import time
 from collections.abc import Awaitable, Callable
-from typing import Any, cast
+from copy import deepcopy
+from typing import TYPE_CHECKING, Any, cast
 
 import pydantic
 
-from apcore.approval import ApprovalRequest, ApprovalResult
+from apcore.approval import ApprovalRequest, ApprovalResult, ScopedApprovalHandler
 from apcore.cancel import CancelToken, ExecutionCancelledError
 from apcore.context import Context, GovernanceProjection
+from apcore.context_keys import _current_trace_span
+from apcore.decorator import FunctionModule
 from apcore.errors import (
     ACLDeniedError,
     ApprovalDeniedError,
@@ -49,9 +52,14 @@ from apcore.pipeline import (
 from apcore.policy import ExecutionPolicy, PolicyDecision, strip_approval_token
 from apcore.schema.annotations import governance_union
 from apcore.schema.hardening import warn_format_violations
+from apcore.schema.types import _validation_failure_message
+from apcore.schema.validator import _validate_strict_model
 from apcore.config import Config
 from apcore.utils.call_chain import guard_call_chain
 from apcore.utils.module_output import normalize_module_output
+
+if TYPE_CHECKING:
+    from apcore.sys_modules.control import ToggleState
 
 __all__ = [
     "BuiltinContextCreation",
@@ -75,20 +83,25 @@ __all__ = [
 _logger = logging.getLogger(__name__)
 
 
-def _validate_module_payload(schema: type[pydantic.BaseModel], data: dict[str, Any]) -> None:
+def _validate_module_payload(schema: type[pydantic.BaseModel], data: dict[str, Any], direction: str) -> Any:
     """Apply strict validation to a JSON value or an existing native value."""
-    validate_json = getattr(schema, "model_validate_json", None)
-    if callable(validate_json):
-        try:
-            encoded = json.dumps(data)
-        except (TypeError, ValueError):
-            # Native values that have no standard JSON representation still
-            # use Pydantic's strict native validation path.
-            pass
-        else:
-            validate_json(encoded, strict=True)
-            return
-    schema.model_validate(data, strict=True)
+    try:
+        validate_json = getattr(schema, "model_validate_json", None)
+        if callable(validate_json):
+            try:
+                encoded = json.dumps(data)
+            except (TypeError, ValueError):
+                # Native values without a JSON representation use strict native validation.
+                pass
+            else:
+                return _validate_strict_model(schema, encoded, json_mode=True)
+        return _validate_strict_model(schema, data, json_mode=False)
+    except pydantic.ValidationError as error:
+        errors = _convert_validation_errors(error)
+    except SchemaValidationError as error:
+        errors = error.details["errors"]
+    # Native exception strings and tracebacks can render private instance values.
+    raise SchemaValidationError(message=f"{direction} validation failed", errors=errors)
 
 
 def _convert_validation_errors(error: pydantic.ValidationError) -> list[dict[str, Any]]:
@@ -110,14 +123,14 @@ def _convert_validation_errors(error: pydantic.ValidationError) -> list[dict[str
         "extra_forbidden": "additionalProperties",
     }
     results = []
-    for item in error.errors():
+    for item in error.errors(include_input=False, include_context=False):
         kind = item["type"]
         location = item["loc"][:-1] if kind in {"missing", "extra_forbidden"} else item["loc"]
         path = "".join("/" + str(part).replace("~", "~0").replace("/", "~1") for part in location)
         keyword = keywords.get(
             kind, "type" if kind.endswith(("_type", "_parsing")) or kind == "is_instance_of" else "format"
         )
-        results.append({"path": path, "keyword": keyword, "message": item["msg"]})
+        results.append({"path": path, "keyword": keyword, "message": _validation_failure_message(keyword, kind)})
     return results
 
 
@@ -315,6 +328,8 @@ class BuiltinContextCreation(BaseStep):
             if ctx.context.global_deadline is None and self._global_timeout > 0:
                 ctx.context.global_deadline = time.time() + self._global_timeout / 1000.0
         ctx.invocation_deadline = ctx.context.global_deadline
+        if ctx._stream_observation is not None:
+            ctx._stream_observation.monitor(ctx.context)
 
         return StepResult(action="continue")
 
@@ -447,6 +462,14 @@ class BuiltinModuleLookup(BaseStep):
             from apcore.sys_modules.control import _default_toggle_state
 
             self._toggle_state = _default_toggle_state
+
+    @property
+    def toggle_state(self) -> ToggleState:
+        """State this step consults before executing a module."""
+        return self._toggle_state
+
+    def _set_toggle_state(self, toggle_state: ToggleState) -> None:
+        self._toggle_state = toggle_state
 
     async def execute(self, ctx: PipelineContext) -> StepResult:
         version_hint = getattr(ctx, "version_hint", None)
@@ -590,6 +613,7 @@ class BuiltinACLCheck(_GovernanceGateFields):
             # are high-volume and already covered by the apcore.acl.check span.
             self._emit_denied(caller_id, ctx.module_id, ctx.context, ctx.dry_run)
             raise ACLDeniedError(caller_id=caller_id, target_id=ctx.module_id)
+        ctx._acl_allowed = True
         return StepResult(action="continue")
 
     async def _decide(self, caller_id: str, ctx: PipelineContext) -> tuple[bool, bool]:
@@ -725,47 +749,9 @@ class BuiltinApprovalGate(_GovernanceGateFields):
         """The ExecutionPolicy this gate applies (read by ``governance_state()``, §6.6.5.5)."""
         return self._policy
 
-    @staticmethod
-    def _take_approval_token(ctx: PipelineContext) -> str | None:
-        """Remove ``_approval_token`` from ``ctx.inputs`` and return it, or None.
-
-        Rebuilds the inputs rather than calling ``ctx.inputs.pop``.
-        ``PipelineContext`` holds the very dict the caller passed to ``call()``
-        (``Executor.call_async`` does ``inputs=inputs or {}``, no copy), so
-        popping mutated the caller's own object — a module invocation silently
-        edited its caller's data. apcore-typescript rebuilds too
-        (``const { _approval_token: _, ...rest } = ctx.inputs``).
-
-        The non-string check runs here, before every early return, so a
-        malformed token never reaches ``check_approval`` regardless of whether
-        the module turns out to be gated (parity with apcore-rust, which rejects
-        it with ``GENERAL_INVALID_INPUT``).
-
-        Raises:
-            InvalidInputError: When the token is present but not a string.
-        """
-        if "_approval_token" not in ctx.inputs:
-            return None
-        token = ctx.inputs["_approval_token"]
-        ctx.inputs = {k: v for k, v in ctx.inputs.items() if k != "_approval_token"}
-        if not isinstance(token, str):
-            raise InvalidInputError(
-                message="_approval_token must be a string",
-                code="GENERAL_INVALID_INPUT",
-            )
-        return token
-
     async def execute(self, ctx: PipelineContext) -> StepResult:
         module = ctx.module
-        # PROTOCOL_SPEC §7.4 states this unconditionally: "_approval_token MUST
-        # be removed from arguments before passing to subsequent steps". It is a
-        # protocol-level key, not part of any module's input contract, so it has
-        # to go before *every* exit from this step — including the not-gated and
-        # no-handler-skip paths, which used to leak it into input validation
-        # (where `additionalProperties: false` rejects it as an undeclared key)
-        # and into the module's own execute(). Parity with apcore-typescript,
-        # which extracts it as the first statement of execute().
-        approval_token = self._take_approval_token(ctx)
+        approval_token = ctx._take_approval_token()
 
         # PROTOCOL_SPEC §6.1.6 / §7.4: Step 4's second result. The gate fires on
         # the UNION of the module annotation, this, and gate_destructive (§6.9
@@ -795,8 +781,7 @@ class BuiltinApprovalGate(_GovernanceGateFields):
             # built-in pattern rules do not consult them, so the verdict of an
             # existing policy is unchanged. A host-supplied policy can decide
             # on them, and an implementation can carry them into the audit
-            # trail. ``ctx.inputs`` has already had ``_approval_token`` stripped
-            # above, so the policy never sees a protocol-level key.
+            # trail. The pipeline separates the resume credential at entry.
             decision = self._policy.resolve(
                 ctx.module_id,
                 governance,
@@ -851,45 +836,26 @@ class BuiltinApprovalGate(_GovernanceGateFields):
             )
             return StepResult(action="continue")
 
-        # Phase B token resume vs fresh request. The token was taken off the
-        # inputs at the top of this method, before any early return.
-        if approval_token is not None:
-            result = await self._handler.check_approval(approval_token)
-        else:
-            # The handler must be told what the gate fired on: the union, not a
-            # second, narrower read of the live instance. Gating on one source
-            # and describing the call from another is the split D-96 closes.
-            annotations = _coerce_annotations(governance)
-            # Preserve the ApprovalRequest contract ("requires_approval is
-            # guaranteed true", PROTOCOL_SPEC §7.3 / §7.9.3): the handler sees
-            # the EFFECTIVE governance values, not the module's raw
-            # declaration. Reaching this point means the call needs approval,
-            # so requires_approval is true by definition — whether the source
-            # was the annotation, a policy rule, gate_destructive, or (since
-            # spec v1.28.0) an ACL rule carrying `approval` (§7.4 rule 3).
-            annotations = dataclasses.replace(
-                annotations,
-                requires_approval=True,
-                destructive=effective_destructive,
-            )
-            request = ApprovalRequest(
-                module_id=ctx.module_id,
-                arguments=ctx.inputs,
-                context=ctx.context,
-                annotations=annotations,
-                description=getattr(module, "description", None),
-                tags=list(getattr(module, "tags", None) or []),
-                # Spec decision D-03 (2026-05-decision-log.md, PROTOCOL_SPEC
-                # §7.3.1): caller_id is read straight off Context.caller_id with
-                # no substitution — None on a top-level call is correct, not a
-                # gap to fill with a sentinel. action always equals the module
-                # actually being invoked, not a handler-supplied label.
-                caller_id=ctx.context.caller_id,
-                action=ctx.module_id,
-            )
+        annotations = dataclasses.replace(
+            _coerce_annotations(governance), requires_approval=True, destructive=effective_destructive
+        )
+        request = ApprovalRequest(
+            module_id=ctx.module_id,
+            arguments=deepcopy(ctx.inputs),
+            context=ctx.context,
+            annotations=annotations,
+            description=getattr(module, "description", None),
+            tags=list(getattr(module, "tags", None) or []),
+            caller_id=ctx.context.caller_id,
+            action=ctx.module_id,
+        )
+        if approval_token is None:
             result = await self._handler.request_approval(request)
-
-        self._emit_audit(result, ctx.module_id, ctx.context)
+        elif isinstance(self._handler, ScopedApprovalHandler):
+            result = await self._handler.check_approval_for_call(approval_token, request)
+        else:
+            result = ApprovalResult(status="rejected", reason="The approval handler does not support scoped resumption")
+        self._emit_audit(result, ctx.module_id, ctx.context, approval_token)
 
         if result.status == "approved":
             return StepResult(action="continue")
@@ -930,9 +896,9 @@ class BuiltinApprovalGate(_GovernanceGateFields):
             decision.needs_approval,
             rule.reason if rule else "",
         )
-        spans_stack: list[Any] = ctx.data.get("_apcore.mw.tracing.spans", [])
-        if spans_stack:
-            spans_stack[-1].events.append(
+        span = _current_trace_span(ctx, include_parent=True)
+        if span is not None:
+            span.events.append(
                 {
                     "name": "policy_override",
                     "module_id": decision.module_id,
@@ -966,7 +932,9 @@ class BuiltinApprovalGate(_GovernanceGateFields):
                 )
             )
 
-    def _emit_audit(self, result: ApprovalResult, module_id: str, ctx: Context) -> None:
+    def _emit_audit(
+        self, result: ApprovalResult, module_id: str, ctx: Context, resume_credential: str | None = None
+    ) -> None:
         """Audit an approval decision: log, span event, and bus event.
 
         Publishes ``apcore.approval.decision`` (canonical name proposed in
@@ -974,6 +942,7 @@ class BuiltinApprovalGate(_GovernanceGateFields):
         emitter is configured. Severity mirrors the outcome: approved/pending
         are ``info``; rejected/timeout (governance interventions) are ``warn``.
         """
+        audit_id = result.audit_id if result.audit_id not in (result.approval_id, resume_credential) else None
         _logger.info(
             "Approval decision: module=%s status=%s approved_by=%s reason=%s",
             module_id,
@@ -981,16 +950,16 @@ class BuiltinApprovalGate(_GovernanceGateFields):
             result.approved_by,
             result.reason,
         )
-        spans_stack: list[Any] = ctx.data.get("_apcore.mw.tracing.spans", [])
-        if spans_stack:
-            spans_stack[-1].events.append(
+        span = _current_trace_span(ctx, include_parent=True)
+        if span is not None:
+            span.events.append(
                 {
                     "name": "approval_decision",
                     "module_id": module_id,
                     "status": result.status,
                     "approved_by": result.approved_by or "",
                     "reason": result.reason or "",
-                    "approval_id": result.approval_id or "",
+                    "approval_id": audit_id or "",
                 }
             )
         if self._event_emitter is not None:
@@ -1009,7 +978,7 @@ class BuiltinApprovalGate(_GovernanceGateFields):
                         "status": result.status,
                         "approved_by": result.approved_by,
                         "reason": result.reason,
-                        "approval_id": result.approval_id,
+                        "approval_id": audit_id,
                         "trace_id": getattr(ctx, "trace_id", None),
                     },
                 )
@@ -1221,6 +1190,8 @@ class BuiltinMiddlewareBefore(BaseStep):
             # Clear executed_middlewares after on_error to prevent double invocation
             ctx.executed_middlewares = []
             if recovery is not None:
+                if ctx._stream_observation is not None and ctx._stream_observation.captures_completion:
+                    ctx._stream_observation.record_execution_error(exc)
                 ctx.output = recovery
                 return StepResult(action="skip_to", skip_to="return_result")
             raise
@@ -1259,26 +1230,22 @@ class BuiltinInputValidation(BaseStep):
                 ctx.context.redacted_inputs = _redact_payload(strip_approval_token(ctx.inputs), None, self._redaction)
             return StepResult(action="continue")
 
-        try:
-            # ``strict=True``: the module-invocation boundary performs NO type
-            # coercion. A contract that declares ``integer`` receives an
-            # integer — ``"42"`` is a type error, not an integer spelled
-            # differently. A module's input contract has to mean the same thing
-            # regardless of which host loaded it, so this is not host-
-            # configurable (TYPE_MAPPING §17.3). ``SchemaValidator`` still
-            # exposes ``coerce_types`` as a library-level knob for callers
-            # doing their own validation; it has no effect on this path.
-            _validate_module_payload(input_schema, ctx.inputs)
-        except pydantic.ValidationError as exc:
-            errors = _convert_validation_errors(exc)
-            raise SchemaValidationError(
-                message=f"Input validation failed: {errors}",
-                errors=errors,
-            ) from exc
-
+        # The module-invocation boundary always validates without type coercion.
+        validated = _validate_module_payload(input_schema, ctx.inputs, "Input")
         warn_format_violations(ctx.inputs, input_schema)
 
         ctx.validated_inputs = ctx.inputs
+        if isinstance(validated, pydantic.BaseModel) and not isinstance(
+            getattr(input_schema, "__apcore_source_schema__", None), dict
+        ):
+            if isinstance(module, FunctionModule):
+                ctx.validated_inputs = module._validated_call_inputs(ctx.inputs, validated)
+            elif getattr(module, "native_inputs", False) is True:
+                fields = type(validated).model_fields.keys() & validated.model_fields_set
+                ctx.validated_inputs = {
+                    **(validated.model_extra or {}),
+                    **{key: getattr(validated, key) for key in fields},
+                }
 
         # Redact sensitive fields after successful validation
         if ctx.context is not None and hasattr(ctx.context, "redacted_inputs"):
@@ -1308,11 +1275,19 @@ class BuiltinExecute(BaseStep):
             provides=("output",),
         )
         self._config = config
-        if config is not None:
-            val = config.get("executor.default_timeout")
-            self._default_timeout: int = val if val is not None else Config.get_default("executor.default_timeout")
-        else:
-            self._default_timeout = Config.get_default("executor.default_timeout")
+
+    @staticmethod
+    def _end_for_timeout(ctx: PipelineContext, timeout_ms: int) -> ModuleTimeoutError:
+        token = getattr(ctx.context, "cancel_token", None)
+        observation = ctx._stream_observation
+        error = ModuleTimeoutError(module_id=ctx.module_id, timeout_ms=timeout_ms, retryable=_is_idempotent(ctx.module))
+        if observation is not None:
+            if token is not None:
+                token.check()
+            observation.report_timeout(error)
+        if token is not None:
+            token.cancel()
+        return error
 
     async def execute(self, ctx: PipelineContext) -> StepResult:
         module = ctx.module
@@ -1324,20 +1299,16 @@ class BuiltinExecute(BaseStep):
         if cancel_token is not None and cancel_token.is_cancelled:
             raise ExecutionCancelledError()
 
+        configured_timeout = self._config.get("executor.default_timeout") if self._config is not None else None
+        default_timeout = (
+            Config.get_default("executor.default_timeout") if configured_timeout is None else configured_timeout
+        )
         # Check global deadline
         # D-99: `global_deadline` is epoch seconds, so it is compared against
         # `time.time()` — never a monotonic reading.
         global_deadline = getattr(ctx.context, "global_deadline", None)
         if global_deadline is not None and time.time() > global_deadline:
-            token = getattr(ctx.context, "cancel_token", None)
-            if token is not None:
-                token.cancel()
-            timeout_ms = int(self._default_timeout)
-            raise ModuleTimeoutError(
-                module_id=ctx.module_id,
-                timeout_ms=timeout_ms,
-                retryable=_is_idempotent(module),
-            )
+            raise self._end_for_timeout(ctx, int(default_timeout))
 
         inputs = ctx.validated_inputs if ctx.validated_inputs is not None else ctx.inputs
 
@@ -1365,21 +1336,14 @@ class BuiltinExecute(BaseStep):
         # (`if (timeoutMs === 0)`) and apcore-rust (`if timeout_ms > 0`) use.
         # The global deadline below still applies.
         module_timeout_ms = _read_module_timeout_ms(module, ctx.module_id)
-        effective_timeout_ms = self._default_timeout if module_timeout_ms is None else module_timeout_ms
+        effective_timeout_ms = default_timeout if module_timeout_ms is None else module_timeout_ms
         timeout_s = effective_timeout_ms / 1000.0 if effective_timeout_ms > 0 else None
 
         # Clamp to global deadline if set
         if global_deadline is not None:
             remaining = global_deadline - time.time()
             if remaining <= 0:
-                token = getattr(ctx.context, "cancel_token", None)
-                if token is not None:
-                    token.cancel()
-                raise ModuleTimeoutError(
-                    module_id=ctx.module_id,
-                    timeout_ms=int(self._default_timeout),
-                    retryable=_is_idempotent(module),
-                )
+                raise self._end_for_timeout(ctx, int(default_timeout))
             if timeout_s is None or remaining < timeout_s:
                 timeout_s = remaining
 
@@ -1398,23 +1362,18 @@ class BuiltinExecute(BaseStep):
             if timeout_s is not None:
                 completed, _ = await asyncio.wait({task}, timeout=timeout_s)
                 if not completed:
-                    token = getattr(ctx.context, "cancel_token", None)
-                    if token is not None:
-                        token.cancel()
                     # Cancellation is cooperative: do not wait for cleanup or
                     # forcibly cancel the module's coroutine. Consume a late
                     # exception so a discarded result cannot become a warning.
-                    raise ModuleTimeoutError(
-                        module_id=ctx.module_id,
-                        timeout_ms=int(timeout_s * 1000),
-                        retryable=_is_idempotent(module),
-                    )
+                    raise self._end_for_timeout(ctx, int(timeout_s * 1000))
                 output = task.result()
             else:
                 # Cancelling the asyncio wrapper does not stop a worker thread.
                 output = await task if is_async else await asyncio.shield(task)
             output = normalize_module_output(output)
-            if output is not None and not isinstance(output, dict):
+            if output is None:
+                raise ModuleExecuteError(module_id=ctx.module_id, message="Return value cannot be None")
+            if not isinstance(output, dict):
                 raise ModuleExecuteError(module_id=ctx.module_id, message="Return value must be Map")
             ctx.output = output
         except asyncio.TimeoutError:
@@ -1492,17 +1451,7 @@ class BuiltinOutputValidation(BaseStep):
                 ctx.context.redacted_output = None
             return StepResult(action="continue")
 
-        try:
-            # ``strict=True`` — symmetric with input validation above: the
-            # module boundary never coerces (TYPE_MAPPING §17.3).
-            _validate_module_payload(output_schema, ctx.output)
-        except pydantic.ValidationError as exc:
-            errors = _convert_validation_errors(exc)
-            raise SchemaValidationError(
-                message=f"Output validation failed: {errors}",
-                errors=errors,
-            ) from exc
-
+        _validate_module_payload(output_schema, ctx.output, "Output")
         warn_format_violations(ctx.output, output_schema)
 
         ctx.validated_output = ctx.output

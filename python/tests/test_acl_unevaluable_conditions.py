@@ -618,6 +618,29 @@ class TestIntrospection:
         assert len(snapshot) == 1, "an earlier snapshot must not observe later mutations"
         assert len(acl.rules) == 2
 
+    def test_rules_snapshot_detaches_rule_fields_and_nested_conditions(self) -> None:
+        rule = ACLRule(
+            callers=["api.*"],
+            targets=["executor.report"],
+            effect="allow",
+            description="reporting",
+            conditions={"$not": {"roles": ["guest"]}},
+        )
+        acl = ACL(rules=[rule])
+
+        snapshot = acl.rules[0]
+        snapshot.description = "local edit"
+        snapshot.callers.append("cli.*")
+        snapshot.targets.clear()
+        assert snapshot.conditions is not None
+        snapshot.conditions["$not"]["roles"].append("member")
+
+        current = acl.rules[0]
+        assert current.description == "reporting"
+        assert current.callers == ["api.*"]
+        assert current.targets == ["executor.report"]
+        assert current.conditions == {"$not": {"roles": ["guest"]}}
+
     def test_accessors_reflect_a_reload(self, tmp_path: Path) -> None:
         """§6.8 rule 4: both read the live object, never a cached parse."""
         path = tmp_path / "acl.yaml"

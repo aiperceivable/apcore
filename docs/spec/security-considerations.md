@@ -22,7 +22,7 @@ apcore is a governed runtime, not a sandbox. The host process trusts every loade
 | T2  | Sensitive operation without sign-off    | Approval gate, pipeline Step 5 (§2.3, §2.9) |
 | T3  | Runaway / stack-blowing recursion       | Call-chain guard, pipeline Step 2 (`executor.max_call_depth`, `executor.max_module_repeat`) |
 | T4  | Malformed inputs reaching `execute()`   | Input validation, pipeline Step 7 (JSON Schema) |
-| T5  | Output schema drift (data exfiltration) | Output validation, pipeline Step 9         |
+| T5  | Output schema drift and sensitive fields in responses | Step 9 validates the module result. The host controls [what the response publishes](#publishing-module-output). |
 | T6  | Sensitive data in logs and audit events | `x-sensitive` + `obs.redaction.*` (§2.5)   |
 | T7  | Trace ID forgery / log poisoning        | Trace ID validation ([§10.5](./protocol-spec.md#105-trace-id-format)) |
 | T8  | Module-ID spoofing of a privileged namespace | First-segment reserved-word check ([§2.6](./protocol-spec.md#26-id-conflict-detection)) |
@@ -86,16 +86,16 @@ apcore is a governed runtime, not a sandbox. The host process trusts every loade
 
 **Threat.** A `_approval_token` reused after the underlying decision should have expired, or used by a different caller than the original requester.
 
-**Mitigation.** The protocol does not specify token format — that is delegated to `ApprovalHandler` implementations. Handlers **SHOULD**:
+**Mitigation.** The handler chooses the credential format. Scoped resumption receives the current request and **MUST** verify it against the stored approval before authorizing execution.
 
-1. Make tokens **single-use** (consume on first `check_approval` success).
-2. **Bind tokens to `(caller_id, target_id, input_hash)`** so they cannot be replayed against a different invocation.
-3. Set **expiry timestamps** and reject expired tokens with `status: timeout`.
-4. Record approver identity (`approved_by`) for audit.
+1. Bind the credential to the trusted principal where available, `caller_id`, `target_id`, and a canonical digest of the arguments.
+2. Set an expiry and return `status: timeout` for expired approvals.
+3. Verify the scope and consume the credential in one atomic operation on success.
+4. Use an independent `audit_id` to correlate decisions. Record `approved_by` when the approver is known.
 
 **No handler, no gate.** With no `ApprovalHandler` configured, Step 5 is skipped with a warning and a module that requires approval executes anyway. `ExecutionPolicy(strict = true)` makes the gate fail closed instead ([§7.9.4](./protocol-spec.md#794-fail-loud-not-silent-security-principle)).
 
-**Residual risk.** A handler that issues unbound, long-lived tokens is vulnerable to replay. This is an implementation defect, not a protocol flaw.
+**Residual risk.** The handler's backing store must enforce the scope and single-use transition across the processes that share it.
 
 ### 2.4 `context.data` Injection (T1, OT5)
 
@@ -125,6 +125,12 @@ apcore is a governed runtime, not a sandbox. The host process trusts every loade
 - The contents of an `error.message` string — see §3.3.
 - Data leaving the process via custom middleware that bypasses `context.redacted_inputs`.
 - Data written to traces / spans by user code.
+
+### 2.5.1 Publishing Module Output (T5) {#publishing-module-output}
+
+For a unary call, Step 9 validates the module result before `middleware_after`. The executor returns any replacement produced by `middleware_after` without a second schema check. A native stream can deliver chunks before Step 9 validates their combined result. At that point a validation failure cannot retract delivered chunks. A [stream completion receipt](../features/streaming.md) lets the consumer inspect the final validation outcome.
+
+At a transport boundary, project output onto the fields the caller may see. Validate that public representation and redact sensitive values before sending the unary response or forwarding each chunk. The `x-sensitive` capture rules protect diagnostic copies such as `context.redacted_output`. The module response itself remains application data.
 
 ### 2.6 Trace ID Forgery (T7)
 

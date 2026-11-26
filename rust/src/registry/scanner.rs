@@ -52,7 +52,6 @@ pub fn scan_extensions(
     let mut seen_ids: HashMap<String, PathBuf> = HashMap::new();
     let mut seen_ids_lower: HashMap<String, String> = HashMap::new();
     let mut visited_real_paths: HashSet<PathBuf> = HashSet::new();
-    visited_real_paths.insert(root.clone());
 
     scan_dir(
         &root,
@@ -92,6 +91,9 @@ fn scan_dir(
             max_depth,
             dir_path.display()
         );
+        return;
+    }
+    if !visited_real_paths.insert(dir_path.to_path_buf()) {
         return;
     }
 
@@ -141,56 +143,44 @@ fn scan_dir(
             }
         };
 
-        if file_type.is_dir() || (file_type.is_symlink() && follow_symlinks) {
-            if file_type.is_symlink() {
-                if !follow_symlinks {
-                    continue;
-                }
-                match entry_path.canonicalize() {
-                    Ok(real) => {
-                        // Confinement check — reject symlinks whose target escapes the extension root
-                        if !real.starts_with(root) {
-                            tracing::warn!(
-                                "Symlink target outside extension root, skipping: {:?} -> {:?}",
-                                entry_path,
-                                real
-                            );
-                            continue;
-                        }
-                        if visited_real_paths.contains(&real) {
-                            tracing::warn!(
-                                "Symlink cycle detected at {} -> {}, skipping",
-                                entry_path.display(),
-                                real.display()
-                            );
-                            continue;
-                        }
-                        visited_real_paths.insert(real);
-                    }
-                    Err(_) => continue,
-                }
+        let (entry_path, file_type) = if file_type.is_symlink() {
+            if !follow_symlinks {
+                continue;
             }
-            if entry_path.is_dir() {
-                scan_dir(
-                    root,
-                    &entry_path,
-                    depth + 1,
-                    max_depth,
-                    follow_symlinks,
-                    extensions,
-                    ignore_patterns,
-                    results,
-                    seen_ids,
-                    seen_ids_lower,
-                    visited_real_paths,
+            let Ok(real) = entry_path.canonicalize() else {
+                continue;
+            };
+            if !real.starts_with(root) {
+                tracing::warn!(
+                    "Symlink target outside extension root, skipping: {:?} -> {:?}",
+                    entry_path,
+                    real
                 );
+                continue;
             }
-        } else if file_type.is_file() || (file_type.is_symlink() && follow_symlinks) {
-            // D-127: a symlinked FILE reaches here too. It used to be routed into
-            // the directory branch above by `is_dir() || (is_symlink() && follow)`,
-            // where `entry_path.is_dir()` is false and it fell out unappended —
-            // so `follow_symlinks` governed directories and did nothing for
-            // files, which is a declared key that does not reach its mechanism.
+            let Ok(metadata) = real.metadata() else {
+                continue;
+            };
+            (real, metadata.file_type())
+        } else {
+            (entry_path, file_type)
+        };
+
+        if file_type.is_dir() {
+            scan_dir(
+                root,
+                &entry_path,
+                depth + 1,
+                max_depth,
+                follow_symlinks,
+                extensions,
+                ignore_patterns,
+                results,
+                seen_ids,
+                seen_ids_lower,
+                visited_real_paths,
+            );
+        } else if file_type.is_file() {
             let ext = entry_path
                 .extension()
                 .and_then(|e| e.to_str())
@@ -263,16 +253,7 @@ fn scan_dir(
                 }
             }
 
-            // Check for companion _meta.yaml
-            let meta_path = entry_path.with_file_name(format!(
-                "{}_meta.yaml",
-                entry_path.file_stem().unwrap_or_default().to_string_lossy()
-            ));
-            let meta_path = if meta_path.exists() {
-                Some(meta_path)
-            } else {
-                None
-            };
+            let meta_path = companion_metadata_path(&real_file, root, follow_symlinks);
 
             seen_ids.insert(canonical_id.clone(), entry_path.clone());
             seen_ids_lower.insert(lower_id, canonical_id.clone());
@@ -287,6 +268,34 @@ fn scan_dir(
             });
         }
     }
+}
+
+fn companion_metadata_path(
+    module_path: &Path,
+    root: &Path,
+    follow_symlinks: bool,
+) -> Option<PathBuf> {
+    let companion = module_path.with_file_name(format!(
+        "{}_meta.yaml",
+        module_path.file_stem()?.to_string_lossy()
+    ));
+    let entry = companion.symlink_metadata().ok()?;
+    if !entry.is_symlink() {
+        return entry.is_file().then_some(companion);
+    }
+    if !follow_symlinks {
+        return None;
+    }
+    let target = companion.canonicalize().ok()?;
+    if !target.starts_with(root) {
+        tracing::warn!(
+            path = %companion.display(),
+            target = %target.display(),
+            "Metadata symlink target is outside the extension root, skipping"
+        );
+        return None;
+    }
+    target.is_file().then_some(target)
 }
 
 /// Scan multiple extension roots with namespace prefixing.

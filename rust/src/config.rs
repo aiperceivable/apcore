@@ -287,6 +287,13 @@ fn is_declared_prefix(path: &str) -> bool {
         .any(|k| *k == path || k.starts_with(&format!("{path}.")))
 }
 
+/// Return the canonical spelling of a known framework key, preserving user keys.
+pub(crate) fn canonical_config_key(key: &str) -> &str {
+    key.strip_prefix("apcore.")
+        .filter(|bare| is_declared_prefix(bare))
+        .unwrap_or(key)
+}
+
 /// True when `path` names a declared CONTAINER (something is declared beneath
 /// it), as opposed to a declared leaf.
 fn is_declared_container(path: &str) -> bool {
@@ -2615,7 +2622,7 @@ impl Config {
     /// Compared against [`Self::path_typed_keys`] with the list marker
     /// stripped, so `extensions.roots` matches the `extensions.roots[]` entry
     /// the set publishes.
-    fn is_path_typed_key(key: &str) -> bool {
+    pub(crate) fn is_path_typed_key(key: &str) -> bool {
         Self::path_typed_keys()
             .iter()
             .any(|declared| declared.trim_end_matches("[]") == key)

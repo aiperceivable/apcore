@@ -23,18 +23,21 @@ in mind before widening the stub here.
 
 from __future__ import annotations
 
+import json
 from typing import Any
 from unittest.mock import patch
 
 import pytest
+from jsonschema import Draft202012Validator
 
+from apcore import AutoApproveHandler, Executor
 from apcore.errors import ModuleReloadConflictError
 from apcore.events import EventEmitter
 from apcore.registry import Registry
 from apcore.sys_modules.audit import InMemoryAuditStore
 from apcore.sys_modules.control import ReloadModule
 
-from .canonical_fixtures import load_fixture
+from .canonical_fixtures import load_fixture, schemas_dir
 
 FIXTURE = load_fixture("reload_path_filter.json")
 CASES: list[dict[str, Any]] = FIXTURE["test_cases"]
@@ -82,6 +85,8 @@ def test_reload_path_filter_case(case: dict[str, Any]) -> None:
     registry = _registry_with(case["registered_modules"])
     audit_store = InMemoryAuditStore()
     reload_module = ReloadModule(registry=registry, event_emitter=EventEmitter(), audit_store=audit_store)
+    registry.register_internal("system.control.reload_module", reload_module)
+    executor = Executor(registry, approval_handler=AutoApproveHandler())
 
     rediscovered: list[str] = []
 
@@ -95,7 +100,7 @@ def test_reload_path_filter_case(case: dict[str, Any]) -> None:
     result: dict[str, Any] = {}
     with patch.object(reload_module, "_rediscover_module", side_effect=_fake_rediscover):
         try:
-            result = reload_module.execute(dict(case["input"]), context=None)
+            result = executor.call("system.control.reload_module", dict(case["input"]))
         except Exception as exc:  # noqa: BLE001 - the fixture decides which errors are expected
             error = exc
 
@@ -112,6 +117,11 @@ def test_reload_path_filter_case(case: dict[str, Any]) -> None:
         return
 
     assert error is None, f"[{cid}] execute() raised unexpectedly: {type(error).__name__}: {error}"
+    schema = json.loads((schemas_dir() / "sys-control-reload-module.schema.json").read_text())
+    validator = Draft202012Validator(schema)
+    result = json.loads(json.dumps(result))
+    validator.validate(result)
+    assert not validator.is_valid({**result, "unexpected": True})
     if "error" in expected:
         assert expected["error"] is None, f"[{cid}] fixture declares a non-null error this driver cannot express"
 

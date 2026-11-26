@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { Type, FormatRegistry } from '@sinclair/typebox';
+import { Kind, Type, FormatRegistry, TypeRegistry } from '@sinclair/typebox';
 import { Value } from '@sinclair/typebox/value';
 import { SchemaValidator } from '../../src/schema/validator.js';
 import { SchemaValidationError } from '../../src/errors.js';
@@ -980,6 +980,56 @@ describe('SchemaValidator coercion knob — accepted set (TYPE_MAPPING §11)', (
 
   const coercing = new SchemaValidator(true);
   const strict = new SchemaValidator(false);
+
+  it('keeps explicit number coercion available with a decimal multipleOf', () => {
+    const schema = jsonSchemaToTypeBox({
+      type: 'object',
+      properties: { amount: { type: 'number', multipleOf: 0.01 } },
+      required: ['amount'],
+    });
+    expect(coercing.validateInput({ amount: '0.04' }, schema)).toEqual({ amount: 0.04 });
+    expect(strict.validate({ amount: '0.04' }, schema).valid).toBe(false);
+  });
+
+  it('preserves native numeric transforms and opt-in coercion with multipleOf', () => {
+    const decode = vi.fn((value: number) => value.toFixed(2));
+    const amount = Type.Transform(Type.Number({ multipleOf: 0.01, title: 'Amount in dollars' }))
+      .Decode(decode)
+      .Encode(Number);
+    const schema = Type.Object({ amount });
+    expect(coercing.validateInput({ amount: '0.07' }, schema)).toEqual({ amount: '0.07' });
+    expect(strict.validate({ amount: '0.07' }, schema).valid).toBe(false);
+    expect(amount.title).toBe('Amount in dollars');
+    expect(decode).toHaveBeenCalledWith(0.07);
+  });
+
+  it('checks native decimal multiples through TypeBox references', () => {
+    const schema = Type.Module({
+      Amount: Type.Number({ multipleOf: 0.01 }),
+      Contract: Type.Object({ amount: Type.Ref('Amount') }),
+    }).Import('Contract');
+    expect(strict.validate({ amount: 0.07 }, schema).valid).toBe(true);
+    expect(strict.validate({ amount: -0.021 }, schema).errors).toEqual([
+      expect.objectContaining({ path: '/amount', keyword: 'multipleOf' }),
+    ]);
+  });
+
+  it('keeps native custom TypeBox payloads opaque to numeric normalization', () => {
+    const kind = 'test:DecimalTag';
+    const tag = Type.Unsafe({ [Kind]: kind, payload: Type.Number({ multipleOf: 0.01 }) });
+    TypeRegistry.Set(kind, (schema, value) =>
+      (schema as typeof tag)['payload'][Kind] === 'Number' && value === 'tagged');
+    try {
+      const amount = Type.Number({ multipleOf: 0.01 });
+      const schema = Type.Object({ amount, tag });
+      expect(strict.validate({ amount: 0.07, tag: 'tagged' }, schema).valid).toBe(true);
+      expect(strict.validate({ amount: 0.07, tag: 'incorrect' }, schema).valid).toBe(false);
+      expect(amount[Kind]).toBe('Number');
+      expect(amount.multipleOf).toBe(0.01);
+    } finally {
+      TypeRegistry.Delete(kind);
+    }
+  });
 
   describe('string → boolean accepts exactly the two JSON literals', () => {
     for (const [input, expected] of [

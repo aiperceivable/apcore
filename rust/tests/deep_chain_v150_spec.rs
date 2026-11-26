@@ -1227,6 +1227,9 @@ impl Discoverer for VersionedDiscoverer {
 async fn bulk_reload_emits_real_versions() {
     let registry = Arc::new(Registry::new());
     registry
+        .register_versioned("common.helpers", Box::new(EchoModule), Some("1.0.0"), None)
+        .expect("register the required dependency");
+    registry
         .register_internal(
             "executor.sys.reload",
             Box::new(EchoModule),

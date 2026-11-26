@@ -8,6 +8,7 @@
  */
 
 import type { Context } from '../context.js';
+import { startMiddlewareTiming, takeMiddlewareTiming } from '../execution-lifetime.js';
 import { Middleware } from './base.js';
 
 export interface Logger {
@@ -58,7 +59,7 @@ export class LoggingMiddleware extends Middleware {
     _inputs: Record<string, unknown>,
     context: Context,
   ): null {
-    context.data['_apcore.mw.logging.start_time'] = performance.now();
+    startMiddlewareTiming(context, this, performance.now());
 
     if (this._logInputs) {
       // PROTOCOL_SPEC 10.6.1 requirement 5 (D-131): the CAPTURED inputs, never
@@ -80,7 +81,7 @@ export class LoggingMiddleware extends Middleware {
     _output: Record<string, unknown>,
     context: Context,
   ): null {
-    const startTime = (context.data['_apcore.mw.logging.start_time'] as number) ?? performance.now();
+    const startTime = takeMiddlewareTiming(context, this) ?? performance.now();
     const durationMs = performance.now() - startTime;
 
     if (this._logOutputs) {
@@ -106,6 +107,7 @@ export class LoggingMiddleware extends Middleware {
     error: Error,
     context: Context,
   ): null {
+    takeMiddlewareTiming(context, this);
     if (this._logErrors) {
       this._logger.error(`[${context.traceId}] ERROR ${moduleId}: ${error}`, {
         traceId: context.traceId,

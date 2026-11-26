@@ -51,15 +51,51 @@ The [Observability quick start](./observability.md#quick-start) and the [Prometh
 | `GET /healthz` | `200 OK` — liveness |
 | `GET /readyz` | `200 OK` after `mark_ready()` / `markReady()`, `503` before |
 
-Attaching a `UsageCollector` adds `apcore_usage_calls_total` (by `module_id` and `status`), `apcore_usage_error_rate`, and `apcore_usage_p50_latency_ms` / `p95` / `p99`. The Rust exporter always emits the three standard `apcore_module_*` families, even before the first observation.
+Attaching a `UsageCollector` adds the `apcore_usage_calls_24h` gauge (by `module_id` and `status`), `apcore_usage_error_rate`, and `apcore_usage_p50_latency_ms` / `p95` / `p99`. The rolling call count can decrease as records age out. The deprecated `apcore_usage_calls_total` name is a gauge alias with the same values and labels. Use `apcore_usage_calls_24h` for rolling counts and the cumulative `apcore_module_calls_total` counter for queries such as `rate()` and `increase()`. The Rust exporter always emits the three standard `apcore_module_*` families, even before the first observation.
 
 | | Construct | Start / stop |
 |---|---|---|
-| Python | `PrometheusExporter(collector, usage_collector=None)` | `start(port=9090, path="/metrics")` (background thread); `stop()` |
+| Python | `PrometheusExporter(collector, usage_collector=None)` | `start(port=9090, path="/metrics", host="127.0.0.1")` (background thread), `stop()` |
 | TypeScript | `new PrometheusExporter({ collector, usageCollector })` | `start({ port, path })`; `await stop()` |
-| Rust | `PrometheusExporter::new(collector).with_usage_collector(usage)` | `start(port, path).await?` (spawns a task; `io::Result`); `shutdown()`; `local_addr()` |
+| Rust | `PrometheusExporter::new(collector).with_usage_collector(usage)` | `start(port, path).await?` (spawns a task, returns `io::Result`), `shutdown()`, `local_addr()` |
 
-`export()` returns the same text the endpoint serves. It reads live collector state and does not raise.
+The Python listener binds to IPv4 loopback by default. Set `host` explicitly when metrics need to be reachable from a remote scraper. The Rust listener binds to all IPv4 interfaces. Both listeners limit concurrent connections and set timeouts for request headers and response writes. Python `stop()` closes the listener. Rust `shutdown()` signals it to close, and `local_addr()` reports `None` once the listening socket is released.
+
+`export()` returns the same text the endpoint serves. It reads live collector state.
+
+Applications that own the HTTP listener can render the same response without opening a socket. Pass one of these render callbacks to the [Toolkit Prometheus listener](https://github.com/aiperceivable/apcore-surfaces/tree/main/toolkit) or to the application's existing HTTP server.
+
+=== "Python"
+    ```python
+    from apcore.observability import MetricsCollector, UsageCollector, render_prometheus_metrics
+
+    metrics = MetricsCollector()
+    usage = UsageCollector()
+    print(render_prometheus_metrics(metrics, usage))
+    ```
+
+=== "TypeScript"
+    ```typescript
+    import { MetricsCollector, PrometheusExporter, UsageCollector } from "apcore-js";
+
+    const collector = new MetricsCollector();
+    const usageCollector = new UsageCollector();
+    const renderer = new PrometheusExporter({ collector, usageCollector });
+    console.log(renderer.export());
+    ```
+
+=== "Rust"
+    ```rust
+    use apcore::{render_prometheus_metrics, MetricsCollector, UsageCollector};
+
+    fn main() {
+        let metrics = MetricsCollector::new();
+        let usage = UsageCollector::new();
+        print!("{}", render_prometheus_metrics(&metrics, Some(&usage)));
+    }
+    ```
+
+The following examples use the built-in HTTP exporter.
 
 === "Python"
     ```python
@@ -142,7 +178,7 @@ Attaching a `UsageCollector` adds `apcore_usage_calls_total` (by `module_id` and
     }
     ```
 
-For Prometheus Operator auto-discovery, annotate the pod:
+For Prometheus Operator auto-discovery, bind to an address the scraper can reach and add these pod annotations.
 
 ```yaml
 annotations:
@@ -304,11 +340,14 @@ An alert fires once per module and does not fire again until the module has reco
 
 - `value` is always a **JSON object** (Python `dict`, TypeScript `Record<string, unknown>`, Rust `serde_json::Value` holding an object). A backend that stores bytes or strings serializes on `save` and parses on `get` / `list`, because the collectors index into what they read back.
 - Namespaces isolate records: each collector writes under its own — `metrics`, `usage`, `error_history` (D-113).
-- `InMemoryStorageBackend` is the default and is thread-safe. In Python and TypeScript an omitted `storage` argument means a fresh in-memory backend. In Rust, `with_storage_backend(None)` does the same, while the plain `new()` / `with_limits()` constructors attach no backend.
+- `InMemoryStorageBackend` is the default and is thread-safe. The usage and error-history collectors create a fresh backend when the caller does not supply one.
+- The default usage backend retains the calls admitted to the live per-module buckets and removes calls when collection evicts their records or buckets. Python and TypeScript check elapsed retention as the collector records a call for that module. Rust retains its most recent buckets by their recorded hour. These collectors apply retention during collection without an idle sweeper.
+- The default error-history backend retains one current record per live fingerprint within the per-module and total limits. Collector clear or reset operations remove the corresponding default backing records when those operations are available.
+- An explicitly supplied storage backend receives records through its existing write path and controls its own retention. This includes an application-created `InMemoryStorageBackend`.
 - The backend is fixed at construction.
 - apcore ships no Redis, Postgres or S3 backend; implement the interface over your client library. Python's protocol is synchronous; TypeScript methods may return values or promises; Rust's trait is `async` and requires `Send + Sync + Debug`.
 
-`MetricsCollector` and `ErrorHistory` additionally accept a `store` — an `ObservabilityStore` (`record_error`, `get_errors`, `record_metric`, `get_metrics`, `flush`, `clear`; default `InMemoryObservabilityStore`) that is notified of every recorded error and metric point. Use `StorageBackend` for persistence; `ObservabilityStore` is a record-oriented sink.
+`MetricsCollector` and `ErrorHistory` additionally accept an `ObservabilityStore` with `record_error`, `get_errors`, `record_metric`, `get_metrics`, `flush`, and `clear`. An explicit metrics sink receives each counter increment or histogram observation with its timestamp and labels. If the sink fails, the collector retains the local aggregate and logs a warning. The in-memory store created by `ErrorHistory` retains the latest entry for each live fingerprint. An explicitly supplied error sink receives error notifications and controls its own retention. Use `StorageBackend` for persistence and `ObservabilityStore` for record-oriented notifications.
 
 === "Python"
     ```python

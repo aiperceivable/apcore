@@ -740,7 +740,9 @@ class TestPolicyCallSite:
         """
         policy = _CallSiteRecordingPolicy([PolicyRule("admin.reset", requires_approval=True)])
         executor = Executor(registry=registry, approval_handler=AutoApproveHandler(), policy=policy)
-        executor.call("admin.reset", {"scope": "all", "_approval_token": "tok"})
+        with pytest.raises(ApprovalDeniedError):
+            executor.call("admin.reset", {"scope": "all", "_approval_token": "tok"})
+        assert policy.seen
         assert all("_approval_token" not in (args or {}) for _, args, _ in policy.seen)
 
     def test_preflight_passes_the_call_site_too(self, registry: Registry) -> None:

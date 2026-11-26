@@ -10,14 +10,14 @@ use async_trait::async_trait;
 use chrono::{DateTime, Duration, Utc};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 
 use crate::context::Context;
 use crate::errors::ModuleError;
 use crate::middleware::base::Middleware;
 use crate::observability::metrics::estimate_p99_from_sorted;
-use crate::observability::storage::StorageBackend;
+use crate::observability::storage::{InMemoryStorageBackend, StorageBackend};
 
 /// A single usage record.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -26,6 +26,8 @@ pub(crate) struct UsageRecord {
     pub caller_id: Option<String>,
     pub latency_ms: f64,
     pub success: bool,
+    #[serde(skip)]
+    storage_key: String,
 }
 
 /// Usage summary for a single module.
@@ -61,15 +63,18 @@ impl ModuleData {
     }
 
     /// Evict buckets exceeding the retention limit (keeps newest).
-    fn evict_old_buckets(&mut self) {
-        if self.records.len() > MAX_BUCKETS_PER_MODULE {
-            let mut keys: Vec<String> = self.records.keys().cloned().collect();
-            keys.sort();
-            let to_remove = keys.len() - MAX_BUCKETS_PER_MODULE;
-            for key in keys.into_iter().take(to_remove) {
-                self.records.remove(&key);
-            }
+    fn evict_old_buckets(&mut self) -> Vec<UsageRecord> {
+        if self.records.len() <= MAX_BUCKETS_PER_MODULE {
+            return Vec::new();
         }
+        let mut keys: Vec<String> = self.records.keys().cloned().collect();
+        keys.sort();
+        let to_remove = keys.len() - MAX_BUCKETS_PER_MODULE;
+        keys.into_iter()
+            .take(to_remove)
+            .filter_map(|key| self.records.remove(&key))
+            .flatten()
+            .collect()
     }
 }
 
@@ -82,6 +87,7 @@ pub struct UsageCollector {
     /// backend under namespace `"usage"`; the in-memory aggregation still
     /// drives the synchronous accessors so reads remain fast.
     storage_backend: Option<Arc<dyn StorageBackend>>,
+    default_storage: Option<Arc<InMemoryStorageBackend>>,
 }
 
 impl UsageCollector {
@@ -94,7 +100,11 @@ impl UsageCollector {
     /// The storage backend records are persisted to (D-113).
     #[must_use]
     pub fn storage_backend(&self) -> Option<Arc<dyn StorageBackend>> {
-        self.storage_backend.clone()
+        self.storage_backend.clone().or_else(|| {
+            self.default_storage
+                .clone()
+                .map(|storage| storage as Arc<dyn StorageBackend>)
+        })
     }
 
     /// Create with an optional `StorageBackend` (Issue #43 §1).
@@ -106,12 +116,13 @@ impl UsageCollector {
         // reading records back got an empty list rather than an error. The
         // parameter stays `Option` so existing callers compile unchanged;
         // `None` now resolves to the default rather than disabling persistence.
-        let storage_backend = Some(
-            storage_backend.unwrap_or_else(crate::observability::storage::default_storage_backend),
-        );
+        let default_storage = storage_backend
+            .is_none()
+            .then(|| Arc::new(InMemoryStorageBackend::new()));
         Self {
             data: Arc::new(Mutex::new(HashMap::new())),
             storage_backend,
+            default_storage,
         }
     }
 
@@ -144,6 +155,11 @@ impl UsageCollector {
             caller_id: caller_id.map(std::string::ToString::to_string),
             latency_ms,
             success,
+            storage_key: format!(
+                "{module_id}:{}:{}",
+                at.timestamp_nanos_opt().unwrap_or(0),
+                uuid::Uuid::new_v4()
+            ),
         };
 
         let bucket = Self::bucket_key(at);
@@ -152,13 +168,22 @@ impl UsageCollector {
             let module = data
                 .entry(module_id.to_string())
                 .or_insert_with(ModuleData::new);
-            let bucket_records = module.records.entry(bucket).or_default();
+            let bucket_records = module.records.entry(bucket.clone()).or_default();
             bucket_records.push(record.clone());
-            if bucket_records.len() > MAX_RECORDS_PER_BUCKET {
-                let excess = bucket_records.len() - MAX_RECORDS_PER_BUCKET;
-                bucket_records.drain(..excess);
+            let excess = bucket_records.len().saturating_sub(MAX_RECORDS_PER_BUCKET);
+            for expired in bucket_records.drain(..excess) {
+                self.remove_default_record(&expired);
             }
-            module.evict_old_buckets();
+            for expired in module.evict_old_buckets() {
+                self.remove_default_record(&expired);
+            }
+            if let Some(storage) = &self.default_storage {
+                if module.records.contains_key(&bucket) {
+                    if let Ok(value) = serde_json::to_value(&record) {
+                        storage.put("usage", &record.storage_key, value);
+                    }
+                }
+            }
         }
 
         // Forward to the optional storage backend (Issue #43 §1). Best-effort:
@@ -167,18 +192,18 @@ impl UsageCollector {
         // on backend latency.
         if let Some(backend) = self.storage_backend.clone() {
             if let Ok(handle) = tokio::runtime::Handle::try_current() {
-                let module_id = module_id.to_string();
-                let key = format!(
-                    "{module_id}:{}:{}",
-                    at.timestamp_nanos_opt().unwrap_or(0),
-                    uuid::Uuid::new_v4()
-                );
                 handle.spawn(async move {
                     if let Ok(value) = serde_json::to_value(&record) {
-                        let _ = backend.save("usage", &key, value).await;
+                        let _ = backend.save("usage", &record.storage_key, value).await;
                     }
                 });
             }
+        }
+    }
+
+    fn remove_default_record(&self, record: &UsageRecord) {
+        if let Some(storage) = &self.default_storage {
+            storage.remove("usage", &record.storage_key);
         }
     }
 
@@ -494,7 +519,17 @@ impl UsageCollector {
 
     /// Reset all stats.
     pub fn reset(&self) {
-        self.data.lock().clear();
+        let mut data = self.data.lock();
+        if let Some(storage) = &self.default_storage {
+            for record in data
+                .values()
+                .flat_map(|module| module.records.values())
+                .flatten()
+            {
+                storage.remove("usage", &record.storage_key);
+            }
+        }
+        data.clear();
     }
 
     /// Compute a percentile (0.0..=1.0) from a sorted latency slice.
@@ -512,122 +547,94 @@ impl UsageCollector {
         sorted[rank.min(sorted.len()).saturating_sub(1)]
     }
 
-    /// Render the collector's data in Prometheus text exposition format.
+    // Snapshot the rolling 24h window under lock, then compute and render the gauges
+    // after unlocking so observations do not wait on percentile sorting or formatting.
+    fn prometheus_snapshot(&self) -> BTreeMap<String, (usize, Vec<f64>)> {
+        let now = Utc::now();
+        let cutoff = now - Duration::hours(24);
+        self.data
+            .lock()
+            .iter()
+            .map(|(module_id, module)| {
+                let mut latencies = Vec::new();
+                let mut errors = 0;
+                for record in Self::collect_records_in_window(module, cutoff, now) {
+                    if !record.success {
+                        errors += 1;
+                    }
+                    latencies.push(record.latency_ms);
+                }
+                (module_id.clone(), (errors, latencies))
+            })
+            .collect()
+    }
+
+    /// Render rolling 24-hour usage as grouped Prometheus gauge families.
     ///
-    /// Spec: system-modules.md §1.3 normative metrics:
-    ///   - `apcore_usage_calls_total{module_id, status}` (counter)
-    ///   - `apcore_usage_error_rate{module_id}` (gauge, 0.0–1.0)
-    ///   - `apcore_usage_p50/p95/p99_latency_ms{module_id}` (gauges)
-    ///
-    /// `# HELP` and `# TYPE` lines are always emitted, even when the
-    /// collector is empty, so scrape discovery succeeds on cold start.
+    /// `apcore_usage_calls_total` is a deprecated alias of `apcore_usage_calls_24h`.
+    /// HELP and TYPE lines are emitted even when the collector is empty.
     #[must_use]
-    #[allow(clippy::cast_precision_loss)] // call counts comfortably fit in f64
+    #[allow(clippy::cast_precision_loss)] // each module's retained sample limit fits exactly in f64
     pub fn export_prometheus(&self) -> String {
         use std::fmt::Write as _;
 
-        let mut out = String::new();
-        let _ = writeln!(
-            out,
-            "# HELP apcore_usage_calls_total Total module call count by status"
-        );
-        let _ = writeln!(out, "# TYPE apcore_usage_calls_total counter");
-        let _ = writeln!(
-            out,
-            "# HELP apcore_usage_error_rate Module error rate (0.0–1.0)"
-        );
-        let _ = writeln!(out, "# TYPE apcore_usage_error_rate gauge");
-        let _ = writeln!(
-            out,
-            "# HELP apcore_usage_p50_latency_ms Module p50 latency in milliseconds"
-        );
-        let _ = writeln!(out, "# TYPE apcore_usage_p50_latency_ms gauge");
-        let _ = writeln!(
-            out,
-            "# HELP apcore_usage_p95_latency_ms Module p95 latency in milliseconds"
-        );
-        let _ = writeln!(out, "# TYPE apcore_usage_p95_latency_ms gauge");
-        let _ = writeln!(
-            out,
-            "# HELP apcore_usage_p99_latency_ms Module p99 latency in milliseconds"
-        );
-        let _ = writeln!(out, "# TYPE apcore_usage_p99_latency_ms gauge");
+        let mut families = [
+            (
+                "apcore_usage_calls_24h",
+                "Module calls in the last 24 hours by status",
+            ),
+            (
+                "apcore_usage_calls_total",
+                "Deprecated alias of apcore_usage_calls_24h",
+            ),
+            ("apcore_usage_error_rate", "Module error rate (0.0–1.0)"),
+            (
+                "apcore_usage_p50_latency_ms",
+                "Module p50 latency in milliseconds",
+            ),
+            (
+                "apcore_usage_p95_latency_ms",
+                "Module p95 latency in milliseconds",
+            ),
+            (
+                "apcore_usage_p99_latency_ms",
+                "Module p99 latency in milliseconds",
+            ),
+        ]
+        .map(|(name, help)| (name, format!("# HELP {name} {help}\n# TYPE {name} gauge\n")));
 
-        // Snapshot under the lock, drop the guard, then format. Keeps the
-        // critical section short and avoids holding the mutex across the
-        // sorts and writeln! calls below.
-        //
-        // Apply the same rolling 24h window as `system.usage.module` /
-        // apcore-python `export_prometheus`: records older than 24h are excluded
-        // from the exported counts, error rate, and percentiles. Without this,
-        // the exported gauges would aggregate the full retained history while
-        // the queryable sys-module reports a windowed view — a cross-language
-        // divergence.
-        let now = Utc::now();
-        let cutoff = now - Duration::hours(24);
-        let snapshot: Vec<(String, u64, u64, Vec<f64>)> = {
-            let data = self.data.lock();
-            data.iter()
-                .map(|(mid, md)| {
-                    let mut latencies: Vec<f64> = Vec::new();
-                    let mut total: u64 = 0;
-                    let mut errors: u64 = 0;
-                    for r in Self::collect_records_in_window(md, cutoff, now) {
-                        total += 1;
-                        if !r.success {
-                            errors += 1;
-                        }
-                        latencies.push(r.latency_ms);
-                    }
-                    (mid.clone(), total, errors, latencies)
-                })
-                .collect()
-        };
+        for (module_id, (errors, mut latencies)) in self.prometheus_snapshot() {
+            let [calls, legacy_calls, error_rate, p50, p95, p99] = &mut families;
+            let escaped = escape_label_value(&module_id);
+            let total = latencies.len();
+            let success = total - errors;
+            for (name, out) in [calls, legacy_calls] {
+                let _ = writeln!(
+                    out,
+                    "{name}{{module_id=\"{escaped}\",status=\"success\"}} {success}"
+                );
+                let _ = writeln!(
+                    out,
+                    "{name}{{module_id=\"{escaped}\",status=\"error\"}} {errors}"
+                );
+            }
 
-        let mut snapshot = snapshot;
-        snapshot.sort_by(|a, b| a.0.cmp(&b.0));
-
-        for (mid, total, errors, mut latencies) in snapshot {
-            let escaped = escape_label_value(&mid);
-            let success = total.saturating_sub(errors);
-            let _ = writeln!(
-                out,
-                "apcore_usage_calls_total{{module_id=\"{escaped}\",status=\"success\"}} {success}"
-            );
-            let _ = writeln!(
-                out,
-                "apcore_usage_calls_total{{module_id=\"{escaped}\",status=\"error\"}} {errors}"
-            );
-
-            let error_rate = if total == 0 {
+            let rate = if total == 0 {
                 0.0
             } else {
                 errors as f64 / total as f64
             };
-            let _ = writeln!(
-                out,
-                "apcore_usage_error_rate{{module_id=\"{escaped}\"}} {error_rate}"
-            );
+            let (name, out) = error_rate;
+            let _ = writeln!(out, "{name}{{module_id=\"{escaped}\"}} {rate}");
 
             latencies.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-            let p50 = Self::percentile_from_sorted(&latencies, 0.50);
-            let p95 = Self::percentile_from_sorted(&latencies, 0.95);
-            let p99 = Self::percentile_from_sorted(&latencies, 0.99);
-            let _ = writeln!(
-                out,
-                "apcore_usage_p50_latency_ms{{module_id=\"{escaped}\"}} {p50}"
-            );
-            let _ = writeln!(
-                out,
-                "apcore_usage_p95_latency_ms{{module_id=\"{escaped}\"}} {p95}"
-            );
-            let _ = writeln!(
-                out,
-                "apcore_usage_p99_latency_ms{{module_id=\"{escaped}\"}} {p99}"
-            );
+            for ((name, out), percentile) in [(p50, 0.50), (p95, 0.95), (p99, 0.99)] {
+                let value = Self::percentile_from_sorted(&latencies, percentile);
+                let _ = writeln!(out, "{name}{{module_id=\"{escaped}\"}} {value}");
+            }
         }
 
-        out
+        families.into_iter().map(|(_, body)| body).collect()
     }
 }
 
@@ -672,17 +679,10 @@ impl Default for UsageCollector {
 }
 
 /// Middleware that tracks usage statistics.
-///
-/// Per-trace start times are kept as a **stack** (`Vec<Instant>`) so a nested
-/// call sharing the same `trace_id` pushes its own start without clobbering the
-/// outer call's; `after`/`on_error` pop the innermost start (LIFO). Mirrors the
-/// per-context stack used by apcore-python / apcore-typescript (sync finding
-/// [obs-nested-timing]); before this fix a single-slot map made the parent
-/// record a 0ms latency.
 #[derive(Debug)]
 pub struct UsageMiddleware {
     collector: UsageCollector,
-    starts: Mutex<HashMap<String, Vec<std::time::Instant>>>,
+    timer: crate::middleware::CallTimer,
 }
 
 impl UsageMiddleware {
@@ -691,30 +691,13 @@ impl UsageMiddleware {
     pub fn new(collector: UsageCollector) -> Self {
         Self {
             collector,
-            starts: Mutex::new(HashMap::new()),
+            timer: crate::middleware::CallTimer::default(),
         }
     }
 
     /// Get a reference to the underlying collector.
     pub fn collector(&self) -> &UsageCollector {
         &self.collector
-    }
-
-    /// Pop the innermost (LIFO) start time for `trace_id` and return its elapsed
-    /// latency in milliseconds, or 0.0 if no matching start was recorded. Empty
-    /// stacks are removed to avoid unbounded growth of the map.
-    fn pop_latency_ms(&self, trace_id: &str) -> f64 {
-        let mut starts = self.starts.lock();
-        let Some(stack) = starts.get_mut(trace_id) else {
-            return 0.0;
-        };
-        let latency = stack
-            .pop()
-            .map_or(0.0, |s| s.elapsed().as_secs_f64() * 1000.0);
-        if stack.is_empty() {
-            starts.remove(trace_id);
-        }
-        latency
     }
 }
 
@@ -726,15 +709,11 @@ impl Middleware for UsageMiddleware {
 
     async fn before(
         &self,
-        _module_id: &str,
+        module_id: &str,
         _inputs: serde_json::Value,
-        _ctx: &Context<serde_json::Value>,
+        ctx: &Context<serde_json::Value>,
     ) -> Result<Option<serde_json::Value>, ModuleError> {
-        let mut starts = self.starts.lock();
-        starts
-            .entry(_ctx.trace_id.clone())
-            .or_default()
-            .push(std::time::Instant::now());
+        self.timer.start(module_id, ctx);
         Ok(None)
     }
 
@@ -745,7 +724,10 @@ impl Middleware for UsageMiddleware {
         _output: serde_json::Value,
         ctx: &Context<serde_json::Value>,
     ) -> Result<Option<serde_json::Value>, ModuleError> {
-        let latency_ms = self.pop_latency_ms(&ctx.trace_id);
+        let Some(duration) = self.timer.finish(module_id, ctx) else {
+            return Ok(None);
+        };
+        let latency_ms = duration.as_secs_f64() * 1000.0;
 
         self.collector
             .record(module_id, ctx.caller_id.as_deref(), latency_ms, true);
@@ -760,7 +742,10 @@ impl Middleware for UsageMiddleware {
         _error: &ModuleError,
         ctx: &Context<serde_json::Value>,
     ) -> Result<Option<serde_json::Value>, ModuleError> {
-        let latency_ms = self.pop_latency_ms(&ctx.trace_id);
+        let Some(duration) = self.timer.finish(module_id, ctx) else {
+            return Ok(None);
+        };
+        let latency_ms = duration.as_secs_f64() * 1000.0;
 
         self.collector
             .record(module_id, ctx.caller_id.as_deref(), latency_ms, false);

@@ -12,13 +12,17 @@
 
 use async_trait::async_trait;
 use serde_json::{json, Value};
+use std::sync::Arc;
+use std::time::Duration;
+use tokio::sync::Notify;
 
+use apcore::acl_handlers::ACLConditionHandler;
 use apcore::approval::AlwaysDenyHandler;
 use apcore::context::Context;
 use apcore::errors::{ErrorCode, ModuleError};
 use apcore::module::{Module, ModuleAnnotations};
-use apcore::registry::registry::Registry;
-use apcore::{Config, Executor};
+use apcore::registry::registry::{ModuleDescriptor, Registry};
+use apcore::{ACLRule, APCore, Config, Executor, ACL};
 
 /// A sensitive tool that declares it requires approval via the trait method.
 #[derive(Debug)]
@@ -66,6 +70,94 @@ fn register_module_preserves_module_annotations() {
         "register_module must derive requires_approval from module.annotations()"
     );
     assert!(def.tags.contains(&"sensitive".to_string()));
+}
+
+#[test]
+fn client_register_preserves_module_annotations() {
+    let client = APCore::new();
+    let id = "executor.crm.delete";
+    client.register(id, Box::new(SensitiveModule)).unwrap();
+    let descriptor = client.registry().get_definition(id).unwrap().unwrap();
+    assert!(descriptor.annotations.unwrap().requires_approval);
+    assert_eq!(descriptor.tags, ["sensitive"]);
+}
+
+struct PlainModule;
+
+#[async_trait]
+impl Module for PlainModule {
+    fn input_schema(&self) -> Value {
+        json!({})
+    }
+    fn output_schema(&self) -> Value {
+        json!({})
+    }
+    fn description(&self) -> &'static str {
+        "Versioned module"
+    }
+    async fn execute(&self, _inputs: Value, _ctx: &Context<Value>) -> Result<Value, ModuleError> {
+        Ok(json!({"ok": true}))
+    }
+}
+
+#[derive(Default)]
+struct PauseAcl {
+    entered: Notify,
+    resume: Notify,
+}
+
+#[async_trait]
+impl ACLConditionHandler for PauseAcl {
+    async fn evaluate(&self, _value: &Value, _ctx: &Context<Value>) -> bool {
+        self.entered.notify_one();
+        self.resume.notified().await;
+        true
+    }
+}
+
+#[tokio::test]
+async fn invocation_keeps_its_descriptor_while_waiting_for_acl() {
+    let condition = Arc::new(PauseAcl::default());
+    ACL::register_async_condition("__registered_version_pause__", condition.clone());
+    let id = "test.versioned";
+    let mut rule = ACLRule::new(vec!["*".to_owned()], vec![id.to_owned()], "allow");
+    rule.conditions = Some(json!({"__registered_version_pause__": true}));
+    let acl = ACL::new(vec![rule], "deny", None);
+    let registry = Arc::new(Registry::new());
+    let descriptor: ModuleDescriptor = serde_json::from_value(json!({
+        "module_id": id,
+        "input_schema": {},
+        "output_schema": {},
+        "annotations": ModuleAnnotations {
+            requires_approval: true,
+            ..ModuleAnnotations::default()
+        },
+    }))
+    .unwrap();
+    registry
+        .register(id, Box::new(PlainModule), descriptor)
+        .unwrap();
+    let executor = Executor::with_options(
+        registry.clone(),
+        Config::default(),
+        None,
+        Some(acl),
+        Some(Box::new(AlwaysDenyHandler)),
+    );
+    let execution = executor.call(id, json!({}), None, None);
+    let register_replacement = async {
+        condition.entered.notified().await;
+        registry
+            .register_versioned(id, Box::new(PlainModule), Some("2.0.0"), None)
+            .unwrap();
+        condition.resume.notify_one();
+    };
+    let (result, ()) = tokio::time::timeout(Duration::from_secs(2), async {
+        tokio::join!(execution, register_replacement)
+    })
+    .await
+    .unwrap();
+    assert_eq!(result.unwrap_err().code, ErrorCode::ApprovalDenied);
 }
 
 #[test]

@@ -318,7 +318,7 @@ The following requirements are not met by the SDK implementations in this reposi
 
 ## 8. Conformance Test Fixtures
 
-The repository ships **95 cross-language fixture files** under `conformance/fixtures/` covering **1146 test cases**. `conformance-integrity` checks these two numbers, §8.1's per-fixture counts and its Total row against the fixtures themselves. Each fixture is consumed by all three SDK test runners (§5.2). An SDK declaring a conformance level **MUST** pass every fixture whose tested feature is required at that level (§5.3).
+The repository ships **97 cross-language fixture files** under `conformance/fixtures/` covering **1201 test cases**. `conformance-integrity` checks these two numbers, §8.1's per-fixture counts and its Total row against the fixtures themselves. Each fixture is consumed by all three SDK test runners (§5.2). An SDK declaring a conformance level **MUST** pass every fixture whose tested feature is required at that level (§5.3).
 
 ### 8.1 Fixture Inventory
 
@@ -336,7 +336,7 @@ The repository ships **95 cross-language fixture files** under `conformance/fixt
 | [`acl_pattern_arity`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/acl_pattern_arity.json) | 51 | A `callers` / `targets` pattern array's shape is a closed set at every entry point, plus a validator-only tier for well-formed arrays that match nothing (spec §6.2.1) |
 | [`acl_root_discovery`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/acl_root_discovery.json) | 10 | `ACL.discover()` config-driven `acl.root` resolution; missing path MUST attach nothing (spec §6.6.3.1, D-64) |
 | [`annotations_extra_round_trip`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/annotations_extra_round_trip.json) | 12 | `ModuleAnnotations.extra` wire-format round-trip (spec §4.4.1) |
-| [`approval_gate`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/approval_gate.json) | 8 | Approval gate enforcement at Executor Step 5 (spec §7.4) |
+| [`approval_gate`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/approval_gate.json) | 11 | Approval gate enforcement at Executor Step 5 (spec §7.4) |
 | [`approval_request_fields`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/approval_request_fields.json) | 2 | `ApprovalRequest` carries `caller_id` (read straight off `Context.caller_id` — null on a top-level call, never the `@external` ACL sentinel) and `action` (= `module_id`), populated by the approval gate at Executor Step 5 (spec §7.3.1, D-03) |
 | [`approval_startup_report`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/approval_startup_report.json) | 5 | Startup reporting for modules that declare approval requirements |
 | [`async_task_cancellation`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/async_task_cancellation.json) | 2 | `AsyncTaskManager.cancel()` real abort via CancelToken (D-18) |
@@ -395,7 +395,7 @@ The repository ships **95 cross-language fixture files** under `conformance/fixt
 | [`preflight_disclosure`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/preflight_disclosure.json) | 4 | `validate()` withholds `preflight()` / `preview()` from an ACL-denied caller (spec §12.8.5.1) |
 | [`preflight_check_reporting`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/preflight_check_reporting.json) | 7 | `validate()` reports every check, passed and failed; preview() returning null adds no check; `predicted_changes` is always present (spec §12.8, D-134, D-141) |
 | [`redaction_config`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/redaction_config.json) | 19 | Redaction config via `obs.redaction.regex_patterns` / `sensitive_keys` (spec §10.6.1); `x-sensitive` inside `anyOf` / `oneOf` / `allOf` (spec §10.6, D-152) |
-| [`registry_load_ordering`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/registry_load_ordering.json) | 4 | Discovery load order and dependency topological sort (Algorithm A07) |
+| [`registry_load_ordering`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/registry_load_ordering.json) | 5 | Discovery load order and dependency topological sort (Algorithm A07) |
 | [`reload_path_filter`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/reload_path_filter.json) | 10 | Granular reload via `path_filter` glob (`system.control.reload_module`) |
 | [`schema_content_hash`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/schema_content_hash.json) | 5 | Schema content-hash cache key — key-order invariant (spec §4) |
 | [`schema_export_envelope`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/schema_export_envelope.json) | 5 | `Registry.export_schema` envelope parity (§4.16) |
@@ -404,22 +404,24 @@ The repository ships **95 cross-language fixture files** under `conformance/fixt
 | [`schema_hardening_formats`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/schema_hardening_formats.json) | 9 | `format` values (date-time, date, email, uri, uuid, ipv4, ipv6) are annotations and never fail validation ([type-mapping §11](./type-mapping.md#11-format-constraint-mappings)) |
 | [`schema_hardening_recursive`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/schema_hardening_recursive.json) | 6 | Recursive schema support (`$ref` self-reference, depth 1–5) |
 | [`schema_hardening_union`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/schema_hardening_union.json) | 8 | Union type evaluation (anyOf / oneOf / allOf) |
-| [`schema_keyword_parity`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/schema_keyword_parity.json) | 122 | JSON Schema 2020-12 keyword conformance at the validation boundary ([type-mapping §17](./type-mapping.md#17-validation-keyword-conformance)) |
+| [`schema_keyword_parity`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/schema_keyword_parity.json) | 142 | JSON Schema 2020-12 keyword conformance at the validation boundary ([type-mapping §17](./type-mapping.md#17-validation-keyword-conformance)) |
 | [`schema_strict_conversion`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/schema_strict_conversion.json) | 30 | `to_strict_schema()` output parity (Algorithm A23 / spec §4.16) |
 | [`schema_validation`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/schema_validation.json) | 22 | Schema validation edge cases (spec §4.15) |
 | [`sensitive_keys_default`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/sensitive_keys_default.json) | 4 | Canonical default `obs.redaction.sensitive_keys` list (D-54) |
 | [`specificity`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/specificity.json) | 10 | ACL pattern specificity scoring (Algorithm A10) |
 | [`storage_backend`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/storage_backend.json) | 7 | StorageBackend pluggable persistence (shared by ErrorHistory) |
 | [`stream_aggregation`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/stream_aggregation.json) | 10 | Stream chunk aggregation (recursive deep merge, Algorithm A24) |
-| [`system_modules_hardening`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/system_modules_hardening.json) | 16 | System modules hardening: persistence, audit, Prometheus (spec §6.7) |
+| [`stream_completion`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/stream_completion.json) | 22 | Stream completion snapshots, step outcomes, and terminal reasons |
+| [`stream_post_processing`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/stream_post_processing.json) | 2 | Cancellation propagation and diagnostics during stream post-processing |
+| [`system_modules_hardening`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/system_modules_hardening.json) | 22 | System modules hardening: runtime configuration, persistence, audit, and Prometheus (spec §6.7) |
 | [`toggle_state_isolation`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/toggle_state_isolation.json) | 4 | Per-instance `ToggleState` isolation |
 | [`timeout_cancellation`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/timeout_cancellation.json) | 6 | A timeout cancels the timed-out call's own token and returns at once; every call gets a child token of its caller's (spec §12.7.5, A22, D-133) |
 | [`tracing_from_config`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/tracing_from_config.json) | 12 | `observability.tracing.*` reaches the running middleware (§10.1.1, D-68) |
-| [`trace_context`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/trace_context.json) | 8 | W3C TraceContext alignment (spec §10.5) |
+| [`trace_context`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/trace_context.json) | 9 | W3C header propagation and exported remote-parent linkage (spec §10.1, §10.5) |
 | [`usage_contract`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/usage_contract.json) | 11 | `system.usage.*` value semantics no schema can assert (spec §6.7.1) |
 | [`usage_exporter`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/usage_exporter.json) | 3 | `UsageExporter` push interface (D-55) |
 | [`version_negotiation`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/version_negotiation.json) | 12 | Version negotiation (Algorithm A14) |
-| **Total** | **1146** | **95 fixtures** |
+| **Total** | **1201** | **97 fixtures** |
 
 ### 8.2 Loading Fixtures from a Test Runner
 

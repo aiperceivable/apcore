@@ -114,6 +114,7 @@ describe('W5: the discovery register pass reserves the ID while onLoad runs', ()
     });
 
     const discovered = {
+      ...validModuleMetadata,
       execute: async () => ({ from: 'discovered' }),
       onLoad: async () => {
         await gate;
@@ -128,12 +129,12 @@ describe('W5: the discovery register pass reserves the ID while onLoad runs', ()
       registry as unknown as {
         _registerInOrder(
           loadOrder: string[],
-          validModules: Map<string, unknown>,
-          rawMetadata: Map<string, Record<string, unknown>>,
-          sourceFiles: ReadonlyMap<string, string>,
+          validModules: Map<string, { module: unknown; metadata: object; sourceFile: string }>,
         ): Promise<number>;
       }
-    )._registerInOrder(['svc.raced'], new Map([['svc.raced', discovered]]), new Map(), new Map());
+    )._registerInOrder(['svc.raced'], new Map([
+      ['svc.raced', { module: discovered, metadata: {}, sourceFile: 'raced.js' }],
+    ]));
 
     // Let the onLoad start and suspend.
     await Promise.resolve();
@@ -157,6 +158,7 @@ describe('W5: the discovery register pass reserves the ID while onLoad runs', ()
   it('releases the reservation when onLoad fails', async () => {
     const registry = new Registry();
     const failing = {
+      ...validModuleMetadata,
       execute: async () => ({}),
       onLoad: async () => {
         throw new Error('boom');
@@ -166,12 +168,12 @@ describe('W5: the discovery register pass reserves the ID while onLoad runs', ()
       registry as unknown as {
         _registerInOrder(
           loadOrder: string[],
-          validModules: Map<string, unknown>,
-          rawMetadata: Map<string, Record<string, unknown>>,
-          sourceFiles: ReadonlyMap<string, string>,
+          validModules: Map<string, { module: unknown; metadata: object; sourceFile: string }>,
         ): Promise<number>;
       }
-    )._registerInOrder(['svc.failed'], new Map([['svc.failed', failing]]), new Map(), new Map());
+    )._registerInOrder(['svc.failed'], new Map([
+      ['svc.failed', { module: failing, metadata: {}, sourceFile: 'failed.js' }],
+    ]));
 
     expect(registry.has('svc.failed')).toBe(false);
     // The slot must be free again for a later registration.

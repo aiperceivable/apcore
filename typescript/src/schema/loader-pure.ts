@@ -9,11 +9,25 @@
  * audited by `tests/browser-entry.test.ts`.
  */
 
-import { Kind, Type, TypeRegistry, type TSchema } from '@sinclair/typebox';
+import { Kind, TransformKind, Type, TypeRegistry, type TSchema } from '@sinclair/typebox';
 import { Value } from '@sinclair/typebox/value';
-import { checkApplicators, containsNeedsEvaluator, hasApplicatorKeyword } from './applicators.js';
+import { applicatorFailure, containsNeedsEvaluator, hasApplicatorKeyword } from './applicators.js';
+import { SchemaCircularRefError, SchemaNotFoundError } from '../errors.js';
 import { compareCodePoints } from '../utils/compare-code-points.js';
+import {
+  createRedactionReferenceContext,
+  resolveLocalSchemaReference,
+  type RedactionReferenceContext,
+} from '../utils/redaction-references.js';
 import { KEYWORD_MARKER } from './constants.js';
+
+const sourceSchemas = new WeakMap<TSchema, Record<string, unknown>>();
+const referenceContexts = new WeakMap<Record<string, unknown>, RedactionReferenceContext>();
+
+/** @internal Return the original schema document for schema-aware capture. */
+export function sourceSchemaFor(schema: Record<string, unknown>): Record<string, unknown> {
+  return sourceSchemas.get(schema as TSchema) ?? schema;
+}
 
 // ---------------------------------------------------------------------------
 // Canonical-form serialization (used for content hashing)
@@ -76,7 +90,9 @@ export function jsonSchemaToTypeBox(
   schema: Record<string, unknown>,
   root?: Record<string, unknown>,
 ): TSchema {
-  return _convert(schema, root ?? schema);
+  const converted = _convert(schema, root ?? schema);
+  sourceSchemas.set(converted, schema);
+  return converted;
 }
 
 function _convert(schema: Record<string, unknown> | boolean, root: Record<string, unknown>): TSchema {
@@ -123,13 +139,9 @@ function _convert(schema: Record<string, unknown> | boolean, root: Record<string
  * Copy the annotation keywords — and the `x-` extension keywords — onto the
  * converted node.
  *
- * The extensions carry behaviour the executor reads off the CONVERTED schema:
- * `resolveSchema` replaces a module's JSON Schema with this node, and the
- * capture point redacts against it. Dropping `x-sensitive` here made every
- * field a plain-JSON-Schema module marked sensitive reach
- * `context.redactedInputs` / `redactedOutput` — and so every built-in logging
- * middleware — in clear text (PROTOCOL_SPEC 10.6, 10.6.1 requirement 5, D-131).
- * An `x-` keyword is not a validation assertion, so the validator ignores it.
+ * Preserve metadata for consumers of the converted schema, including
+ * `x-sensitive` on standalone TypeBox nodes. Capture against a complete
+ * converted document also uses its original source for reference semantics.
  */
 function _annotate(result: TSchema, schema: Record<string, unknown>): TSchema {
   const node = result as Record<string, unknown>;
@@ -220,7 +232,6 @@ const NUMERIC_CONSTRAINTS: readonly string[] = [
   'maximum',
   'exclusiveMinimum',
   'exclusiveMaximum',
-  'multipleOf',
 ];
 const ARRAY_CONSTRAINTS: readonly string[] = ['minItems', 'maxItems', 'uniqueItems'];
 const OBJECT_CONSTRAINTS: readonly string[] = ['minProperties', 'maxProperties'];
@@ -252,13 +263,8 @@ function _convertObject(
       const propType = _convert(propSchema, root);
       typeboxProps[name] = required.has(name) ? propType : Type.Optional(propType);
     }
-    // §6.5.3 constrains presence, not shape, so a name listed in `required`
-    // without a `properties` entry still has to be there. `{required: ["b"]}` is
-    // a whole schema on its own and is exactly what an `if` / `then` /
-    // `dependentSchemas` sub-schema usually looks like.
-    for (const name of required) {
-      if (!Object.hasOwn(typeboxProps, name)) typeboxProps[name] = Type.Unknown();
-    }
+    // The applicator evaluator checks names declared only in `required`.
+    // Adding them to `properties` would exempt them from additionalProperties.
     return Type.Object(typeboxProps, opts);
   }
   if (additional) return Type.Object({}, opts);
@@ -297,9 +303,8 @@ function _convertArray(
   const opts = _constraintOptions(schema, ARRAY_CONSTRAINTS);
   const contains = schema['contains'];
   if (
-    contains !== null &&
-    typeof contains === 'object' &&
-    !Array.isArray(contains) &&
+    (typeof contains === 'boolean' ||
+      (contains !== null && typeof contains === 'object' && !Array.isArray(contains))) &&
     // `minContains: 0` is handled by the applicator evaluator instead — see
     // `containsNeedsEvaluator`. TypeBox's array check short-circuits on a zero
     // match count before it ever consults `minContains`, so emitting the trio
@@ -307,7 +312,7 @@ function _convertArray(
     // that valid. apcore-python and apcore-rust accept it.
     !containsNeedsEvaluator(schema)
   ) {
-    opts['contains'] = _convert(contains as Record<string, unknown>, root);
+    opts['contains'] = _convert(contains as Record<string, unknown> | boolean, root);
     // §6.4.4 / §6.4.5 make these meaningful only alongside `contains`. TypeBox
     // applies them regardless and then rejects every array, so they are emitted
     // only when `contains` is there to give them a subject.
@@ -554,33 +559,17 @@ if (!TypeRegistry.Has(REF_KIND)) {
   });
 }
 
-/**
- * Locate what a `$ref` points at within `root`. Recognises the three forms a
- * resolved schema can still carry: the whole-document anchors `#` and `#/`, the
- * root `$id`, and an in-document JSON pointer (`#/$defs/Node`).
- *
- * Returns `undefined` for anything else — an external reference the resolver
- * could not inline — which the caller degrades to `unknown` rather than failing
- * the whole conversion.
- */
 function _resolveRefTarget(
   ref: string,
+  schema: Record<string, unknown>,
   root: Record<string, unknown>,
 ): Record<string, unknown> | boolean | undefined {
-  if (ref === '#' || ref === '#/') return root;
-  if (typeof root['$id'] === 'string' && ref === root['$id']) return root;
-  if (!ref.startsWith('#/')) return undefined;
-
-  let current: unknown = root;
-  for (const rawSegment of ref.slice(2).split('/')) {
-    const segment = rawSegment.replace(/~1/g, '/').replace(/~0/g, '~');
-    if (current === null || typeof current !== 'object' || Array.isArray(current) ||
-        !Object.hasOwn(current, segment)) return undefined;
-    current = (current as Record<string, unknown>)[segment];
+  let references = referenceContexts.get(root);
+  if (references === undefined) {
+    references = createRedactionReferenceContext(root);
+    referenceContexts.set(root, references);
   }
-  if (typeof current === 'boolean') return current;
-  if (current === null || typeof current !== 'object' || Array.isArray(current)) return undefined;
-  return current as Record<string, unknown>;
+  return resolveLocalSchemaReference(ref === '#/' ? '#' : ref, references, schema);
 }
 
 function _convertRef(
@@ -588,10 +577,9 @@ function _convertRef(
   schema: Record<string, unknown>,
   root: Record<string, unknown>,
 ): TSchema {
-  const target = _resolveRefTarget(ref, root);
-  // A `$ref` whose target is the node holding it asserts nothing and would spin
-  // forever; an unresolvable one has nothing to assert either.
-  if (target === undefined || target === schema) return Type.Unknown();
+  const target = _resolveRefTarget(ref, schema, root);
+  if (target === undefined) throw new SchemaNotFoundError(ref);
+  if (target === schema) throw new SchemaCircularRefError(ref);
   if (typeof target === 'boolean') return _convert(target, root);
   return Type.Unsafe({ [Kind]: REF_KIND, apcoreRefTarget: target, apcoreRefRoot: root });
 }
@@ -640,6 +628,20 @@ function _convertConstValue(value: unknown): TSchema {
  */
 const APPLICATOR_KIND = 'apcore:Applicators';
 
+/** @internal Resolve the schema keyword for a failed converted applicator. */
+export function convertedApplicatorFailure(node: unknown, value: unknown): string | null {
+  const applicator = node as TSchema & {
+    apcoreSchema: Record<string, unknown>;
+    apcoreRoot: Record<string, unknown>;
+  };
+  if (applicator[Kind] !== APPLICATOR_KIND) return null;
+  const { apcoreSchema, apcoreRoot } = applicator;
+  return applicatorFailure(
+    apcoreSchema, value, _subSchemaChecker(apcoreRoot),
+    (reference, fromSchema) => _resolveRefTarget(reference, fromSchema, apcoreRoot),
+  );
+}
+
 /**
  * Validate a value against a raw applicator sub-schema by routing it back
  * through the converter, so nested `type` / §6 / combinator keywords are decided
@@ -656,16 +658,8 @@ function _subSchemaChecker(
 }
 
 if (!TypeRegistry.Has(APPLICATOR_KIND)) {
-  TypeRegistry.Set(APPLICATOR_KIND, (schema, value): boolean => {
-    const node = schema as {
-      apcoreSchema: Record<string, unknown>;
-      apcoreRoot: Record<string, unknown>;
-    };
-    return checkApplicators(
-      node.apcoreSchema, value, _subSchemaChecker(node.apcoreRoot),
-      (reference) => _resolveRefTarget(reference, node.apcoreRoot),
-    );
-  });
+  TypeRegistry.Set(APPLICATOR_KIND, (schema, value) =>
+    convertedApplicatorFailure(schema, value) === null);
 }
 
 /**
@@ -684,8 +678,97 @@ function _withApplicators(
   root: Record<string, unknown>,
 ): TSchema {
   if (!hasApplicatorKeyword(schema)) return node;
+  const multipleOf = schema['multipleOf'];
+  // Preserve the numeric type for the standalone validator's opt-in coercion.
+  const numeric = typeof multipleOf === 'number' && (node['type'] === 'number' || node['type'] === 'integer');
   return Type.Intersect([
     node,
-    Type.Unsafe({ [Kind]: APPLICATOR_KIND, apcoreSchema: schema, apcoreRoot: root }),
-  ]);
+    _applicatorNode(schema, root),
+  ], numeric ? { type: node['type'] } : undefined);
+}
+
+function _applicatorNode(schema: Record<string, unknown>, root: Record<string, unknown>): TSchema {
+  const multipleOf = schema['multipleOf'];
+  return Type.Unsafe({
+    [Kind]: APPLICATOR_KIND,
+    apcoreSchema: schema,
+    apcoreRoot: root,
+    ...(multipleOf === undefined ? {} : { multipleOf }),
+  });
+}
+
+/** The schema-valued slots TypeBox reads when checking native JSON types. */
+const NATIVE_SCHEMA_CHILDREN: ReadonlyMap<string, readonly string[]> = new Map([
+  ['Array', ['items', 'contains']],
+  ['Import', ['$defs']],
+  ['Intersect', ['allOf', 'unevaluatedProperties']],
+  ['Not', ['not']],
+  ['Object', ['properties', 'additionalProperties']],
+  ['Record', ['patternProperties', 'additionalProperties']],
+  ['Tuple', ['items']],
+  ['Union', ['anyOf']],
+]);
+
+const NATIVE_SCHEMA_MAPS = new Set(['$defs', 'properties', 'patternProperties']);
+
+/** @internal Apply our decimal predicate to native TypeBox numeric schemas. */
+export function withExactTypeBoxMultipleOf(schema: TSchema): TSchema {
+  return _normalizeNativeMultipleOf(schema, new WeakMap());
+}
+
+function _normalizeNativeMultipleOf(schema: TSchema, seen: WeakMap<TSchema, TSchema>): TSchema {
+  if (sourceSchemas.has(schema)) return schema;
+  const previous = seen.get(schema);
+  if (previous !== undefined) return previous;
+
+  const kind = schema[Kind];
+  if ((kind === 'Integer' || kind === 'Number') && typeof schema['multipleOf'] === 'number') {
+    // Keep the ID and transform on the outer node so refs resolve to the
+    // complete assertion and decoding still runs the author's transform.
+    const base = { ...schema };
+    delete base['multipleOf'];
+    delete base.$id;
+    Reflect.deleteProperty(base, TransformKind);
+    const constraint = { multipleOf: schema['multipleOf'] };
+    const wrapped = Type.Intersect([base, _applicatorNode(constraint, constraint)], schema);
+    seen.set(schema, wrapped);
+    return wrapped;
+  }
+
+  const keywords = NATIVE_SCHEMA_CHILDREN.get(kind);
+  if (keywords === undefined) return schema;
+  const copy = { ...schema };
+  seen.set(schema, copy);
+  let changed = false;
+  for (const keyword of keywords) {
+    const child = _normalizeNativeChildren(keyword, schema[keyword], seen);
+    if (child !== schema[keyword]) {
+      copy[keyword] = child;
+      changed = true;
+    }
+  }
+  if (!changed) seen.set(schema, schema);
+  return changed ? copy : schema;
+}
+
+function _normalizeNativeChildren(keyword: string, value: unknown, seen: WeakMap<TSchema, TSchema>): unknown {
+  const walk = (child: unknown): unknown => (
+    child !== null && typeof child === 'object' && Kind in child
+      ? _normalizeNativeMultipleOf(child as TSchema, seen)
+      : child
+  );
+  if (Array.isArray(value)) {
+    const children = value.map(walk);
+    return children.some((child, index) => child !== value[index]) ? children : value;
+  }
+  if (NATIVE_SCHEMA_MAPS.has(keyword) && value !== null && typeof value === 'object') {
+    let changed = false;
+    const children = Object.entries(value).map(([name, schema]) => {
+      const child = walk(schema);
+      if (child !== schema) changed = true;
+      return [name, child];
+    });
+    return changed ? Object.fromEntries(children) : value;
+  }
+  return walk(value);
 }

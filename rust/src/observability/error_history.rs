@@ -11,26 +11,14 @@ use std::cmp::Reverse;
 use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::sync::Arc;
 use std::sync::OnceLock;
+use std::sync::Weak;
 
 use crate::context::Context;
-use crate::errors::{ErrorCode, ModuleError};
+use crate::errors::ModuleError;
 use crate::middleware::base::Middleware;
 
-use super::storage::StorageBackend;
+use super::storage::{InMemoryStorageBackend, StorageBackend};
 use super::store::{InMemoryObservabilityStore, ObservabilityStore};
-
-/// Canonical string representation of an `ErrorCode` (the SCREAMING_SNAKE_CASE
-/// serde name, e.g. `MODULE_EXECUTE_ERROR`). This MUST match the wire format
-/// emitted by `ModuleError` serialization and the corresponding Python/TS
-/// representation, so that cross-language fingerprints (observability.md §1.4)
-/// are stable. Falls back to Debug formatting only if the enum lacks a serde
-/// representation, which should never occur in practice.
-fn error_code_string(code: ErrorCode) -> String {
-    // Delegates to the shared canonical wire-string method on ErrorCode so the
-    // metrics middleware and error history use one source of truth (sync
-    // finding A-D-14).
-    code.wire_str()
-}
 
 /// A recorded error entry with deduplication support.
 ///
@@ -149,8 +137,7 @@ pub fn compute_fingerprint(error_code: &str, module_id: &str, message: &str) -> 
 /// `apcore-typescript.computeFingerprint(error, moduleId)`.
 #[must_use]
 pub fn compute_fingerprint_from_error(error: &ModuleError, module_id: &str) -> String {
-    let error_code = error_code_string(error.code);
-    compute_fingerprint(&error_code, module_id, &error.message)
+    compute_fingerprint(&error.wire_code(), module_id, &error.message)
 }
 
 // ---------------------------------------------------------------------------
@@ -163,6 +150,11 @@ struct IndexedError {
     sequence: u64,
 }
 
+#[derive(Debug)]
+struct DefaultHistoryStorage {
+    backend: Arc<InMemoryStorageBackend>,
+}
+
 #[derive(Debug, Default)]
 struct ErrorHistoryState {
     fp_index: HashMap<String, IndexedError>,
@@ -171,16 +163,40 @@ struct ErrorHistoryState {
     /// Exactly one key per retained fingerprint, ordered by last occurrence.
     eviction_order: BTreeSet<(DateTime<Utc>, u64, String)>,
     seq: u64,
+    default_store: Option<InMemoryObservabilityStore>,
+    // Only collector handles own this wrapper. Backend readers can outlive detachment.
+    default_storage: Weak<DefaultHistoryStorage>,
 }
 
 impl ErrorHistoryState {
-    fn remove_entry(&mut self, fingerprint: String) {
-        if let Some(indexed) = self.fp_index.remove(&fingerprint) {
-            self.eviction_order.remove(&(
-                indexed.entry.last_occurred,
-                indexed.sequence,
-                fingerprint,
-            ));
+    fn remove_entry(&mut self, fingerprint: String) -> Option<ErrorEntry> {
+        let indexed = self.fp_index.remove(&fingerprint)?;
+        self.evict_default_backing(&fingerprint);
+        self.eviction_order
+            .remove(&(indexed.entry.last_occurred, indexed.sequence, fingerprint));
+        Some(indexed.entry)
+    }
+
+    fn evict_default_backing(&self, fingerprint: &str) {
+        if let Some(store) = &self.default_store {
+            store.evict_error(fingerprint);
+        }
+        if let Some(storage) = self.default_storage.upgrade() {
+            storage.backend.remove("error_history", fingerprint);
+        }
+    }
+
+    fn retain_default_backing(&self, fingerprint: &str) {
+        let Some(indexed) = self.fp_index.get(fingerprint) else {
+            return;
+        };
+        if let Some(store) = &self.default_store {
+            store.retain_error(indexed.sequence, &indexed.entry);
+        }
+        if let Some(storage) = self.default_storage.upgrade() {
+            if let Ok(value) = serde_json::to_value(&indexed.entry) {
+                storage.backend.put("error_history", fingerprint, value);
+            }
         }
     }
 }
@@ -205,6 +221,7 @@ pub struct ErrorHistory {
     /// `ObservabilityStore` is independent of this — both are kept so existing
     /// integrations don't have to change.
     storage_backend: Option<Arc<dyn StorageBackend>>,
+    default_storage: Option<Arc<DefaultHistoryStorage>>,
 }
 
 impl ErrorHistory {
@@ -213,21 +230,13 @@ impl ErrorHistory {
     /// when only the per-module limit is given.
     #[must_use]
     pub fn new(max_entries_per_module: usize) -> Self {
-        Self::with_store_and_limits(
-            max_entries_per_module,
-            DEFAULT_MAX_TOTAL_ENTRIES,
-            Arc::new(InMemoryObservabilityStore::new()),
-        )
+        Self::with_limits(max_entries_per_module, DEFAULT_MAX_TOTAL_ENTRIES)
     }
 
     /// Create with explicit per-module and total limits, default in-memory store.
     #[must_use]
     pub fn with_limits(max_entries_per_module: usize, max_total_entries: usize) -> Self {
-        Self::with_store_and_limits(
-            max_entries_per_module,
-            max_total_entries,
-            Arc::new(InMemoryObservabilityStore::new()),
-        )
+        Self::with_backends(max_entries_per_module, max_total_entries, None, None)
     }
 
     /// Create with an explicit observability store and default limits (50 / 1000).
@@ -243,15 +252,7 @@ impl ErrorHistory {
         max_total_entries: usize,
         store: Arc<dyn ObservabilityStore>,
     ) -> Self {
-        Self {
-            state: Arc::new(Mutex::new(ErrorHistoryState::default())),
-            max_entries_per_module,
-            max_total_entries,
-            store,
-            // D-113: an omitted backend is the in-memory one, on every
-            // constructor that does not take one.
-            storage_backend: Some(crate::observability::storage::default_storage_backend()),
-        }
+        Self::with_backends(max_entries_per_module, max_total_entries, Some(store), None)
     }
 
     /// Create with explicit limits and an optional `StorageBackend` (Issue
@@ -271,15 +272,40 @@ impl ErrorHistory {
         // reading records back got an empty list rather than an error. The
         // parameter stays `Option` so existing callers compile unchanged;
         // `None` now resolves to the default rather than disabling persistence.
-        let storage_backend = Some(
-            storage_backend.unwrap_or_else(crate::observability::storage::default_storage_backend),
-        );
-        Self {
-            state: Arc::new(Mutex::new(ErrorHistoryState::default())),
+        Self::with_backends(
             max_entries_per_module,
             max_total_entries,
-            store: Arc::new(InMemoryObservabilityStore::new()),
+            None,
             storage_backend,
+        )
+    }
+
+    fn with_backends(
+        max_entries_per_module: usize,
+        max_total_entries: usize,
+        store: Option<Arc<dyn ObservabilityStore>>,
+        storage_backend: Option<Arc<dyn StorageBackend>>,
+    ) -> Self {
+        let mut state = ErrorHistoryState::default();
+        let store = store.unwrap_or_else(|| {
+            let default_store = InMemoryObservabilityStore::new();
+            state.default_store = Some(default_store.clone());
+            Arc::new(default_store)
+        });
+        let default_storage = storage_backend.is_none().then(|| {
+            let storage = Arc::new(DefaultHistoryStorage {
+                backend: Arc::new(InMemoryStorageBackend::new()),
+            });
+            state.default_storage = Arc::downgrade(&storage);
+            storage
+        });
+        Self {
+            state: Arc::new(Mutex::new(state)),
+            max_entries_per_module,
+            max_total_entries,
+            store,
+            storage_backend,
+            default_storage,
         }
     }
 
@@ -287,6 +313,7 @@ impl ErrorHistory {
     #[must_use]
     pub fn with_storage(mut self, storage_backend: Option<Arc<dyn StorageBackend>>) -> Self {
         self.storage_backend = storage_backend;
+        self.default_storage = None;
         self
     }
 
@@ -309,23 +336,28 @@ impl ErrorHistory {
     /// untestable here rather than merely unimplemented, the same shape D-91
     /// settled for `ExtensionManager::unregister`.
     ///
-    /// Always `Some` since D-113: an omitted backend resolves to the default
-    /// rather than disabling persistence.
+    /// An omitted backend resolves to the default at construction. Use
+    /// `with_storage(None)` to detach it explicitly.
     #[must_use]
     pub fn storage_backend(&self) -> Option<Arc<dyn StorageBackend>> {
-        self.storage_backend.clone()
+        self.storage_backend.clone().or_else(|| {
+            self.default_storage
+                .as_ref()
+                .map(|storage| storage.backend.clone() as Arc<dyn StorageBackend>)
+        })
     }
 
     /// Record an error at an explicit timestamp. Used by conformance tests
     /// to verify time-based eviction behavior independently of wall-clock.
     pub fn record_at(&self, module_id: &str, error: &ModuleError, when: DateTime<Utc>) {
-        let error_code = error_code_string(error.code);
+        let error_code = error.wire_code();
         let fp = compute_fingerprint(&error_code, module_id, &error.message);
 
         // Capture the entry to forward to the store BEFORE eviction can run —
         // when `max_total_entries` is small or `when` is older than every
         // existing `last_occurred`, eviction may pop the entry we just inserted.
         let entry_to_notify: ErrorEntry;
+        let notify_custom_store;
         {
             let mut state = self.state.lock();
 
@@ -345,7 +377,7 @@ impl ErrorHistory {
             } else {
                 let entry = ErrorEntry {
                     module_id: module_id.to_string(),
-                    error_code,
+                    error_code: error_code.into_owned(),
                     message: error.message.clone(),
                     ai_guidance: error.ai_guidance.clone(),
                     timestamp: when,
@@ -373,6 +405,8 @@ impl ErrorHistory {
                 evict_per_module(&mut state, module_id, self.max_entries_per_module);
                 evict_total(&mut state, self.max_total_entries);
             }
+            state.retain_default_backing(&entry_to_notify.fingerprint);
+            notify_custom_store = state.default_store.is_none();
         }
 
         // Notify the store outside the internal lock to avoid lock-ordering issues.
@@ -383,9 +417,11 @@ impl ErrorHistory {
         let backend = self.storage_backend.clone();
         let entry_clone = entry_to_notify.clone();
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
-            handle.spawn(async move {
-                store.record_error(entry_to_notify).await;
-            });
+            if notify_custom_store {
+                handle.spawn(async move {
+                    store.record_error(entry_to_notify).await;
+                });
+            }
             if let Some(backend) = backend {
                 let fp = entry_clone.fingerprint.clone();
                 handle.spawn(async move {
@@ -394,7 +430,7 @@ impl ErrorHistory {
                     }
                 });
             }
-        } else {
+        } else if notify_custom_store || self.storage_backend.is_some() {
             tracing::debug!(
                 "ErrorHistory::record called outside a tokio runtime; \
                  store notification skipped"
@@ -456,6 +492,9 @@ impl ErrorHistory {
                 }
             }
         } else {
+            for fingerprint in state.fp_index.keys() {
+                state.evict_default_backing(fingerprint);
+            }
             state.fp_index.clear();
             state.module_index.clear();
             state.eviction_order.clear();
@@ -491,10 +530,10 @@ fn pop_oldest(state: &mut ErrorHistoryState) -> bool {
     let Some((_, _, fp)) = state.eviction_order.pop_first() else {
         return false;
     };
-    let Some(indexed) = state.fp_index.remove(&fp) else {
+    let Some(entry) = state.remove_entry(fp.clone()) else {
         return false;
     };
-    let module_id = &indexed.entry.module_id;
+    let module_id = &entry.module_id;
     if let Some(fps) = state.module_index.get_mut(module_id) {
         fps.retain(|f| f != &fp);
         if fps.is_empty() {
@@ -564,6 +603,7 @@ impl Middleware for ErrorHistoryMiddleware {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::errors::ErrorCode;
 
     #[test]
     fn repeat_errors_keep_the_eviction_index_bounded() {

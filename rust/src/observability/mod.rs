@@ -6,6 +6,7 @@ pub mod exporters;
 pub mod logging;
 pub mod metrics;
 pub mod processor;
+mod prometheus;
 pub mod prometheus_exporter;
 pub mod redaction;
 pub mod span;
@@ -26,6 +27,7 @@ pub use processor::{
     BatchSpanProcessor, BatchSpanProcessorBuilder, BatchSpanProcessorConfig, SimpleSpanProcessor,
     SpanProcessor,
 };
+pub use prometheus::render_prometheus_metrics;
 pub use prometheus_exporter::PrometheusExporter;
 pub use redaction::{RedactionConfig, RedactionConfigBuilder, RedactionConfigError};
 pub use span::{Span, SpanExporter};

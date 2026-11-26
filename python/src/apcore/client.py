@@ -8,9 +8,8 @@ keeps these methods *synchronous* for ergonomics: internally they run the async
 pipeline on a cached event loop (or a background thread when a loop is already
 running — the "sync-in-thread" model).
 
-When porting code from TypeScript/Rust to Python, remove ``await`` from these
-calls.  When writing Python code that must itself be async, prefer the
-``call_async()`` / ``stream()`` counterparts which are true coroutines.
+Async Python callers can use ``call_async()`` for calls, ``validate_async()``
+for preflight, and ``stream()`` for chunked results.
 """
 
 from __future__ import annotations
@@ -30,6 +29,7 @@ from apcore.module import PreflightResult
 from apcore.policy import ExecutionPolicy
 from apcore.observability.metrics import MetricsCollector
 from apcore.registry import Registry
+from apcore.streaming import StreamExecution
 from apcore.sys_modules.control import ToggleState
 
 
@@ -69,20 +69,8 @@ class APCore:
         """
         self.config = config
 
-        # Per-instance ToggleState (#71). Each APCore instance owns one
-        # ToggleState that is injected into BOTH the write path
-        # (ToggleFeatureModule, via register_sys_modules) and the read path
-        # (BuiltinModuleLookup, via the Executor's strategy). This isolates
-        # toggles between instances in the same process; disabling a module on
-        # one APCore does not disable it on another. The module-global
-        # ``_default_toggle_state`` remains the fallback only for the free
-        # ``is_module_disabled`` function and Executors built without a
-        # toggle_state.
-        self.toggle_state = ToggleState()
-
-        # When the caller supplies their own Executor we respect it as-is (its
-        # read path uses whatever toggle_state it was built with). The
-        # auto-created Executor is wired to this instance's ToggleState.
+        # The control module and executor must use the same toggle state.
+        self.toggle_state = executor._adopt_client_toggle_state() if executor is not None else ToggleState()
         executor_supplied = executor is not None
         if executor_supplied:
             self.executor = executor  # type: ignore[assignment]
@@ -317,6 +305,16 @@ class APCore:
             async for chunk in output:
                 yield chunk
 
+    def stream_with_completion(
+        self,
+        module_id: str,
+        inputs: dict[str, Any] | None = None,
+        context: Context | None = None,
+        version_hint: str | None = None,
+    ) -> StreamExecution:
+        """Open one lazy stream with a separately observable completion."""
+        return self.executor.stream_with_completion(module_id, inputs, context, version_hint=version_hint)
+
     def validate(
         self,
         module_id: str,
@@ -324,6 +322,7 @@ class APCore:
         context: Context | None = None,
         *,
         timeout_ms: int | None = None,
+        version_hint: str | None = None,
     ) -> PreflightResult:
         """Non-destructive preflight check without execution.
 
@@ -332,17 +331,31 @@ class APCore:
             inputs: Input data to validate.
             context: Optional context for call-chain checks.
             timeout_ms: Optional per-call wait limit for the sync thread bridge.
+            version_hint: Optional semver hint, resolved as in ``call()``.
 
         Returns:
             PreflightResult with per-check status.
 
         Cross-language note:
             TypeScript and Rust expose this as an async method.
-            Python keeps it synchronous; do not ``await`` it.
+            From async Python code, use ``validate_async()``.
         """
+        if version_hint is not None:
+            return self.executor.validate(module_id, inputs, context, timeout_ms=timeout_ms, version_hint=version_hint)
         if timeout_ms is None:
             return self.executor.validate(module_id, inputs, context)
         return self.executor.validate(module_id, inputs, context, timeout_ms=timeout_ms)
+
+    async def validate_async(
+        self,
+        module_id: str,
+        inputs: dict[str, Any] | None = None,
+        context: Context | None = None,
+        *,
+        version_hint: str | None = None,
+    ) -> PreflightResult:
+        """Run preflight on the current event loop, with the same checks as ``validate()``."""
+        return await self.executor.validate_async(module_id, inputs, context, version_hint=version_hint)
 
     def describe(self, module_id: str) -> str:
         """Get module description info (for AI/LLM use).

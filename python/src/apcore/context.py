@@ -9,6 +9,8 @@ from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Generic, Mapping, Protocol, TypeVar, runtime_checkable
 
 from apcore.cancel import CancelToken
+from apcore.context_keys import TRACING_SAMPLED, _current_trace_span, _middleware_data
+from apcore.trace_context import _valid_inbound_parent_id
 
 if TYPE_CHECKING:
     from contextlib import AsyncExitStack
@@ -170,6 +172,10 @@ class Context(Generic[T]):
     # Transient like `executor` and `services`: not serialized.
     governance_projection: GovernanceProjection | None = field(default=None, repr=False)
     _execution_scope: AsyncExitStack | None = field(default=None, init=False, repr=False, compare=False)
+    _invocation_data: dict[str, Any] | None = field(default=None, init=False, repr=False, compare=False)
+    _local_parent_span: Any = field(default=None, init=False, repr=False, compare=False)
+    _parent_sampled: bool | None = field(default=None, init=False, repr=False, compare=False)
+    _inbound_trace_parent: TraceParent | None = field(default=None, init=False, repr=False, compare=False)
 
     @classmethod
     def create(
@@ -192,8 +198,8 @@ class Context(Generic[T]):
         managed exclusively by ``Context.child()``.
 
         When *trace_parent* is provided, its ``trace_id`` is accepted only if
-        it is exactly 32 lowercase hex characters and not the W3C-reserved
-        all-zero or all-f value. Otherwise a fresh 32-hex trace_id is
+        it is exactly 32 lowercase hex characters and neither all-zero
+        nor the APCore-reserved all-f value. Otherwise a fresh 32-hex trace_id is
         generated and a WARN-level log is emitted. No normalization (dashed
         UUID stripping, case folding) is performed here; such normalization
         is the responsibility of the TraceParent header parser or the
@@ -202,7 +208,8 @@ class Context(Generic[T]):
         if trace_parent is not None:
             hex_id = trace_parent.trace_id
             if (
-                len(hex_id) == 32
+                isinstance(hex_id, str)
+                and len(hex_id) == 32
                 and all(c in "0123456789abcdef" for c in hex_id)
                 and hex_id != "0" * 32
                 and hex_id != "f" * 32
@@ -227,7 +234,7 @@ class Context(Generic[T]):
             tracestate = getattr(trace_parent, "tracestate", ())
             if tracestate:
                 ctx_data.setdefault("_apcore.trace.state", tuple(tracestate))
-        return cls(
+        context = cls(
             trace_id=trace_id,
             caller_id=None,
             call_chain=[],
@@ -238,6 +245,13 @@ class Context(Generic[T]):
             cancel_token=cancel_token,
             global_deadline=global_deadline,
         )
+        if (
+            trace_parent is not None
+            and trace_id == trace_parent.trace_id
+            and _valid_inbound_parent_id(trace_parent.parent_id)
+        ):
+            context._inbound_trace_parent = trace_parent
+        return context
 
     def bind_executor(self, executor: Any) -> None:
         """SDK-internal contract member. Bind the Executor to this Context.
@@ -410,12 +424,11 @@ class Context(Generic[T]):
     def child(self, target_module_id: str) -> Context[T]:
         """Create a child Context for calling a target module.
 
-        The ``data`` dict is intentionally shared (not copied) between parent
-        and child contexts.  Middleware such as TracingMiddleware and
-        MetricsMiddleware rely on this shared reference to maintain span and
-        timing stacks across nested module-to-module calls.
+        The caller's ``data`` dictionary stays shared. A child carries its
+        parent's current span explicitly, while each invocation owns its
+        middleware timing and span data.
         """
-        return Context(
+        child = Context(
             trace_id=self.trace_id,
             caller_id=self.call_chain[-1] if self.call_chain else None,
             call_chain=[*self.call_chain, target_module_id],
@@ -426,6 +439,11 @@ class Context(Generic[T]):
             cancel_token=self.cancel_token,
             global_deadline=self.global_deadline,
         )
+        child._invocation_data = {}
+        child._local_parent_span = _current_trace_span(self, include_parent=True)
+        child._parent_sampled = _middleware_data(self).get(TRACING_SAMPLED.name, self._parent_sampled)
+        child._inbound_trace_parent = self._inbound_trace_parent
+        return child
 
 
 @runtime_checkable

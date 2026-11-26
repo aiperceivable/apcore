@@ -18,6 +18,7 @@ use crate::builtin_steps::{
     build_internal_strategy, build_minimal_strategy, build_performance_strategy,
     build_standard_strategy, build_testing_strategy,
 };
+use crate::cancel::CancelToken;
 use crate::config::Config;
 use crate::context::Context;
 use crate::errors::{ErrorCode, ModuleError};
@@ -30,10 +31,11 @@ use crate::module::{PreflightCheckResult, PreflightResult};
 use crate::observability::redaction::RedactionConfig;
 use crate::pipeline::{
     BuiltinGate, ExecutionStrategy, PipelineContext, PipelineEngine, PipelineTrace, RunOptions,
-    StrategyInfo,
+    StepTrace, StrategyInfo,
 };
 use crate::policy::ExecutionPolicy;
 use crate::registry::registry::{module_id_pattern, Registry};
+use crate::stream_completion::{StreamChunks, StreamCompletionHandle, StreamRecorder};
 use crate::utils::propagate_module_error;
 
 /// Maximum nesting depth for deep_merge_value to prevent stack overflow on
@@ -64,10 +66,8 @@ pub fn resolve_merge_depth(config: &Config) -> usize {
 
 /// Deep-merge a list of JSON Value chunks into a single accumulated Value.
 ///
-/// Retained for tests that explicitly verify the unchecked merge behavior;
-/// the streaming pipeline now uses [`deep_merge_chunks_checked`] (D-58) so a
-/// non-object chunk surfaces a structured error rather than silently
-/// replacing the accumulator.
+/// Retained for tests of the unchecked merge behavior. The streaming pipeline
+/// checks each chunk's shape before incrementally merging it (D-58).
 #[cfg(test)]
 fn deep_merge_chunks(chunks: &[Value]) -> Value {
     let mut acc = Value::Null;
@@ -220,9 +220,11 @@ fn step_to_check_name(step_name: &str) -> &str {
 }
 
 /// Convert `PipelineTrace` steps into `PreflightCheckResult` entries.
-fn trace_to_checks(trace: &PipelineTrace) -> Vec<PfCheck> {
-    trace
-        .steps
+fn trace_to_checks(
+    steps: &[StepTrace],
+    preflight_errors: &[(String, ModuleError)],
+) -> Vec<PfCheck> {
+    steps
         .iter()
         .filter(|st| !st.skipped)
         .map(|st| {
@@ -231,12 +233,18 @@ fn trace_to_checks(trace: &PipelineTrace) -> Vec<PfCheck> {
             let error = if passed {
                 None
             } else {
-                st.result.explanation.as_ref().map(|msg| {
-                    serde_json::json!({
-                        "code": format!("STEP_{}_FAILED", st.name.to_uppercase()),
-                        "message": msg,
+                preflight_errors
+                    .iter()
+                    .find(|(step, _)| step == &st.name)
+                    .map(|(_, error)| error.to_dict())
+                    .or_else(|| {
+                        st.result.explanation.as_ref().map(|msg| {
+                            serde_json::json!({
+                                "code": format!("STEP_{}_FAILED", st.name.to_uppercase()),
+                                "message": msg,
+                            })
+                        })
                     })
-                })
             };
             PfCheck {
                 check: check_name,
@@ -262,19 +270,10 @@ pub fn has_schema(schema: &Value) -> bool {
 /// Sentinel value used to replace sensitive fields in redacted output.
 pub const REDACTED_VALUE: &str = "***REDACTED***";
 
-/// Internal: result of `Executor::prepare_stream`. Carries everything the
-/// streaming body needs to invoke `module.stream()` and run Phase 3.
+/// Internal: context carried from stream setup through post-processing.
 struct StreamSetup {
     module: Arc<dyn crate::module::Module>,
-    /// The Phase-1 pipeline context, carried whole.
-    ///
-    /// Phase 2 reads `inputs` / `context` off it, and Phases 2b (the
-    /// non-streaming fallback) and 3 RUN pipeline steps against it — so the
-    /// post steps see, and can write, exactly the state the pre-execute steps
-    /// left. Copying the fields out instead meant the post steps ran against a
-    /// clone: `context.redacted_output`, which `output_validation` populates,
-    /// was then never visible to the after-middleware that records the audit
-    /// entry (MW-002).
+    /// The same pipeline context serves every phase and retains its module lease.
     pipe_ctx: PipelineContext,
     /// The target module, for decorating errors raised after Phase 1.
     module_id: String,
@@ -285,10 +284,6 @@ struct StreamSetup {
 }
 
 impl StreamSetup {
-    fn inputs(&self) -> &Value {
-        &self.pipe_ctx.inputs
-    }
-
     fn context(&self) -> &Context<Value> {
         &self.pipe_ctx.context
     }
@@ -304,11 +299,11 @@ impl StreamSetup {
 /// SDKs. In that case the streaming body must YIELD the recovery value as the
 /// stream's chunk rather than surfacing the error (sync finding A-D-001).
 enum StreamPrep {
-    /// Phase 1 succeeded; proceed to invoke `module.stream()`.
+    /// Phase 1 succeeded; proceed with the selected strategy.
     Setup(Box<StreamSetup>),
     /// A middleware `on_error` handler recovered from a Phase-1 failure; yield
     /// this value as the single stream chunk, then end the stream.
-    Recovery(Value),
+    Recovery(Value, Box<ModuleError>),
 }
 
 /// Validate a JSON value against a JSON Schema.
@@ -387,7 +382,10 @@ pub fn validate_against_schema(
                         .to_string()
                 }),
             );
-            map.insert("message".to_string(), e.to_string());
+            map.insert(
+                "message".to_string(),
+                crate::schema::validator::safe_validation_message(&e),
+            );
             map
         })
         .collect();
@@ -417,7 +415,94 @@ async fn next_stream_chunk(
     setup: &StreamSetup,
 ) -> Result<Option<Result<Value, ModuleError>>, ModuleError> {
     let context = setup.context();
-    let token = context.cancel_token.as_ref();
+    tokio::select! {
+        biased;
+        error = wait_stream_interruption(
+            context.cancel_token.as_ref(), context.global_deadline, &setup.module_id,
+            setup.module.as_ref(),
+        ) => Err(error),
+        item = inner.next() => Ok(item),
+    }
+}
+
+fn stream_deadline_remaining(deadline: f64) -> Option<std::time::Duration> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs_f64();
+    std::time::Duration::try_from_secs_f64((deadline - now).max(0.0)).ok()
+}
+
+fn stream_timeout_error(
+    token: Option<&CancelToken>,
+    module_id: &str,
+    module: &dyn crate::module::Module,
+) -> ModuleError {
+    let mut error =
+        ModuleError::module_timeout(module_id, 0).with_retryable(module.annotations().idempotent);
+    error.message = format!("Module '{module_id}' streaming aborted: global deadline exceeded");
+    error.details.remove("timeout_ms");
+    if let Some(token) = token {
+        token.cancel_after_timeout(&error);
+    }
+    error
+}
+
+pub(crate) async fn open_stream(
+    ctx: &PipelineContext,
+    module: &Arc<dyn crate::module::Module>,
+) -> Result<Option<crate::module::ChunkStream>, ModuleError> {
+    let context = ctx.context.clone();
+    let token = context.cancel_token.clone();
+    let deadline = context.global_deadline;
+    let opening_module = Arc::clone(module);
+    let module_id = ctx.module_id.clone();
+    let inputs = ctx.inputs.clone();
+    let lease = ctx.module_lease.clone();
+    let span = tracing::Span::current();
+    let open = move || {
+        let _lease = lease;
+        let _span = span.enter();
+        if let Some(token) = context.cancel_token.as_ref() {
+            token.check_for(&module_id)?;
+        }
+        if deadline
+            .and_then(stream_deadline_remaining)
+            .is_some_and(|remaining| remaining.is_zero())
+        {
+            return Err(stream_timeout_error(
+                context.cancel_token.as_ref(),
+                &module_id,
+                opening_module.as_ref(),
+            ));
+        }
+        let producer = match opening_module.as_streaming() {
+            Some(typed) => Some(typed.stream_typed(inputs, &context)),
+            None => opening_module.stream(inputs, &context),
+        };
+        Ok(producer)
+    };
+    let opening = match token.as_ref() {
+        Some(token) => token.spawn_blocking_tracked(open),
+        None => tokio::task::spawn_blocking(open),
+    };
+    tokio::select! {
+        biased;
+        error = wait_stream_interruption(
+            token.as_ref(), deadline, &ctx.module_id, module.as_ref()
+        ) => Err(error),
+        result = opening => result.map_err(|error| {
+            ModuleError::new(ErrorCode::GeneralInternalError, format!("Opening the stream failed: {error}"))
+        })?,
+    }
+}
+
+async fn wait_stream_interruption(
+    token: Option<&CancelToken>,
+    global_deadline: Option<f64>,
+    module_id: &str,
+    module: &dyn crate::module::Module,
+) -> ModuleError {
     let cancellation = async {
         match token {
             Some(token) => token.cancelled().await,
@@ -425,36 +510,25 @@ async fn next_stream_chunk(
         }
     };
     let timeout = async {
-        let remaining = context.global_deadline.and_then(|deadline| {
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs_f64();
-            std::time::Duration::try_from_secs_f64((deadline - now).max(0.0)).ok()
-        });
+        let remaining = global_deadline.and_then(stream_deadline_remaining);
         match remaining {
             Some(delta) if delta.is_zero() => {}
             Some(delta) => tokio::time::sleep(delta).await,
             None => std::future::pending().await,
         }
     };
-    let module_id = &setup.module_id;
     tokio::select! {
         biased;
-        () = cancellation => Err(crate::cancel::ExecutionCancelledError::new(
-            module_id, "Execution was cancelled",
-        ).into()),
-        () = timeout => {
-            if let Some(token) = token {
-                token.cancel();
-            }
-            let mut error = ModuleError::module_timeout(module_id, 0)
-                .with_retryable(setup.module.annotations().idempotent);
-            error.message = format!("Module '{module_id}' streaming aborted: global deadline exceeded");
-            error.details.remove("timeout_ms");
-            Err(error)
+        () = cancellation => {
+            // The unary fallback's execute step signals its token on timeout.
+            // Preserve that error if the pipeline is still unwinding hooks.
+            token.and_then(CancelToken::timeout_error).cloned().unwrap_or_else(|| {
+                crate::cancel::ExecutionCancelledError::new(
+                    module_id, "Execution was cancelled",
+                ).into()
+            })
         }
-        item = inner.next() => Ok(item),
+        () = timeout => stream_timeout_error(token, module_id, module),
     }
 }
 
@@ -525,9 +599,11 @@ pub(crate) fn loggable_value(
     captured: Option<&HashMap<String, Value>>,
     raw: &Value,
     rules: Option<&RedactionConfig>,
+    within_executor: bool,
 ) -> Value {
     match captured {
         Some(map) => Value::Object(map.iter().map(|(k, v)| (k.clone(), v.clone())).collect()),
+        None if within_executor => Value::Null,
         None => redact_sensitive_with(raw, &Value::Null, rules),
     }
 }
@@ -684,12 +760,46 @@ impl ExecutorHandle {
     }
 }
 
+#[derive(Debug)]
+struct RuntimeConfig {
+    source: Arc<tokio::sync::Mutex<Config>>,
+    snapshot: parking_lot::Mutex<Option<ConfigSnapshot>>,
+}
+
+#[derive(Clone, Debug)]
+struct ConfigSnapshot {
+    config: Arc<Config>,
+    redaction: Arc<RedactionConfig>,
+}
+
+impl RuntimeConfig {
+    async fn snapshot(&self) -> ConfigSnapshot {
+        let source = self.source.lock().await;
+        let mut snapshot = self.snapshot.lock();
+        if let Some(current) = snapshot.as_ref() {
+            if current.config.generation == source.generation {
+                return current.clone();
+            }
+        }
+        let current = ConfigSnapshot {
+            config: Arc::new(source.clone()),
+            redaction: Arc::new(RedactionConfig::from_config(&source)),
+        };
+        *snapshot = Some(current.clone());
+        current
+    }
+}
+
 /// Responsible for executing modules with middleware, ACL, and context management.
 #[derive(Debug)]
 pub struct Executor {
     pub registry: Arc<Registry>,
+    /// Configuration supplied when this executor was constructed.
     pub config: Arc<Config>,
+    runtime_config: parking_lot::RwLock<Option<Arc<RuntimeConfig>>>,
     pub acl: Option<Arc<ACL>>,
+    pub(crate) acl_load_error: Option<ModuleError>,
+    pub(crate) pipeline_load_error: Option<ModuleError>,
     pub approval_handler: Option<Arc<dyn ApprovalHandler>>,
     /// Execution-time governance policy consulted by the Step-5 approval gate
     /// (apcore#76 RFC pilot). Flows to the gate via `PipelineContext`.
@@ -739,19 +849,6 @@ pub struct Executor {
 /// Steps whose removal withdraws a protection rather than an ordinary stage.
 const SECURITY_STEPS: [&str; 2] = ["acl_check", "approval_gate"];
 
-/// The `pipeline` section of a loaded config, or `None` when there is nothing
-/// to apply.
-///
-/// An absent section and an empty one mean the same thing — run the default
-/// pipeline — so both return `None` and the caller takes the untouched
-/// `build_standard_strategy_with_toggle` path.
-fn pipeline_section(config: &Config) -> Option<serde_json::Value> {
-    match config.get("pipeline") {
-        Some(Value::Object(map)) if !map.is_empty() => Some(Value::Object(map)),
-        _ => None,
-    }
-}
-
 /// PROTOCOL_SPEC §5.16 requirement 7 — removing `acl_check` or `approval_gate`
 /// emits a diagnostic, once per configuration load.
 ///
@@ -781,39 +878,35 @@ fn warn_removed_security_steps(section: &Value) {
     );
 }
 
-/// Build the execution strategy the loaded configuration declares, falling back
-/// to the standard pipeline when it declares none.
-///
-/// A section that fails to build is logged at error level and the standard
-/// pipeline runs instead, matching how this crate already handles config-driven
-/// wiring that can fail inside an infallible constructor (`ACL::discover` and
-/// `register_sys_modules` in `client.rs`). Python and TypeScript propagate the
-/// error out of their constructors; Rust's `Executor::new` returns `Self` and
-/// cannot, and panicking in a library constructor is worse than either. The
-/// fallback is the fail-safe direction: it keeps every built-in protection,
-/// and the one thing it can cost — a declared custom step — is named in the log
-/// line rather than lost silently.
+/// Build the configured strategy. Infallible constructors retain the failure
+/// and reject execution before any strategy step can run.
 fn strategy_from_config(
     config: &Config,
     toggle_state: &Arc<crate::sys_modules::ToggleState>,
-) -> ExecutionStrategy {
-    let Some(section) = pipeline_section(config) else {
-        return crate::builtin_steps::build_standard_strategy_with_toggle(Arc::clone(toggle_state));
+) -> (ExecutionStrategy, Option<ModuleError>) {
+    let standard =
+        || crate::builtin_steps::build_standard_strategy_with_toggle(Arc::clone(toggle_state));
+    let Some(section) = config.get("pipeline") else {
+        return (standard(), None);
     };
-    warn_removed_security_steps(&section);
+    if section.as_object().is_some_and(serde_json::Map::is_empty) {
+        return (standard(), None);
+    }
     match crate::pipeline_config::build_strategy_from_config_with_toggle(
         &section,
         Some(config),
         Arc::clone(toggle_state),
     ) {
-        Ok(strategy) => strategy,
+        Ok(strategy) => {
+            warn_removed_security_steps(&section);
+            (strategy, None)
+        }
         Err(e) => {
             tracing::error!(
                 error = %e,
-                "The `pipeline:` section failed to build; running the standard pipeline. \
-                 Steps it declares will NOT run."
+                "The `pipeline:` section failed to build; module execution is disabled"
             );
-            crate::builtin_steps::build_standard_strategy_with_toggle(Arc::clone(toggle_state))
+            (standard(), Some(e))
         }
     }
 }
@@ -829,11 +922,14 @@ impl Executor {
         let config = config.into();
         // §5.16 requirement 6: a `pipeline:` section in the loaded config is
         // what runs. It used to be parsed, validated and then ignored.
-        let strategy = strategy_from_config(&config, &toggle_state);
+        let (strategy, pipeline_load_error) = strategy_from_config(&config, &toggle_state);
         Self {
             registry: registry.into(),
             config,
+            runtime_config: parking_lot::RwLock::new(None),
             acl: None,
+            acl_load_error: None,
+            pipeline_load_error,
             approval_handler: None,
             policy: None,
             event_emitter: None,
@@ -859,7 +955,10 @@ impl Executor {
         Ok(Self {
             registry: registry.into(),
             config: config.into(),
+            runtime_config: parking_lot::RwLock::new(None),
             acl: None,
+            acl_load_error: None,
+            pipeline_load_error: None,
             approval_handler: None,
             policy: None,
             event_emitter: None,
@@ -881,7 +980,10 @@ impl Executor {
         Self {
             registry: registry.into(),
             config: config.into(),
+            runtime_config: parking_lot::RwLock::new(None),
             acl: None,
+            acl_load_error: None,
+            pipeline_load_error: None,
             approval_handler: None,
             policy: None,
             event_emitter: None,
@@ -915,11 +1017,14 @@ impl Executor {
         let toggle_state = crate::sys_modules::global_toggle_state_arc();
         let config = config.into();
         // §5.16 requirement 6 — see `Executor::new`.
-        let strategy = strategy_from_config(&config, &toggle_state);
+        let (strategy, pipeline_load_error) = strategy_from_config(&config, &toggle_state);
         Self {
             registry: registry.into(),
             config,
+            runtime_config: parking_lot::RwLock::new(None),
             acl: acl.map(Arc::new),
+            acl_load_error: None,
+            pipeline_load_error,
             approval_handler: approval_handler.map(|h| Arc::from(h) as Arc<dyn ApprovalHandler>),
             policy: None,
             event_emitter: None,
@@ -1004,6 +1109,20 @@ impl Executor {
     /// only copy.
     pub fn set_acl_shared(&mut self, acl: Arc<ACL>) {
         self.acl = Some(acl);
+        self.acl_load_error = None;
+    }
+
+    fn ensure_startup_configuration(&self) -> Result<(), ModuleError> {
+        if let Some(error) = &self.pipeline_load_error {
+            return Err(error.clone());
+        }
+        if self.acl_load_error.is_some() {
+            return Err(ModuleError::new(
+                ErrorCode::ConfigInvalid,
+                "ACL configuration failed to load",
+            ));
+        }
+        Ok(())
     }
 
     /// Set the approval handler.
@@ -1156,6 +1275,7 @@ impl Executor {
         strategy: &ExecutionStrategy,
         record_attempts: bool,
     ) -> Result<(Value, PipelineTrace), ModuleError> {
+        self.ensure_startup_configuration()?;
         Self::validate_module_id(module_id)?;
         let mut parent = context.cloned().unwrap_or_else(Context::anonymous);
         parent.bind_executor(self.instance_handle())?;
@@ -1165,8 +1285,9 @@ impl Executor {
         loop {
             let mut attempt =
                 PipelineContext::new(module_id, inputs, parent.clone(), strategy.name());
+            attempt.validate_approval_credential()?;
             attempt.version_hint = version_hint.map(str::to_owned);
-            self.inject_resources(&mut attempt);
+            self.inject_resources(&mut attempt).await;
 
             let (output, mut trace) = match PipelineEngine::run(strategy, &mut attempt).await {
                 Ok((output, trace)) => {
@@ -1249,6 +1370,7 @@ impl Executor {
         inputs: &serde_json::Value,
         ctx: Option<&Context<serde_json::Value>>,
     ) -> Result<PreflightResult, ModuleError> {
+        self.ensure_startup_configuration()?;
         // Sync finding A-D-010: validate() is a NON-THROWING preflight —
         // a malformed module_id MUST be reported as a failed check, not
         // bubble up as a `ModuleError`. apcore-python and apcore-typescript
@@ -1276,8 +1398,12 @@ impl Executor {
             .unwrap_or_else(Context::<serde_json::Value>::anonymous);
         let mut pipe_ctx =
             PipelineContext::new(module_id, inputs.clone(), context, self.strategy.name());
+        let business_inputs = pipe_ctx
+            .discard_approval_credential()
+            .then(|| pipe_ctx.inputs.clone());
+        let inputs = business_inputs.as_ref().unwrap_or(inputs);
         pipe_ctx.dry_run = true;
-        self.inject_resources(&mut pipe_ctx);
+        self.inject_resources(&mut pipe_ctx).await;
         // validate() is non-throwing per A-D-010: bind errors surface as a
         // failed `executor_binding` check rather than bubbling up.
         if let Err(err) = self.bind_to_context(&mut pipe_ctx) {
@@ -1299,7 +1425,7 @@ impl Executor {
         let trace_result = PipelineEngine::run(&self.strategy, &mut pipe_ctx).await;
         match trace_result {
             Ok((_output, trace)) => {
-                checks.extend(trace_to_checks(&trace));
+                checks.extend(trace_to_checks(&trace.steps, &pipe_ctx.preflight_errors));
             }
             Err(e) => {
                 // Pipeline step raised an error; convert to a failed check.
@@ -1310,14 +1436,20 @@ impl Executor {
                 // `STEP_<NAME>_FAILED`. Keeping both put the SAME failure in
                 // `checks` twice, so `errors()` reported two problems where one
                 // existed and §12.8.4's one-entry-per-check shape did not hold.
-                // The passed steps are kept — apcore-python drops the whole
-                // trace here and loses them, which is why its `acl` entry
-                // disappears from a schema failure.
-                checks.extend(
-                    trace_to_checks(&pipe_ctx.trace)
-                        .into_iter()
-                        .filter(|c| c.passed),
-                );
+                let steps = pipe_ctx.trace.steps.as_slice();
+                let completed = match steps.split_last() {
+                    Some((last, completed))
+                        if last.result.action == "abort"
+                            && !pipe_ctx
+                                .preflight_errors
+                                .iter()
+                                .any(|(name, _)| name == &last.name) =>
+                    {
+                        completed
+                    }
+                    _ => steps,
+                };
+                checks.extend(trace_to_checks(completed, &pipe_ctx.preflight_errors));
                 // §1.1 fail-fast: unwrap `PipelineStepError` to the original
                 // typed cause for preflight categorization (mirrors Python).
                 let underlying = e.unwrap_pipeline_step_error().unwrap_or(e);
@@ -1341,27 +1473,9 @@ impl Executor {
                         // emits `{ code: e.code }` (executor.ts:880). `Debug`
                         // here yielded the PascalCase variant name, which is a
                         // code no registry contains.
-                        "code": underlying.code.wire_str(),
+                        "code": underlying.wire_code(),
                         "message": underlying.message,
                     })),
-                    warnings: vec![],
-                });
-            }
-        }
-
-        if !pipe_ctx.preflight_errors.is_empty() {
-            checks.retain(|check| check.passed);
-            for (step, error) in &pipe_ctx.preflight_errors {
-                let name = match step.as_str() {
-                    "acl_check" => crate::module::ACL_CHECK_NAME,
-                    "input_validation" => "schema",
-                    "call_chain_guard" => "call_chain",
-                    other => other,
-                };
-                checks.push(PreflightCheckResult {
-                    check: name.to_string(),
-                    passed: false,
-                    error: Some(error.to_dict()),
                     warnings: vec![],
                 });
             }
@@ -1390,12 +1504,7 @@ impl Executor {
                 .as_ref()
                 .map(|module| module.annotations())
                 .as_ref(),
-            self.registry
-                .get_definition(module_id)
-                .ok()
-                .flatten()
-                .and_then(|desc| desc.annotations)
-                .as_ref(),
+            pipe_ctx.declared_module_annotations().as_ref(),
         );
         let policy_effective_approval = if let Some(policy) = self.policy.as_ref() {
             // §7.9.6: preflight resolves through the same call-site-aware entry
@@ -1451,8 +1560,21 @@ impl Executor {
         let acl_denied = checks
             .iter()
             .any(|c| c.check == crate::module::ACL_CHECK_NAME && !c.passed);
+        let acl_required = pipe_ctx.acl.is_some()
+            && self
+                .strategy
+                .steps()
+                .iter()
+                .any(|step| step.builtin_gate() == Some(BuiltinGate::Acl));
+        let acl_permitted = pipe_ctx
+            .acl_decision
+            .as_ref()
+            .is_some_and(crate::acl::AccessDecision::is_allowed);
         let mut predicted_changes: Vec<crate::module::Change> = Vec::new();
-        if let (false, Some(module)) = (acl_denied, pipe_ctx.module.clone()) {
+        if let (true, Some(module)) = (
+            !acl_denied && (!acl_required || acl_permitted),
+            pipe_ctx.module.clone(),
+        ) {
             let warnings = module.preflight(inputs, ctx);
             checks.push(PreflightCheckResult {
                 check: crate::module::MODULE_PREFLIGHT_CHECK_NAME.to_string(),
@@ -1568,18 +1690,16 @@ impl Executor {
     /// - **Phase 1 (pre-stream):** context creation, call-chain guard, module
     ///   lookup, ACL check, approval gate, before-middleware, input validation.
     ///   Any failure surfaces as the first (and only) `Err` item in the stream.
-    /// - **Phase 2 (body):** call `module.stream()`, forward each chunk to the
-    ///   caller as it arrives, and accumulate copies into a buffer for Phase 3.
+    /// - **Phase 2 (body):** open the producer through the configured execute
+    ///   step, forward each chunk as it arrives, and accumulate it for Phase 3.
     /// - **Phase 3 (post-stream):** after the inner stream is exhausted,
     ///   deep-merge the accumulated chunks and run the strategy's post-stream
     ///   steps (output validation, after-middleware) over the merged result.
-    ///   The chunks are already delivered, so a failure here is not yielded:
-    ///   it is logged and published as `apcore.stream.post_validation_failed`.
+    ///   The chunks are already delivered. Ordinary failures are logged and
+    ///   published as `apcore.stream.post_validation_failed`; cancellation is yielded.
     ///
-    /// If the module does not implement `stream()` (returns `None`), the
-    /// strategy runs on from its `execute` step exactly as `call()` would, and
-    /// the output is yielded as a single chunk; a failure there is yielded as
-    /// the stream's error.
+    /// When no producer opens, the strategy continues normally. The stream
+    /// yields the strategy's output as a single chunk or yields its error.
     pub fn stream<'a>(
         &'a self,
         module_id: &str,
@@ -1587,10 +1707,54 @@ impl Executor {
         ctx: Option<&Context<Value>>,
         version_hint: Option<&str>,
     ) -> Pin<Box<dyn Stream<Item = Result<Value, ModuleError>> + Send + 'a>> {
+        self.stream_impl(module_id, inputs, ctx.cloned(), version_hint, None)
+    }
+
+    /// Stream an invocation with a separate completion result.
+    ///
+    /// Drive the returned chunks to exhaustion or call `close()` before
+    /// awaiting the handle. Dropping the chunks also closes the invocation
+    /// and signals its own cancellation scope.
+    pub fn stream_with_completion<'a>(
+        &'a self,
+        module_id: &str,
+        inputs: Value,
+        ctx: Option<&Context<Value>>,
+        version_hint: Option<&str>,
+    ) -> (StreamChunks<'a>, StreamCompletionHandle) {
+        let mut context = ctx.cloned().unwrap_or_else(Context::anonymous);
+        let token = context
+            .cancel_token
+            .as_ref()
+            .map_or_else(CancelToken::new, CancelToken::child);
+        context.cancel_token = Some(token.clone());
+        let names = self.strategy.step_names();
+        let configured = |name: &str| names.iter().any(|step| step == name);
+        let (recorder, completion) = StreamRecorder::new(
+            configured("output_validation"),
+            configured("middleware_after"),
+        );
+        let stream = self.stream_impl(
+            module_id,
+            inputs,
+            Some(context),
+            version_hint,
+            Some(recorder.clone()),
+        );
+        (StreamChunks::new(stream, recorder, token), completion)
+    }
+
+    fn stream_impl<'a>(
+        &'a self,
+        module_id: &str,
+        inputs: Value,
+        initial_context: Option<Context<Value>>,
+        version_hint: Option<&str>,
+        recorder: Option<StreamRecorder>,
+    ) -> Pin<Box<dyn Stream<Item = Result<Value, ModuleError>> + Send + 'a>> {
         // Capture by value so the returned Stream is `'a` (only borrowing &self).
         let module_id_owned = module_id.to_string();
         let version_hint_owned = version_hint.map(str::to_string);
-        let initial_context = ctx.cloned();
 
         Box::pin(async_stream::try_stream! {
             // Fail fast for invalid module IDs before setting up any pipeline state.
@@ -1606,49 +1770,27 @@ impl Executor {
                     inputs,
                     initial_context,
                     version_hint_owned.as_deref(),
+                    recorder.as_ref(),
                 )
                 .await?
             {
                 StreamPrep::Setup(setup) => *setup,
-                StreamPrep::Recovery(value) => {
+                StreamPrep::Recovery(value, error) => {
+                    if let Some(recorder) = recorder.as_ref() {
+                        recorder.record_failure(&error);
+                    }
                     yield value;
                     return;
                 }
             };
 
-            // Phase 2: invoke module.stream() and forward chunks as they arrive.
-            // Note: individual chunks are NOT validated against output_schema here;
-            // validation runs on the deep-merged result in Phase 3 after the stream
-            // is exhausted. See Module::stream contract for details.
-            //
-            // Audit D10-001: chunk *shape* IS validated here, before delivery — a
-            // non-object chunk is rejected and surfaced as an error rather than
-            // yielded. Phase 3's deep_merge_chunks_checked then only ever sees
-            // objects, so it acts as a defensive backstop.
-            //
-            // Fallback (sync STREAM-002): if Module::stream returns None, the
-            // strategy's own `execute` step and the steps after it run, and the
-            // result is yielded as a single chunk.
-            //
-            // A-D-002: two-point cancellation invariant (Step 2 + Step 8). The
-            // unary pipeline checks the cancel token immediately before
-            // `module.execute()` (`BuiltinExecute`, builtin_steps.rs §"Cancel
-            // Token Mid-Pipeline Check", point 2). The streaming path bypasses
-            // that step, so we replicate the check here, immediately before
-            // `module.stream()`, so a token cancelled while Phase-1 setup ran
-            // aborts before any chunk is produced — matching apcore-python
-            // (builtin_steps.py:607) and apcore-typescript (builtin-steps.ts:502).
-            if let Some(token) = setup.context().cancel_token.as_ref() {
-                token.check_for(&module_id_owned)?;
-            }
+            self.run_stream_execute(&mut setup, recorder.as_ref()).await?;
+            let mut accumulated = Value::Object(serde_json::Map::new());
 
-            let stream_handle = setup
-                .module
-                .clone()
-                .stream(setup.inputs().clone(), setup.context());
-            let mut accumulated: Vec<Value> = Vec::new();
-
-            if let Some(mut inner) = stream_handle {
+            let producer = setup.pipe_ctx.stream.as_mut().and_then(|stream| stream.producer.take());
+            if let Some(producer) = producer {
+                let mut inner = producer.into_inner();
+                let mut chunk_index = 0;
                 loop {
                     let chunk_result = match next_stream_chunk(&mut inner, &setup).await {
                         Ok(Some(chunk)) => chunk,
@@ -1681,6 +1823,9 @@ impl Executor {
                             if let Some(recovery) =
                                 Self::recover_stream_chunk_error(&setup, &decorated, &module_id_owned).await
                             {
+                                if let Some(recorder) = recorder.as_ref() {
+                                    recorder.record_failure(&decorated);
+                                }
                                 yield recovery;
                                 return;
                             }
@@ -1696,30 +1841,25 @@ impl Executor {
                     // produced by `deep_merge_chunks_checked` (same code,
                     // message, and details) so cross-language consumers match.
                     if !chunk.is_object() {
-                        Err(stream_chunk_not_object_error(accumulated.len(), &chunk))?;
+                        Err(stream_chunk_not_object_error(chunk_index, &chunk))?;
                         return;
                     }
-                    accumulated.push(chunk.clone());
+                    deep_merge_value(&mut accumulated, &chunk, 0, setup.merge_depth);
+                    chunk_index += 1;
                     yield chunk;
                 }
             } else {
-                // Fallback: the module does not stream, so the strategy runs on
-                // from its own `execute` step — with the timeout, cancel check
-                // and any replacement that step carries — through every step
-                // after it, and what it produced is the single chunk. That is
-                // the path `call()` takes, and the one apcore-python and
-                // apcore-typescript take: both run the full strategy in stream
-                // Phase 1. Nothing has been delivered yet, so a failure here
-                // fails the stream rather than being swallowed like Phase 3.
-                let output = self.run_stream_fallback(&mut setup).await?;
+                let output = setup.pipe_ctx.output.take().unwrap_or(Value::Null);
+                if let Some(recorder) = recorder.as_ref() {
+                    recorder.capture_if_missing(&output);
+                }
                 yield output;
                 return;
             }
 
             // Phase 3: post-stream validation + middleware_after on the merged
-            // output (pure side effects — chunks are already delivered, so
-            // failures are swallowed, never yielded; sync finding A-D-012).
-            Self::run_stream_phase3(&self.strategy, &mut setup, &accumulated, &module_id_owned).await;
+            // output. Ordinary failures are reported out of band.
+            Self::run_stream_phase3(&self.strategy, &mut setup, accumulated, &module_id_owned, recorder.as_ref()).await?;
         })
     }
 
@@ -1735,34 +1875,68 @@ impl Executor {
             .map_or_else(Vec::new, |idx| names[idx..].to_vec())
     }
 
-    /// STR-1: run the strategy from `execute` on for a module that does not
-    /// stream, propagating failures to the caller.
-    ///
-    /// Returns the output the steps produced — `middleware_after` may have
-    /// rewritten it, which is what the peers yield.
-    async fn run_stream_fallback(&self, setup: &mut StreamSetup) -> Result<Value, ModuleError> {
+    /// Continue the configured strategy, pausing after execute only if it
+    /// opened a native producer. The ordinary fallback runs to completion.
+    async fn run_stream_execute(
+        &self,
+        setup: &mut StreamSetup,
+        recorder: Option<&StreamRecorder>,
+    ) -> Result<(), ModuleError> {
         let steps = Self::execute_and_later_step_names(&self.strategy);
-        if !steps.is_empty() {
-            match PipelineEngine::run_with_options(
-                &self.strategy,
-                &mut setup.pipe_ctx,
-                RunOptions::only_steps(steps),
-            )
-            .await
-            {
-                Ok((_, trace)) => Self::reject_aborted_trace(&trace)?,
-                Err(error) => {
-                    let error = Self::call_error(&setup.module_id, &setup.pipe_ctx, error);
-                    if let Some(OnErrorOutcome::Recovery(value)) =
-                        Self::recover_call(&setup.module_id, &setup.pipe_ctx, &error).await
-                    {
-                        return Ok(value);
-                    }
-                    return Err(error);
-                }
-            }
+        // A skip_to may already have crossed execute and processed the tail.
+        if steps.is_empty()
+            || setup
+                .pipe_ctx
+                .trace
+                .steps
+                .iter()
+                .any(|step| step.name == "execute")
+        {
+            return Ok(());
         }
-        Ok(setup.pipe_ctx.output.clone().unwrap_or(Value::Null))
+        let mut options = RunOptions::run_until(|state| {
+            state
+                .context
+                .stream
+                .as_ref()
+                .is_some_and(|stream| stream.producer.is_some())
+        });
+        options.only_steps = Some(steps);
+        let result =
+            Self::run_stream_segment(&self.strategy, &mut setup.pipe_ctx, options, recorder).await;
+        let raw_error = match result {
+            Ok((_, trace)) => return Self::reject_aborted_trace(&trace),
+            Err(error) => error,
+        };
+        // A failed after-step hook can leave an opened producer in the context.
+        if let Some(stream) = &mut setup.pipe_ctx.stream {
+            stream.producer = None;
+        }
+        let interrupted = matches!(
+            raw_error.code,
+            ErrorCode::ExecutionCancelled | ErrorCode::ModuleTimeout
+        );
+        let error = Self::call_error(&setup.module_id, &setup.pipe_ctx, raw_error);
+        if interrupted {
+            return Err(error);
+        }
+        let context = setup.context();
+        let recovery = tokio::select! {
+            biased;
+            outcome = Self::recover_call(&setup.module_id, &setup.pipe_ctx, &error) => outcome,
+            interruption = wait_stream_interruption(
+                context.cancel_token.as_ref(), context.global_deadline,
+                &setup.module_id, setup.module.as_ref(),
+            ) => return Err(interruption),
+        };
+        if let Some(OnErrorOutcome::Recovery(value)) = recovery {
+            if let Some(recorder) = recorder {
+                recorder.record_failure(&error);
+            }
+            setup.pipe_ctx.output = Some(value);
+            return Ok(());
+        }
+        Err(error)
     }
 
     /// The post-stream steps of `strategy`, in strategy order.
@@ -1785,12 +1959,8 @@ impl Executor {
             .collect()
     }
 
-    /// Phase 3 of streaming: deep-merge the delivered chunks, then run the
-    /// strategy's post-stream steps over the merged result. All failures are
-    /// SWALLOWED (logged via `tracing::warn`) rather than surfaced — the chunks
-    /// have already been delivered to the consumer. Matches apcore-python
-    /// (`apcore.stream.post_validation_failed` event, no raise) and
-    /// apcore-typescript (console.warn + swallow).
+    /// Run the strategy's post-stream steps over the accumulated result.
+    /// Report ordinary failures as diagnostics and propagate cancellation to the consumer.
     ///
     /// The steps are the strategy's own, not a hardcoded "validate + fire
     /// after()" pair (STR-2). Running the real `output_validation` step is also
@@ -1800,47 +1970,115 @@ impl Executor {
     async fn run_stream_phase3(
         strategy: &ExecutionStrategy,
         setup: &mut StreamSetup,
-        accumulated: &[Value],
+        accumulated: Value,
         module_id: &str,
-    ) {
-        // D-58: enforce that all chunks are objects before merging. A non-object
-        // chunk is logged and skips post-stream validation.
-        let merged = match deep_merge_chunks_checked_with_depth(accumulated, setup.merge_depth) {
-            Ok(v) => v,
-            Err(e) => {
-                tracing::warn!(
-                    module_id = %module_id,
-                    error = %e.message,
-                    "stream phase-3 chunk shape check failed (chunks already delivered, swallowed)"
-                );
-                Self::emit_post_stream_failure(setup, module_id, &e).await;
-                return;
-            }
-        };
-
+        recorder: Option<&StreamRecorder>,
+    ) -> Result<(), ModuleError> {
         let post_steps = Self::post_stream_step_names(strategy);
         if post_steps.is_empty() {
-            return;
+            if let Some(recorder) = recorder {
+                recorder.capture_if_missing(&accumulated);
+            }
+            return Ok(());
         }
-        setup.pipe_ctx.output = Some(merged);
-        if let Err(e) = PipelineEngine::run_with_options(
+        setup.pipe_ctx.output = Some(accumulated);
+        let prior_steps = setup.pipe_ctx.trace.steps.len();
+        let result = Self::run_stream_segment(
             strategy,
             &mut setup.pipe_ctx,
             RunOptions::only_steps(post_steps),
+            recorder,
         )
-        .await
-        {
-            let underlying = e.unwrap_pipeline_step_error().unwrap_or(e);
-            let underlying = underlying
-                .unwrap_middleware_chain_error()
-                .unwrap_or(underlying);
-            tracing::warn!(
-                module_id = %module_id,
-                error = %underlying.message,
-                "stream phase-3 post steps failed (chunks already delivered, swallowed)"
-            );
-            Self::emit_post_stream_failure(setup, module_id, &underlying).await;
+        .await;
+        // A fatal step outside the public output-step fields (for example
+        // return_result) stays observable even when legacy streams end normally.
+        let unrepresented = recorder.filter(|_| {
+            !setup.pipe_ctx.trace.steps[prior_steps..]
+                .last()
+                .is_some_and(|step| {
+                    step.result.action == "abort"
+                        && matches!(step.name.as_str(), "output_validation" | "middleware_after")
+                })
+        });
+        match result {
+            Ok((_, trace)) => {
+                if trace.success {
+                    if let (Some(recorder), Some(output)) =
+                        (recorder, setup.pipe_ctx.output.as_ref())
+                    {
+                        recorder.capture_if_missing(output);
+                    }
+                }
+                if let Some(recorder) = unrepresented {
+                    if let Err(error) = Self::reject_aborted_trace(&trace) {
+                        recorder.record_failure(&error);
+                    }
+                }
+            }
+            Err(e) => {
+                let underlying = e.unwrap_pipeline_step_error().unwrap_or(e);
+                let underlying = underlying
+                    .unwrap_middleware_chain_error()
+                    .unwrap_or(underlying);
+                if matches!(
+                    underlying.code,
+                    ErrorCode::ExecutionCancelled | ErrorCode::ModuleTimeout
+                ) {
+                    return Err(underlying);
+                }
+                if let Some(recorder) = unrepresented {
+                    recorder.record_failure(&underlying);
+                }
+                tracing::warn!(
+                    module_id = %module_id,
+                    error = %underlying.message,
+                    "stream phase-3 post steps failed (chunks already delivered, swallowed)"
+                );
+                Self::emit_post_stream_failure(setup, module_id, &underlying).await;
+            }
         }
+        Ok(())
+    }
+
+    async fn run_stream_segment(
+        strategy: &ExecutionStrategy,
+        ctx: &mut PipelineContext,
+        options: RunOptions,
+        recorder: Option<&StreamRecorder>,
+    ) -> Result<(Option<Value>, PipelineTrace), ModuleError> {
+        let token = ctx.context.cancel_token.clone();
+        let deadline = ctx.context.global_deadline;
+        let module = ctx.module.clone();
+        let module_id = ctx.module_id.clone();
+        let prior_steps = ctx.trace.steps.len();
+        let mut observe_input = |name: &str, ctx: &PipelineContext| {
+            if let Some(recorder) = recorder {
+                recorder.observe_step_input(name, ctx.output.as_ref());
+            }
+        };
+        let pipeline = PipelineEngine::run_with_step_input(
+            strategy,
+            ctx,
+            options,
+            if recorder.is_some() {
+                Some(&mut observe_input)
+            } else {
+                None
+            },
+        );
+        let result = if let Some(module) = module {
+            tokio::select! {
+                biased;
+                error = wait_stream_interruption(token.as_ref(), deadline, &module_id, module.as_ref()) => Err(error),
+                result = pipeline => result,
+            }
+        } else {
+            pipeline.await
+        };
+        if let Some(recorder) = recorder {
+            recorder.record_steps(&ctx.trace.steps[prior_steps..]);
+        }
+        result
     }
 
     /// Publish `apcore.stream.post_validation_failed` when a post-stream failure
@@ -1911,40 +2149,50 @@ impl Executor {
         inputs: Value,
         ctx: Option<Context<Value>>,
         version_hint: Option<&str>,
+        recorder: Option<&StreamRecorder>,
     ) -> Result<StreamPrep, ModuleError> {
+        self.ensure_startup_configuration()?;
         // D-103: no synthetic principal for a call that supplied none.
         let context = ctx.unwrap_or_else(Context::<Value>::anonymous);
 
         let mut pipe_ctx = PipelineContext::new(module_id, inputs, context, self.strategy.name());
+        pipe_ctx.validate_approval_credential()?;
+        pipe_ctx.stream = Some(crate::pipeline::StreamPipelineState::default());
         if let Some(hint) = version_hint {
             pipe_ctx.version_hint = Some(hint.to_string());
         }
-        self.inject_resources(&mut pipe_ctx);
+        self.inject_resources(&mut pipe_ctx).await;
         self.bind_to_context(&mut pipe_ctx)?;
 
         // Drive the shared pipeline engine up to — but not including — the
         // `execute` step. This inherits all per-step metadata handling from
         // `PipelineEngine::run`, so streaming and non-streaming never diverge.
-        let (_output, trace) =
-            match PipelineEngine::run_until_step(&self.strategy, &mut pipe_ctx, "execute").await {
-                Ok(pair) => pair,
-                Err(e) => {
-                    let underlying = Self::call_error(module_id, &pipe_ctx, e);
-                    match Self::recover_call(module_id, &pipe_ctx, &underlying).await {
-                        Some(OnErrorOutcome::Recovery(value)) => {
-                            return Ok(StreamPrep::Recovery(value));
-                        }
-                        Some(OnErrorOutcome::Retry(_)) => {
-                            tracing::warn!(
-                                module_id = %module_id,
-                                "Retry requested during stream phase 1; surfacing original error"
-                            );
-                        }
-                        None => {}
+        let (_output, trace) = match Self::run_stream_segment(
+            &self.strategy,
+            &mut pipe_ctx,
+            RunOptions::stop_before("execute"),
+            recorder,
+        )
+        .await
+        {
+            Ok(pair) => pair,
+            Err(e) => {
+                let underlying = Self::call_error(module_id, &pipe_ctx, e);
+                match Self::recover_call(module_id, &pipe_ctx, &underlying).await {
+                    Some(OnErrorOutcome::Recovery(value)) => {
+                        return Ok(StreamPrep::Recovery(value, Box::new(underlying)));
                     }
-                    return Err(underlying);
+                    Some(OnErrorOutcome::Retry(_)) => {
+                        tracing::warn!(
+                            module_id = %module_id,
+                            "Retry requested during stream phase 1; surfacing original error"
+                        );
+                    }
+                    None => {}
                 }
-            };
+                return Err(underlying);
+            }
+        };
 
         // `run_until` returns `Ok` for pipeline-level aborts (so the caller
         // can observe the trace). Streaming requires a resolved module, so
@@ -1976,10 +2224,11 @@ impl Executor {
         module_id: &str,
         pipe_ctx: PipelineContext,
     ) -> StreamSetup {
+        let config = pipe_ctx.config.as_deref().unwrap_or(self.config.as_ref());
         StreamSetup {
             module,
             module_id: module_id.to_string(),
-            merge_depth: resolve_merge_depth(&self.config),
+            merge_depth: resolve_merge_depth(config),
             pipe_ctx,
         }
     }
@@ -2220,18 +2469,33 @@ impl Executor {
         .await
     }
 
-    /// Inject executor resources into a pipeline context so builtin steps
-    /// can access the registry, config, ACL, approval handler, and middleware.
+    pub(crate) fn set_runtime_config(&self, config: Arc<tokio::sync::Mutex<Config>>) {
+        *self.runtime_config.write() = Some(Arc::new(RuntimeConfig {
+            source: config,
+            snapshot: parking_lot::Mutex::new(None),
+        }));
+    }
+
     /// The resolved capture-point redaction rules, built on first use.
     fn redaction(&self) -> &Arc<RedactionConfig> {
         self.redaction
             .get_or_init(|| Arc::new(RedactionConfig::from_config(&self.config)))
     }
 
-    fn inject_resources(&self, ctx: &mut PipelineContext) {
+    /// Capture one configuration snapshot for the pipeline, including its redaction rules.
+    async fn inject_resources(&self, ctx: &mut PipelineContext) {
+        let runtime_config = self.runtime_config.read().clone();
+        let snapshot = if let Some(runtime_config) = runtime_config {
+            runtime_config.snapshot().await
+        } else {
+            ConfigSnapshot {
+                config: Arc::clone(&self.config),
+                redaction: Arc::clone(self.redaction()),
+            }
+        };
         ctx.registry = Some(Arc::clone(&self.registry));
-        ctx.config = Some(Arc::clone(&self.config));
-        ctx.redaction = Some(Arc::clone(self.redaction()));
+        ctx.config = Some(snapshot.config);
+        ctx.redaction = Some(snapshot.redaction);
         ctx.acl = self.acl.as_ref().map(Arc::clone);
         ctx.approval_handler = self.approval_handler.as_ref().map(Arc::clone);
         ctx.policy = self.policy.as_ref().map(Arc::clone);
@@ -2471,6 +2735,13 @@ mod tests {
         ) -> Result<Value, ModuleError> {
             Ok(inputs)
         }
+
+        fn preflight(&self, inputs: &Value, _ctx: Option<&Context<Value>>) -> Vec<String> {
+            if inputs.get("_approval_token").is_some() {
+                return vec!["preflight observed a reserved input".to_owned()];
+            }
+            vec![]
+        }
     }
 
     // ── Mock approval handler ────────────────────────────────────────
@@ -2493,6 +2764,7 @@ mod tests {
                     approved_by: None,
                     reason: Some(format!("mock-{status}")),
                     approval_id: None,
+                    audit_id: None,
                     metadata: None,
                 },
                 calls: Mutex::new(vec![]),
@@ -2510,7 +2782,17 @@ mod tests {
             Ok(self.result.clone())
         }
 
-        async fn check_approval(&self, approval_id: &str) -> Result<ApprovalResult, ModuleError> {
+        async fn check_approval(&self, _approval_id: &str) -> Result<ApprovalResult, ModuleError> {
+            panic!("The status query cannot authorize execution");
+        }
+
+        async fn check_approval_for_call(
+            &self,
+            approval_id: &str,
+            request: &ApprovalRequest,
+        ) -> Result<ApprovalResult, ModuleError> {
+            assert!(request.arguments.get("_approval_token").is_none());
+            assert_eq!(request.module_id, "test_mod");
             self.calls
                 .lock()
                 .unwrap()
@@ -2653,7 +2935,10 @@ mod tests {
         let value = json!({"age": "not-a-number"});
         let err = validate_against_schema(&value, &schema, "Input").unwrap_err();
         assert_eq!(err.code, ErrorCode::SchemaValidationError);
-        assert!(err.details.contains_key("errors"));
+        let detail = &err.to_dict()["details"]["errors"][0];
+        assert_eq!(detail["path"], "/age");
+        assert_eq!(detail["keyword"], "type");
+        assert_eq!(detail["message"], "value is not of type \"integer\"");
     }
 
     #[test]
@@ -3121,5 +3406,129 @@ mod tests {
             .unwrap();
         assert!(result.valid);
         assert!(result.requires_approval);
+    }
+
+    #[tokio::test]
+    async fn approval_token_isolated_without_a_gate_on_call_and_stream() {
+        let mut executor = build_executor_with_module(
+            EchoInputsModule {
+                input_schema: closed_input_schema(),
+            },
+            ModuleAnnotations::default(),
+        );
+        executor.strategy.remove("approval_gate").unwrap();
+        let inputs = json!({"_approval_token": "review-example", "data": "hello"});
+        let output = json!({"data": "hello"});
+
+        assert_eq!(
+            executor
+                .call("test_mod", inputs.clone(), None, None)
+                .await
+                .unwrap(),
+            output
+        );
+        let mut chunks = executor.stream("test_mod", inputs, None, None);
+        assert_eq!(chunks.next().await.unwrap().unwrap(), output);
+        assert!(chunks.next().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn preflight_ignores_approval_token_and_reports_required_approval() {
+        let mut executor = build_executor_with_module(
+            EchoInputsModule {
+                input_schema: closed_input_schema(),
+            },
+            ModuleAnnotations {
+                requires_approval: true,
+                ..Default::default()
+            },
+        );
+        executor.set_approval_handler(Box::new(MockApprovalHandler::with_status("rejected")));
+        let result = executor
+            .validate(
+                "test_mod",
+                &json!({"_approval_token": false, "data": "hello"}),
+                None,
+            )
+            .await
+            .unwrap();
+        assert!(result.valid);
+        assert!(result.requires_approval);
+        assert!(result.checks.iter().all(|check| check.warnings.is_empty()));
+    }
+
+    #[derive(Default)]
+    struct ObserveApprovalError(Mutex<Vec<ModuleError>>);
+
+    #[async_trait]
+    impl crate::pipeline::StepMiddleware for ObserveApprovalError {
+        async fn on_step_error(
+            &self,
+            _step_name: &str,
+            _state: &crate::pipeline::PipelineState<'_>,
+            error: &ModuleError,
+        ) -> Result<Option<Value>, ModuleError> {
+            self.0.lock().unwrap().push(error.clone());
+            Ok(None)
+        }
+    }
+
+    #[tokio::test]
+    async fn approval_errors_preserve_full_result_for_caller_only() {
+        for (status, code) in [
+            ("rejected", ErrorCode::ApprovalDenied),
+            ("timeout", ErrorCode::ApprovalTimeout),
+            ("pending", ErrorCode::ApprovalPending),
+            ("unknown", ErrorCode::ApprovalDenied),
+        ] {
+            let mut executor = build_executor_with_module(
+                MockModule::echo(),
+                ModuleAnnotations {
+                    requires_approval: true,
+                    ..Default::default()
+                },
+            );
+            let observer = Arc::new(ObserveApprovalError::default());
+            executor.strategy.add_step_middleware(observer.clone());
+            let mut handler = MockApprovalHandler::with_status(status);
+            handler.result.approval_id = Some("review-example".into());
+            handler.result.audit_id = Some("review-audit".into());
+            handler.result.metadata = Some(HashMap::from([("source".into(), json!("test"))]));
+            let expected_result = json!(handler.result);
+            executor.set_approval_handler(Box::new(handler));
+
+            let error = executor
+                .call("test_mod", json!({}), None, None)
+                .await
+                .unwrap_err();
+            assert_eq!(error.code, code);
+            assert_eq!(error.details["result"], expected_result);
+            if status == "pending" {
+                assert_eq!(error.details["approval_id"], json!("review-example"));
+            }
+            let reported_errors = observer.0.lock().unwrap();
+            assert_eq!(reported_errors.len(), 1);
+            assert_eq!(reported_errors[0].code, code);
+            assert!(!reported_errors[0].details.contains_key("result"));
+            assert!(!reported_errors[0].details.contains_key("approval_id"));
+        }
+    }
+
+    #[tokio::test]
+    async fn strict_approval_without_handler_reports_rejected_result() {
+        let mut executor = build_executor_with_module(
+            MockModule::echo(),
+            ModuleAnnotations {
+                requires_approval: true,
+                ..Default::default()
+            },
+        );
+        executor.set_policy(Some(ExecutionPolicy::new(vec![]).with_strict(true)));
+        let error = executor
+            .call("test_mod", json!({}), None, None)
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, ErrorCode::ApprovalDenied);
+        assert_eq!(error.details["result"]["status"], "rejected");
     }
 }

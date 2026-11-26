@@ -8,6 +8,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, TypeAlias
 
+from apcore.context_keys import _current_trace_span
 from apcore.errors import InvalidParentIdError
 
 Context: TypeAlias = Any
@@ -28,6 +29,10 @@ _TRACE_FLAGS_KEY = "_apcore.trace.flags"
 _TRACESTATE_KEY = "_apcore.trace.state"
 
 _TRACESTATE_MAX_ENTRIES = 32
+
+
+def _valid_inbound_parent_id(value: Any) -> bool:
+    return isinstance(value, str) and _PARENT_ID_RE.fullmatch(value) is not None and value != "0" * 16
 
 
 @dataclass(frozen=True)
@@ -106,8 +111,8 @@ class TraceContext:
            apcore-typescript and apcore-rust) and still inherits
            :class:`ValueError`, so callers written against the pre-0.27
            ``except ValueError`` contract keep working.
-        2. The ``span_id`` of the most recent span on the tracing stack
-           (``context.data['_apcore.mw.tracing.spans']``) if present.
+        2. The current invocation's ``span_id``, or its local ancestor's ID
+           when there is no active span of its own.
         3. A random 8-byte value.
 
         ``trace-flags`` is propagated from any inbound traceparent stored on
@@ -120,9 +125,9 @@ class TraceContext:
                 raise InvalidParentIdError(parent_id)
             chosen_parent_id = parent_id
         else:
-            spans_stack = context.data.get("_apcore.mw.tracing.spans")
-            if spans_stack:
-                chosen_parent_id = spans_stack[-1].span_id
+            span = _current_trace_span(context, include_parent=True)
+            if span is not None:
+                chosen_parent_id = span.span_id
             else:
                 chosen_parent_id = os.urandom(8).hex()
 

@@ -152,6 +152,37 @@ class TestScanExtensionsMeta:
         result = scan_extensions(tmp_path)
         assert result[0].meta_path is None
 
+    def test_module_alias_uses_metadata_for_canonical_file(self, tmp_path: Path) -> None:
+        modules = tmp_path / "modules"
+        modules.mkdir()
+        canonical_file = modules / "work.item.py"
+        canonical_file.touch()
+        companion = modules / "work.item_meta.yaml"
+        companion.touch()
+        (tmp_path / "alias.py").symlink_to(canonical_file)
+
+        result = scan_extensions(tmp_path, follow_symlinks=True, ignore_patterns=["modules"])
+
+        assert [(module.file_path, module.meta_path) for module in result] == [(canonical_file, companion)]
+
+    def test_companion_symlink_respects_discovery_policy(self, tmp_path: Path) -> None:
+        root = tmp_path / "extensions"
+        root.mkdir()
+        (root / "task.py").touch()
+        companion = root / "shared.yaml"
+        companion.touch()
+        link = root / "task_meta.yaml"
+        link.symlink_to(companion)
+
+        assert scan_extensions(root)[0].meta_path is None
+        assert scan_extensions(root, follow_symlinks=True)[0].meta_path == companion
+
+        external = tmp_path / "external.yaml"
+        external.touch()
+        link.unlink()
+        link.symlink_to(external)
+        assert scan_extensions(root, follow_symlinks=True)[0].meta_path is None
+
 
 # === scan_extensions() symlinks ===
 

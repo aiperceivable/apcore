@@ -16,6 +16,9 @@ from apcore.registry import Registry
 class GoodStreamingModule:
     """Satisfies the StreamingModule Protocol."""
 
+    input_schema = {"type": "object"}
+    output_schema = {"type": "object"}
+
     annotations = ModuleAnnotations(streaming=True)
 
     async def stream(self, inputs: dict, context: Context) -> AsyncIterator[dict]:
@@ -29,6 +32,9 @@ class GoodStreamingModule:
 class NoStreamMethod:
     """Has streaming=True annotation but no stream() method."""
 
+    input_schema = {"type": "object"}
+    output_schema = {"type": "object"}
+
     annotations = ModuleAnnotations(streaming=True)
 
     async def execute(self, inputs: dict[str, Any], context: Context) -> dict[str, Any]:
@@ -37,6 +43,9 @@ class NoStreamMethod:
 
 class SyncStreamMethod:
     """Has streaming=True annotation but stream() is not async."""
+
+    input_schema = {"type": "object"}
+    output_schema = {"type": "object"}
 
     annotations = ModuleAnnotations(streaming=True)
 
@@ -50,6 +59,9 @@ class SyncStreamMethod:
 class WrongArityStream:
     """Has streaming=True annotation but stream() has wrong parameters."""
 
+    input_schema = {"type": "object"}
+    output_schema = {"type": "object"}
+
     annotations = ModuleAnnotations(streaming=True)
 
     async def stream(self) -> AsyncIterator[dict]:  # type: ignore[override]
@@ -61,6 +73,9 @@ class WrongArityStream:
 
 class NonStreamingModule:
     """Regular module without streaming annotation — no stream() method."""
+
+    input_schema = {"type": "object"}
+    output_schema = {"type": "object"}
 
     async def execute(self, inputs: dict[str, Any], context: Context) -> dict[str, Any]:
         return {"result": "ok"}

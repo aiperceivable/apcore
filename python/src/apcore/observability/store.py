@@ -44,17 +44,27 @@ class InMemoryObservabilityStore:
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
-        self._errors: list[Any] = []
+        self._errors: dict[object, Any] = {}
         self._metrics: list[MetricPoint] = []
 
     def record_error(self, entry: Any) -> None:
         with self._lock:
-            self._errors.append(entry)
+            self._errors[object()] = entry
+
+    def _retain_error(self, entry: Any) -> None:
+        with self._lock:
+            self._errors[entry.fingerprint] = entry
+
+    def _evict_error(self, fingerprint: str) -> None:
+        with self._lock:
+            self._errors.pop(fingerprint, None)
 
     def get_errors(self, module_id: str | None = None, limit: int | None = None) -> list[Any]:
         with self._lock:
-            entries = self._errors if module_id is None else [e for e in self._errors if e.module_id == module_id]
-            return list(entries[:limit] if limit is not None else entries)
+            entries = list(self._errors.values())
+            if module_id is not None:
+                entries = [entry for entry in entries if entry.module_id == module_id]
+            return entries[:limit] if limit is not None else entries
 
     def record_metric(self, metric: MetricPoint) -> None:
         with self._lock:

@@ -4,6 +4,7 @@
 
 import type { Config } from '../config.js';
 import type { Context } from '../context.js';
+import { startMiddlewareTiming, takeMiddlewareTiming } from '../execution-lifetime.js';
 import { Middleware } from '../middleware/base.js';
 import { matchGlob } from '../utils/pattern.js';
 // `matchGlob` (Algorithm A25, PROTOCOL_SPEC 9.2.3) is the matcher for
@@ -180,15 +181,19 @@ export class RedactionConfig {
   readonly invalidValuePatterns: readonly (readonly [string, string])[];
 
   readonly replacement: string;
+  private readonly _additionalFieldMatcher?: (fieldName: string) => boolean;
 
   constructor(
     options: {
       fieldPatterns?: string[];
       valuePatterns?: (RegExp | string)[];
       replacement?: string;
+      /** @internal Extra fields treated as sensitive for config updates. */
+      additionalFieldMatcher?: (fieldName: string) => boolean;
     } = {},
   ) {
     this.fieldPatterns = options.fieldPatterns ?? [];
+    this._additionalFieldMatcher = options.additionalFieldMatcher;
     const { compiled, invalid } = compileValuePatterns(options.valuePatterns ?? []);
     this.valuePatterns = compiled;
     this.invalidValuePatterns = invalid;
@@ -224,15 +229,7 @@ export class RedactionConfig {
   static fromConfig(config: Config): RedactionConfig {
     const legacyKeysUsed: string[] = [];
 
-    // --- sensitive_keys (formerly field_patterns) ---
-    let rawFields = config.get('obs.redaction.sensitive_keys');
-    if (rawFields === undefined || rawFields === null) {
-      const legacyFields = config.get('observability.redaction.field_patterns');
-      if (legacyFields !== undefined && legacyFields !== null) {
-        rawFields = legacyFields;
-        legacyKeysUsed.push('observability.redaction.field_patterns');
-      }
-    }
+    const fieldPatterns = readSensitiveKeyPatterns(config, legacyKeysUsed);
 
     // --- regex_patterns (formerly value_patterns) ---
     let rawValues = config.get('obs.redaction.regex_patterns');
@@ -258,17 +255,6 @@ export class RedactionConfig {
       _emitRedactionLegacyDeprecation(legacyKeysUsed);
     }
 
-    // An operator-supplied list REPLACES the default; it does not merge
-    // (docs/features/observability.md "Canonical default sensitive_keys").
-    // An explicitly-configured EMPTY list therefore means "no key-based
-    // redaction" and MUST be honoured — only a missing/null value falls back
-    // to the shipped defaults. Matches apcore-python's
-    // `RedactionConfig.from_config` ("Empty lists are permitted; callers that
-    // want NO redaction must explicitly set `sensitive_keys: []`").
-    const fieldPatterns = Array.isArray(rawFields)
-      ? (rawFields as unknown[]).filter((p): p is string => typeof p === 'string')
-      : [...DEFAULT_REDACTION_FIELD_PATTERNS];
-
     const valueStrings = Array.isArray(rawValues)
       ? (rawValues as unknown[]).filter((p): p is string => typeof p === 'string')
       : [];
@@ -279,6 +265,18 @@ export class RedactionConfig {
       valuePatterns: valueStrings,
       replacement: typeof replacement === 'string' ? replacement : undefined,
     });
+  }
+
+  /** @internal Load only the key-based rule for config-update records. */
+  static forSensitiveKeys(
+    config: Config,
+    replacement: string,
+    additionalFieldMatcher: (fieldName: string) => boolean,
+  ): RedactionConfig {
+    const legacyKeysUsed: string[] = [];
+    const fieldPatterns = readSensitiveKeyPatterns(config, legacyKeysUsed);
+    if (legacyKeysUsed.length > 0) _emitRedactionLegacyDeprecation(legacyKeysUsed);
+    return new RedactionConfig({ fieldPatterns, replacement, additionalFieldMatcher });
   }
 
   /**
@@ -312,7 +310,18 @@ export class RedactionConfig {
     return this._redactTree(value, depth, new Set());
   }
 
-  private _redactTree(value: unknown, depth: number, parents: ReadonlySet<object>): unknown {
+  /** @internal Redact a configuration path and the paths of its descendants. */
+  redactConfigValue(path: string, value: unknown): unknown {
+    return this._matchesConfigPath(path)
+      ? this.replacement
+      : this._redactTree(value, 0, new Set(), path);
+  }
+
+  private _matchesConfigPath(path: string): boolean {
+    return this._matchesFieldName(path) || path.split('.').some((segment) => this._matchesFieldName(segment));
+  }
+
+  private _redactTree(value: unknown, depth: number, parents: ReadonlySet<object>, configPath?: string): unknown {
     if (value === null || typeof value !== 'object') return value;
     if (parents.has(value)) return '[Circular]';
     if (depth > MAX_REDACTION_DEPTH) return this.replacement;
@@ -331,19 +340,25 @@ export class RedactionConfig {
         // into skipping what is inside it.
         typeof item === 'string' && this._valueMatches(item)
           ? this.replacement
-          : this._redactTree(item, depth + 1, ancestors),
+          : this._redactTree(item, depth + 1, ancestors, configPath),
       );
     }
     return Object.fromEntries(
-      Object.entries(value).map(([key, item]) => [key, this._shouldRedact(key, item)
-        ? this.replacement
-        : this._redactTree(item, depth + 1, ancestors)]),
+      Object.entries(value).map(([key, item]) => {
+        const childPath = configPath === undefined ? undefined : `${configPath}.${key}`;
+        const sensitive = childPath === undefined ? this._shouldRedact(key, item) : this._matchesConfigPath(childPath);
+        return [key, sensitive ? this.replacement : this._redactTree(item, depth + 1, ancestors, childPath)];
+      }),
     );
   }
 
   private _shouldRedact(fieldName: string, value: unknown): boolean {
     if (PROTECTED_LOG_FIELDS.has(fieldName)) return false;
+    return this._matchesFieldName(fieldName) || (typeof value === 'string' && this._valueMatches(value));
+  }
 
+  private _matchesFieldName(fieldName: string): boolean {
+    if (this._additionalFieldMatcher?.(fieldName)) return true;
     const lowerKey = fieldName.toLowerCase();
     const normKey = _normalizeKeyForMatch(fieldName);
     const compactKey = _compactKeyForMatch(fieldName);
@@ -371,7 +386,7 @@ export class RedactionConfig {
       }
     }
 
-    return typeof value === 'string' && this._valueMatches(value);
+    return false;
   }
 
   /**
@@ -398,6 +413,18 @@ export class RedactionConfig {
     }
     return false;
   }
+}
+
+function readSensitiveKeyPatterns(config: Config, legacyKeysUsed: string[]): string[] {
+  let rawFields = config.get('obs.redaction.sensitive_keys');
+  if (rawFields == null) {
+    rawFields = config.get('observability.redaction.field_patterns');
+    if (rawFields != null) legacyKeysUsed.push('observability.redaction.field_patterns');
+  }
+  // A configured list replaces the defaults, including an explicit empty list.
+  return Array.isArray(rawFields)
+    ? rawFields.filter((pattern): pattern is string => typeof pattern === 'string')
+    : [...DEFAULT_REDACTION_FIELD_PATTERNS];
 }
 
 // ---------------------------------------------------------------------------
@@ -613,9 +640,7 @@ export class ObsLoggingMiddleware extends Middleware {
   }
 
   override before(moduleId: string, _inputs: Record<string, unknown>, context: Context): null {
-    const starts = (context.data['_apcore.mw.logging.obs_starts'] as number[]) ?? [];
-    starts.push(performance.now());
-    context.data['_apcore.mw.logging.obs_starts'] = starts;
+    startMiddlewareTiming(context, this, performance.now());
 
     const extra: Record<string, unknown> = {
       module_id: moduleId,
@@ -642,9 +667,8 @@ export class ObsLoggingMiddleware extends Middleware {
     _output: Record<string, unknown>,
     context: Context,
   ): null {
-    const starts = context.data['_apcore.mw.logging.obs_starts'] as number[] | undefined;
-    if (!starts || starts.length === 0) return null;
-    const startTime = starts.pop()!;
+    const startTime = takeMiddlewareTiming(context, this);
+    if (startTime === undefined) return null;
     const durationMs = performance.now() - startTime;
 
     const extra: Record<string, unknown> = {
@@ -670,9 +694,8 @@ export class ObsLoggingMiddleware extends Middleware {
     error: Error,
     context: Context,
   ): null {
-    const starts = context.data['_apcore.mw.logging.obs_starts'] as number[] | undefined;
-    if (!starts || starts.length === 0) return null;
-    const startTime = starts.pop()!;
+    const startTime = takeMiddlewareTiming(context, this);
+    if (startTime === undefined) return null;
     const durationMs = performance.now() - startTime;
 
     this._logger.error('Module call failed', {

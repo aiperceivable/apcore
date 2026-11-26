@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://apcore.dev/schemas/module-schema.schema.json",
+  "$id": "https://apcore.aiperceivable.com/schemas/module-schema.schema.json",
   "title": "apcore Module Schema Meta-Schema",
   "description": "Meta-schema for validating *.schema.yaml module schema definition files. Ensures module schemas conform to JSON Schema Draft 2020-12 with apcore extensions (x-* properties). Based on PROTOCOL_SPEC Section 4.",
   "type": "object",
@@ -9,8 +9,8 @@
   "properties": {
     "$schema": {
       "type": "string",
-      "description": "Schema reference URL.",
-      "examples": ["https://apcore.dev/schema/v1"]
+      "description": "URI of the APCore module document Schema.",
+      "examples": ["https://apcore.aiperceivable.com/schemas/module-schema.schema.json"]
     },
     "version": {
       "type": "string",
@@ -49,9 +49,16 @@
       "$ref": "#/$defs/ErrorSchemaObject",
       "description": "Optional error schema definition. Describes the structure of errors this module may return."
     },
+    "$defs": {
+      "type": "object",
+      "description": "Shared Draft 2020-12 definitions referenced from input_schema and output_schema.",
+      "additionalProperties": {
+        "$ref": "#/$defs/JSONSchemaDefinition"
+      }
+    },
     "definitions": {
       "type": "object",
-      "description": "Shared type definitions that can be referenced via $ref within input_schema and output_schema.",
+      "description": "Legacy shared definitions referenced from input_schema and output_schema.",
       "additionalProperties": {
         "$ref": "#/$defs/JSONSchemaDefinition"
       }
@@ -85,10 +92,7 @@
         },
         "additionalProperties": {
           "description": "Whether additional properties are allowed. SHOULD be false for input_schema.",
-          "oneOf": [
-            { "type": "boolean" },
-            { "$ref": "#/$defs/JSONSchemaDefinition" }
-          ]
+          "$ref": "#/$defs/JSONSchemaDefinition"
         },
         "description": {
           "type": "string",
@@ -104,13 +108,12 @@
       "description": "A JSON Schema property definition supporting Draft 2020-12 keywords and apcore x-* extensions.",
       "oneOf": [
         { "$ref": "#/$defs/JSONSchemaPropertyObject" },
-        { "$ref": "#/$defs/JSONSchemaRef" },
         { "type": "boolean" }
       ]
     },
     "JSONSchemaPropertyObject": {
       "type": "object",
-      "description": "A schema property definition with full JSON Schema Draft 2020-12 support and apcore extensions.",
+      "description": "A Draft 2020-12 Schema object with common keywords and APCore extensions.",
       "properties": {
         "type": {
           "description": "JSON Schema type. Can be a single type or an array for union types (e.g., ['string', 'null']).",
@@ -222,10 +225,7 @@
         },
         "additionalProperties": {
           "description": "Schema for additional properties.",
-          "oneOf": [
-            { "type": "boolean" },
-            { "$ref": "#/$defs/JSONSchemaDefinition" }
-          ]
+          "$ref": "#/$defs/JSONSchemaDefinition"
         },
         "oneOf": {
           "type": "array",
@@ -276,10 +276,6 @@
             "apcore://common.types.error/ErrorDetail"
           ]
         },
-        "nullable": {
-          "type": "boolean",
-          "description": "Whether this field accepts null values. Shorthand for type: ['<type>', 'null']."
-        },
         "x-llm-description": {
           "type": "string",
           "description": "apcore extension: Extended description for LLM consumption. More detailed than 'description'. Can include usage instructions, constraints, and warnings that help AI agents understand how to use this field correctly."
@@ -320,21 +316,6 @@
               "description": "Human-readable deprecation message."
             }
           }
-        }
-      }
-    },
-    "JSONSchemaRef": {
-      "type": "object",
-      "description": "A JSON Schema $ref reference.",
-      "required": ["$ref"],
-      "properties": {
-        "$ref": {
-          "type": "string",
-          "description": "Reference URI. Local: #/definitions/Type. Relative: ./file.yaml#/path. Canonical: apcore://module.id/Type."
-        },
-        "description": {
-          "type": "string",
-          "description": "Optional description for the referenced type in this context."
         }
       }
     },

@@ -178,7 +178,9 @@ export class ErrorHistory {
   private readonly _maxEntriesPerModule: number;
   private readonly _maxTotalEntries: number;
   private readonly _store: ObservabilityStore;
+  private readonly _defaultStore: InMemoryObservabilityStore | null;
   private readonly _storage: StorageBackend;
+  private readonly _ownsStorage: boolean;
   private readonly _fpIndex: Map<string, ErrorEntry> = new Map();
   private readonly _moduleIndex: Map<string, ErrorEntry[]> = new Map();
   private readonly _heap: MinHeap = new MinHeap();
@@ -188,7 +190,14 @@ export class ErrorHistory {
   constructor(options: ErrorHistoryOptions = {}) {
     this._maxEntriesPerModule = options.maxEntriesPerModule ?? 50;
     this._maxTotalEntries = options.maxTotalEntries ?? 1000;
-    this._store = options.store ?? new InMemoryObservabilityStore();
+    if (options.store == null) {
+      this._defaultStore = new InMemoryObservabilityStore();
+      this._store = this._defaultStore;
+    } else {
+      this._defaultStore = null;
+      this._store = options.store;
+    }
+    this._ownsStorage = options.storage == null;
     this._storage = options.storage ?? new InMemoryStorageBackend();
   }
 
@@ -243,12 +252,18 @@ export class ErrorHistory {
   }
 
   private _recordEntry(entry: ErrorEntry): void {
-    try {
-      this._store.recordError(entry);
-    } catch (error) {
-      console.warn('[apcore:error-history] Store notification failed', error);
-    }
     const key = entry.fingerprint;
+    const retained = this._fpIndex.has(key);
+    if (this._defaultStore !== null) {
+      if (retained) this._defaultStore.retainError(key, entry);
+    } else {
+      try {
+        this._store.recordError(entry);
+      } catch (error) {
+        console.warn('[apcore:error-history] Store notification failed', error);
+      }
+    }
+    if (this._ownsStorage && !retained) return;
     const snapshot = {
       module_id: entry.moduleId,
       code: entry.code,
@@ -299,6 +314,7 @@ export class ErrorHistory {
   }
 
   clear(): void {
+    for (const fingerprint of this._fpIndex.keys()) this._evictDefaultBacking(fingerprint);
     this._fpIndex.clear();
     this._moduleIndex.clear();
     this._heap.clear();
@@ -311,6 +327,7 @@ export class ErrorHistory {
       for (const entry of entries) {
         this._fpIndex.delete(entry.fingerprint);
         this._heap.remove(entry);
+        this._evictDefaultBacking(entry.fingerprint);
       }
       this._moduleIndex.delete(moduleId);
     }
@@ -323,6 +340,7 @@ export class ErrorHistory {
       const evicted = entries.shift()!;
       this._fpIndex.delete(evicted.fingerprint);
       this._heap.remove(evicted);
+      this._evictDefaultBacking(evicted.fingerprint);
     }
     if (entries.length === 0) {
       this._moduleIndex.delete(moduleId);
@@ -338,10 +356,16 @@ export class ErrorHistory {
   private _popOldest(): void {
     const entry = this._heap.pop()!;
     this._fpIndex.delete(entry.fingerprint);
+    this._evictDefaultBacking(entry.fingerprint);
     const moduleEntries = this._moduleIndex.get(entry.moduleId)!;
     moduleEntries.splice(moduleEntries.indexOf(entry), 1);
     if (moduleEntries.length === 0) {
       this._moduleIndex.delete(entry.moduleId);
     }
+  }
+
+  private _evictDefaultBacking(fingerprint: string): void {
+    this._defaultStore?.evictError(fingerprint);
+    if (this._ownsStorage) this._storage.delete(STORAGE_NAMESPACE_ERROR_HISTORY, fingerprint);
   }
 }

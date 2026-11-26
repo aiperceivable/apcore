@@ -33,6 +33,9 @@ MODULE_ID = "demo.target"
 class _DemoTarget:
     """A trivial module returning ``{"ok": true}``."""
 
+    input_schema = {"type": "object"}
+    output_schema = {"type": "object"}
+
     description = "Conformance target for gate_provider_binding.json"
 
     def __init__(self, *, requires_approval: bool) -> None:

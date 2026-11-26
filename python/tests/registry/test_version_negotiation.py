@@ -25,6 +25,9 @@ from apcore.registry.version import (
 class _VersionedModule:
     """A simple module stub with version metadata."""
 
+    input_schema = {"type": "object"}
+    output_schema = {"type": "object"}
+
     def __init__(self, version: str = "1.0.0") -> None:
         self.version = version
         self.description = f"Module v{version}"

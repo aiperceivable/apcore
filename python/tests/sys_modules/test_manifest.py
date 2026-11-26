@@ -162,12 +162,9 @@ class TestManifestModuleDependencies:
     def test_manifest_module_returns_dependencies(self) -> None:
         module = _SampleModule()
         registry = Registry(extensions_dir="/tmp/fake_extensions")
-        registry.register("math.add", module)
-        # Inject metadata with dependencies via registry internals
-        registry._module_meta["math.add"] = {
-            "dependencies": [{"module_id": "core.logger", "optional": False}],
-            "metadata": {},
-        }
+        registry.register(
+            "math.add", module, metadata={"dependencies": [{"module_id": "core.logger", "optional": False}]}
+        )
         mod = ManifestModuleModule(registry=registry)
         result = mod.execute({"module_id": "math.add"}, context=None)
         assert "dependencies" in result

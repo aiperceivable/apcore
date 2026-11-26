@@ -6,11 +6,14 @@ import asyncio
 import inspect
 import logging
 import threading
-from concurrent.futures import Future, ThreadPoolExecutor
-from collections.abc import Mapping
+from collections import deque
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, fields
 from datetime import datetime, timezone
+from functools import partial
+from time import monotonic
 from typing import Any, Protocol, runtime_checkable
+from weakref import finalize
 
 from apcore.events.retry import EventRetryConfig
 from apcore.utils.pattern import match_glob
@@ -184,6 +187,94 @@ def _matches_event(subscriber: Any, event_type: str, *, is_dlq: bool) -> bool:
 # ---------------------------------------------------------------------------
 
 
+class _DeliveryWorker:
+    """Run event batches in order on an owned loop without joining at process exit."""
+
+    def __init__(self) -> None:
+        self.loop = asyncio.new_event_loop()
+        self._condition = threading.Condition()
+        self._queue: deque[Callable[[], Awaitable[None]]] = deque()
+        self._thread: threading.Thread | None = None
+        self._deadline: float | None = None
+        self._closed = False
+        self._submitted = 0
+        self._completed = 0
+
+    @property
+    def closed(self) -> bool:
+        with self._condition:
+            return self._closed
+
+    def submit(self, deliver: Callable[[], Awaitable[None]]) -> None:
+        with self._condition:
+            if self._deadline is not None:
+                return
+            if self._thread is None:
+                thread = threading.Thread(target=self._run, name="apcore-event", daemon=True)
+                thread.start()
+                self._thread = thread
+            self._queue.append(deliver)
+            self._submitted += 1
+            self._condition.notify_all()
+
+    def flush(self, timeout: float) -> None:
+        with self._condition:
+            if threading.current_thread() is self._thread:
+                return
+            target = self._submitted
+            self._condition.wait_for(
+                lambda: self._completed >= target or self._closed,
+                min(max(0.0, timeout), threading.TIMEOUT_MAX),
+            )
+
+    def stop(self, deadline: float) -> None:
+        with self._condition:
+            if self._closed:
+                return
+            self._deadline = deadline if self._deadline is None else min(self._deadline, deadline)
+            if self._thread is None:
+                self.loop.close()
+                self._closed = True
+            self._condition.notify_all()
+
+    def wait_closed(self, deadline: float) -> None:
+        thread = self._thread
+        if thread is None or thread is threading.current_thread():
+            return
+        thread.join(min(max(0.0, deadline - monotonic()), threading.TIMEOUT_MAX))
+
+    def _next_batch(self) -> Callable[[], Awaitable[None]] | None:
+        with self._condition:
+            self._condition.wait_for(lambda: bool(self._queue) or self._deadline is not None)
+            if self._deadline is not None and monotonic() >= self._deadline:
+                return None
+            return self._queue.popleft() if self._queue else None
+
+    def _run(self) -> None:
+        try:
+            while (deliver := self._next_batch()) is not None:
+                try:
+                    self.loop.run_until_complete(deliver())
+                except Exception as error:
+                    logger.warning("Event delivery failed: %s", type(error).__name__)
+                finally:
+                    with self._condition:
+                        self._completed += 1
+                        self._condition.notify_all()
+                    del deliver
+        finally:
+            with self._condition:
+                self._deadline = float("-inf")
+                discarded, self._queue = self._queue, deque()
+            # Releasing payload references may run user finalizers. Keep it on
+            # the daemon worker, outside either lifecycle lock.
+            discarded.clear()
+            self.loop.close()
+            with self._condition:
+                self._closed = True
+                self._condition.notify_all()
+
+
 class EventEmitter:
     """Thread-safe global event bus with per-subscriber retry and DLQ emission.
 
@@ -197,20 +288,19 @@ class EventEmitter:
     """
 
     def __init__(self, max_workers: int = 4) -> None:
+        if max_workers <= 0:
+            raise ValueError("max_workers must be greater than 0")
         self._subscribers: list[Any] = []
         self._lock = threading.Lock()
-        self._max_workers = max_workers
-        self._executor = self._new_executor()
-        self._pending_futures: list[Future[None]] = []
-        self._pending_lock = threading.Lock()
-        self._loop = asyncio.new_event_loop()
-        self._loop_lock = threading.Lock()
         self._shutdown = False
-        self._closing = False
-        self._released = False
+        self._start_worker()
 
-    def _new_executor(self) -> ThreadPoolExecutor:
-        return ThreadPoolExecutor(max_workers=self._max_workers, thread_name_prefix="apcore-event")
+    def _start_worker(self) -> None:
+        self._worker = _DeliveryWorker()
+        # The worker may outlive a caller that never explicitly closes the
+        # emitter. Its queue retains the emitter only while deliveries exist.
+        self._cleanup = finalize(self, self._worker.stop, float("-inf"))
+        self._cleanup.atexit = False
 
     def subscribe(self, subscriber: Any) -> None:
         """Add a subscriber to receive future events.
@@ -228,51 +318,44 @@ class EventEmitter:
             self._subscribers.append(subscriber)
 
     def unsubscribe(self, subscriber: Any) -> None:
-        """Remove a subscriber. No-op if not found."""
+        """Remove the first registration of this exact subscriber object."""
         with self._lock:
-            try:
-                self._subscribers.remove(subscriber)
-            except ValueError:
-                pass
+            for index, registered in enumerate(self._subscribers):
+                if registered is subscriber:
+                    del self._subscribers[index]
+                    break
 
     def emit(self, event: ApCoreEvent) -> None:
-        """Fan-out event to all subscribers via thread pool.
+        """Queue an event for background delivery.
 
         Returns immediately. After :meth:`shutdown`, emits are silently dropped.
         """
         with self._lock:
-            if self._shutdown or self._closing or not self._subscribers:
+            if self._shutdown or not self._subscribers:
                 return
-            if self._released:
-                self._executor = self._new_executor()
-                self._loop = asyncio.new_event_loop()
-                self._released = False
-            future = self._executor.submit(self._deliver, list(self._subscribers), event)
-            with self._pending_lock:
-                self._pending_futures = [f for f in self._pending_futures if not f.done()]
-                self._pending_futures.append(future)
+            if self._worker.closed:
+                self._cleanup.detach()
+                self._start_worker()
+            self._worker.submit(
+                partial(
+                    self._deliver_async,
+                    list(self._subscribers),
+                    event,
+                    is_dlq=event.event_type == _DLQ_EVENT_TYPE,
+                )
+            )
 
     def flush(self, timeout: float = 5.0) -> None:
-        """Wait for all pending event deliveries to complete."""
-        with self._pending_lock:
-            futures = list(self._pending_futures)
-        for future in futures:
-            try:
-                future.result(timeout=timeout)
-            except Exception:
-                pass
-        with self._pending_lock:
-            self._pending_futures = [f for f in self._pending_futures if not f.done()]
+        """Wait up to one timeout for the pending event batches."""
+        with self._lock:
+            if self._shutdown:
+                return
+            worker = self._worker
+        worker.flush(timeout)
 
     # ------------------------------------------------------------------
     # Internal delivery machinery
     # ------------------------------------------------------------------
-
-    def _deliver(self, subscribers: list[Any], event: ApCoreEvent) -> None:
-        """Run the async delivery coroutine inside the persistent event loop."""
-        is_dlq = event.event_type == _DLQ_EVENT_TYPE
-        with self._loop_lock:
-            self._loop.run_until_complete(self._deliver_async(subscribers, event, is_dlq=is_dlq))
 
     async def _deliver_async(
         self,
@@ -385,39 +468,17 @@ class EventEmitter:
             )
 
     def shutdown(self, timeout: float = 5.0) -> None:
-        """Stop accepting events and release the thread pool and event loop."""
+        """Stop accepting events permanently, using one drain timeout."""
         self._release_resources(timeout, terminal=True)
 
     def close(self, timeout: float = 5.0) -> None:
-        """Release idle resources while keeping subscriptions for future use."""
+        """Drain delivery resources while keeping subscriptions for future use."""
         self._release_resources(timeout, terminal=False)
 
     def _release_resources(self, timeout: float, *, terminal: bool) -> None:
+        deadline = monotonic() + max(0.0, timeout)
         with self._lock:
             self._shutdown = self._shutdown or terminal
-            if self._closing or self._released:
-                return
-            self._closing = True
-        # A subscriber can close its own client. Drain from another thread in
-        # that case so this call never waits for the worker it is running on.
-        try:
-            inside_delivery = asyncio.get_running_loop() is self._loop
-        except RuntimeError:
-            inside_delivery = False
-        if inside_delivery:
-            threading.Thread(target=self._finish_release, args=(timeout,), daemon=True).start()
-        else:
-            self._finish_release(timeout)
-
-    def _finish_release(self, timeout: float) -> None:
-        try:
-            self.flush(timeout=timeout)
-        finally:
-            try:
-                self._executor.shutdown(wait=True, cancel_futures=True)
-                with self._loop_lock:
-                    self._loop.close()
-            finally:
-                with self._lock:
-                    self._released = True
-                    self._closing = False
+            worker = self._worker
+            worker.stop(deadline)
+        worker.wait_closed(deadline)

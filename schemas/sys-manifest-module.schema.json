@@ -44,9 +44,30 @@
     },
     "dependencies": {
       "type": "array",
-      "description": "Module dependency IDs.",
+      "description": "Declared dependencies. SDK responses carry structured entries. A bare module ID is accepted for legacy data.",
       "items": {
-        "type": "string"
+        "anyOf": [
+          {"type": "string"},
+          {
+            "type": "object",
+            "required": ["module_id"],
+            "additionalProperties": false,
+            "properties": {
+              "module_id": {
+                "type": "string",
+                "description": "Canonical ID of the required or optional module."
+              },
+              "version": {
+                "type": ["string", "null"],
+                "description": "Version constraint. A missing, empty, or null value means there is no constraint."
+              },
+              "optional": {
+                "type": "boolean",
+                "description": "Whether the module can be used when this dependency is missing. Defaults to false if omitted."
+              }
+            }
+          }
+        ]
       }
     },
     "metadata": {

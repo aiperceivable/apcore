@@ -229,34 +229,44 @@ class TestApprovalCallback:
 
 class TestApprovalPhaseB:
     def test_pending_then_resume_with_token(self, registry: Registry) -> None:
-        """Phase B: first call returns pending, second call resumes with token."""
-        call_count = 0
-
         class PhaseBHandler:
+            pending_args: dict[str, Any] | None = None
+
             async def request_approval(self, request: ApprovalRequest) -> ApprovalResult:
-                nonlocal call_count
-                call_count += 1
+                self.pending_args = dict(request.arguments)
                 return ApprovalResult(status="pending", approval_id="pending-tok-1")
 
             async def check_approval(self, approval_id: str) -> ApprovalResult:
-                if approval_id == "pending-tok-1":
-                    return ApprovalResult(status="approved", approved_by="reviewer")
-                return ApprovalResult(status="rejected")
+                raise AssertionError("The status query cannot authorize execution")
 
-        executor = Executor(registry=registry, approval_handler=PhaseBHandler())
+            async def check_approval_for_call(self, approval_id: str, request: ApprovalRequest) -> ApprovalResult:
+                assert request.module_id == "admin.delete_user"
+                assert request.context.identity is not None
+                assert request.context.identity.id == "operator"
+                assert request.arguments == self.pending_args
+                assert approval_id == "pending-tok-1"
+                self.pending_args = None
+                return ApprovalResult(status="approved", approved_by="reviewer")
 
-        # First call → pending
+        handler = PhaseBHandler()
+        executor = Executor(registry=registry, approval_handler=handler)
+        caller_context = Context.create(identity=Identity(id="operator", type="user"))
         with pytest.raises(ApprovalPendingError) as exc_info:
-            executor.call("admin.delete_user", {"user_id": "123"})
-        assert exc_info.value.approval_id == "pending-tok-1"
-        assert call_count == 1
+            executor.call("admin.delete_user", {"user_id": "123"}, context=caller_context)
 
-        # Resume with token → approved
         result = executor.call(
             "admin.delete_user",
-            {"user_id": "123", "_approval_token": "pending-tok-1"},
+            {"user_id": "123", "_approval_token": exc_info.value.approval_id},
+            context=caller_context,
         )
         assert result["deleted"] is True
+        assert handler.pending_args is None
+
+    def test_legacy_handler_is_status_only(self, registry: Registry) -> None:
+        executor = Executor(registry=registry, approval_handler=AutoApproveHandler())
+        assert executor.call("admin.delete_user", {"user_id": "123"})["deleted"] is True
+        with pytest.raises(ApprovalDeniedError, match="scoped resumption"):
+            executor.call("admin.delete_user", {"user_id": "123", "_approval_token": "test-resume-credential"})
 
 
 class TestApprovalExtensionManager:

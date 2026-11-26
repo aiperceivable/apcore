@@ -51,12 +51,13 @@
         "approved_by": null,
         "reason": "Policy violation",
         "approval_id": null,
-        "metadata": null
+        "metadata": {"review_channel": "ops"}
       },
       "expected": {
         "gate_invoked": true,
         "outcome": "error",
-        "error_code": "APPROVAL_DENIED"
+        "error_code": "APPROVAL_DENIED",
+        "result": {"status": "rejected", "reason": "Policy violation", "metadata": {"review_channel": "ops"}}
       }
     },
     {
@@ -69,13 +70,53 @@
         "approved_by": null,
         "reason": null,
         "approval_id": "req-abc123",
-        "metadata": null
+        "metadata": {"review_channel": "ops"}
       },
       "expected": {
         "gate_invoked": true,
         "outcome": "error",
         "error_code": "APPROVAL_PENDING",
-        "approval_id": "req-abc123"
+        "approval_id": "req-abc123",
+        "result": {"status": "pending", "approval_id": "req-abc123", "metadata": {"review_channel": "ops"}}
+      }
+    },
+    {
+      "id": "gate_fires_timeout",
+      "description": "A timed-out approval preserves the handler's result on the caller error.",
+      "approval_handler_configured": true,
+      "module_requires_approval": true,
+      "approval_result": {"status": "timeout", "reason": "Review window ended", "metadata": {"review_channel": "ops"}},
+      "expected": {
+        "gate_invoked": true,
+        "outcome": "error",
+        "error_code": "APPROVAL_TIMEOUT",
+        "result": {"status": "timeout", "reason": "Review window ended", "metadata": {"review_channel": "ops"}}
+      }
+    },
+    {
+      "id": "resume_requires_a_scoped_handler",
+      "description": "A handler with status queries only cannot authorize a resumed call.",
+      "approval_handler_configured": true,
+      "module_requires_approval": true,
+      "approval_result": {"status": "approved", "approved_by": "reviewer"},
+      "resume": {"credential": "test-review-id", "arguments": {"v": 1}},
+      "expected": {
+        "gate_invoked": false,
+        "outcome": "error",
+        "error_code": "APPROVAL_DENIED"
+      }
+    },
+    {
+      "id": "resume_provides_the_current_call_scope",
+      "description": "A scoped handler receives the current call and its arguments before approving a resume.",
+      "approval_handler_configured": true,
+      "module_requires_approval": true,
+      "approval_result": {"status": "approved", "approved_by": "reviewer"},
+      "resume": {"credential": "test-review-id", "arguments": {"v": 1}, "scoped_handler": true},
+      "expected": {
+        "gate_invoked": true,
+        "outcome": "proceed",
+        "resume_arguments": {"v": 1}
       }
     },
     {

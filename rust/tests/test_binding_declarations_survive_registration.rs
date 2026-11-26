@@ -130,6 +130,12 @@ fn binding_declarations_reach_the_registry_descriptor() {
         "a binding's `display` block MUST survive as metadata[\"apcore.display\"]"
     );
 
+    assert_eq!(
+        descriptor.metadata.get("display"),
+        descriptor.metadata.get("apcore.display"),
+        "the canonical display key and the compatibility key should agree"
+    );
+
     // description was already carried through; assert it so a regression in
     // the path this test exercises is not mistaken for an unrelated failure.
     assert_eq!(descriptor.description, "Delete an order");

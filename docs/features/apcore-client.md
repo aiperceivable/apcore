@@ -28,7 +28,7 @@ description: "APCore facade over Registry, Executor, Config: zero- or full-confi
 
 ### Execution
 - Provide synchronous (`call()`, Python only), asynchronous (`call_async()` / `call()`), and streaming (`stream()`) execution that delegates to the Executor.
-- Provide a non-destructive preflight, `validate()`, that runs pipeline Steps 1–5 and 7 — no middleware, no module execution — plus the module's optional `preflight()` hook ([PROTOCOL_SPEC §12.8](../spec/protocol-spec.md#128-executorvalidate-cross-language-implementation-guide)).
+- Provide a non-destructive preflight, `validate()`, that evaluates pure pipeline steps, reports the approval requirement, and runs permitted module preflight hooks ([PROTOCOL_SPEC §12.8](../spec/protocol-spec.md#128-executorvalidate-cross-language-implementation-guide)).
 
 ### Middleware
 - Support middleware registration: `use()` (Rust: `use_middleware()`), `use_before()`, `use_after()`.
@@ -97,13 +97,13 @@ A supplied Registry or Executor can retain modules and middleware installed befo
 === "Rust"
     ```rust
     use apcore::config::Config;
-    use apcore::{APCore, APCoreOptions};
+    use apcore::{APCore, APCoreOptions, APCoreStartupError};
     use serde_json::json;
 
-    fn main() -> Result<(), apcore::sys_modules::SysModuleError> {
+    fn main() -> Result<(), APCoreStartupError> {
         let mut config = Config::default();
         config.set("sys_modules.enabled", json!(true));
-        let _client = APCore::try_with_options(APCoreOptions {
+        let _client = APCore::try_start(APCoreOptions {
             config: Some(config),
             fail_on_error: true,
             ..Default::default()
@@ -116,13 +116,14 @@ A supplied Registry or Executor can retain modules and middleware installed befo
 
 | Category | Method | Returns | Notes |
 |----------|--------|---------|-------|
-| **Registration** | `module(...)` | decorator (Python) / `FunctionModule` (TS) / `&mut Self` (Rust) | Register a function as a module |
-| | `register(module_id, module)` | None | Direct registration |
-| | `discover()` | int | Discover and register modules from `extensions.*` roots |
+| **Registration** | `module(...)` | decorator (Python) / `FunctionModule` (TS) / `Result<&mut Self, ModuleError>` (Rust) | In TypeScript, await the returned module's `registration` before use |
+| | `register(module_id, module)` | `None` (Python) / `Promise<void>` (TS) / `Result<(), ModuleError>` (Rust) | Await direct registration in TypeScript |
+| | `discover()` | `int` (Python) / `Promise<number>` (TS) / `Result<usize, ModuleError>` (Rust, async) | Discover and register modules from `extensions.*` roots |
 | **Execution** | `call(module_id, inputs?, context?, version_hint?)` | output | Python: synchronous. TypeScript/Rust: async |
 | | `call_async(...)` | output | Python coroutine; TypeScript `callAsync` is an alias of `call`; Rust has none (`call` is async) |
 | | `stream(module_id, inputs?, context?, version_hint?)` | async iterator / `Stream` | Chunked output |
 | | `validate(module_id, inputs?, context?)` | `PreflightResult` | Non-destructive preflight |
+| | `validate_async(module_id, inputs?, context?, *, version_hint?)` | `PreflightResult` | Python coroutine for non-destructive preflight |
 | **Inspection** | `list_modules(tags?, prefix?)` | sorted list of IDs | |
 | | `describe(module_id)` | Markdown string | For AI/LLM tool discovery |
 | **Middleware** | `use(middleware)` | self | Rust: `use_middleware()` (`use` is a keyword) |
@@ -135,7 +136,7 @@ A supplied Registry or Executor can retain modules and middleware installed befo
 | **Properties** | `registry`, `executor`, `events` | | Rust: accessor methods |
 
 !!! note "Sync/async"
-    Python `call()`, `validate()`, `disable()` and `enable()` are synchronous; use `call_async()` / `stream()` inside `async def` code. In TypeScript and Rust these methods return a `Promise` / `Future` and **MUST** be awaited.
+    Python `call()`, `validate()`, `disable()` and `enable()` are synchronous. In `async def` code, use `call_async()` for calls, `validate_async()` for preflight, and `stream()` for chunked output. In TypeScript and Rust, the call and validation methods are async.
 
 ### Callback Subscribers
 
@@ -177,7 +178,7 @@ A supplied Registry or Executor can retain modules and middleware installed befo
 | `module()` | `module(module_id, description, input_schema, output_schema, documentation, tags, version, metadata, examples, display, handler)` | Builds a `FunctionModule` from explicit metadata and a handler closure; `impl Module` + `register()` covers anything more |
 | `policy` constructor input | `APCoreOptions::policy` | Applied to the Executor the client builds |
 | `events` / `registry` / `executor` | `events()` / `registry()` / `executor()` | Accessor methods |
-| Constructors | `new()`, `with_config(config)`, `from_path(path)?`, `with_components(registry, config)`, `with_options(registry, executor, config, metrics_collector)`, `try_with_options(options)` | `try_with_options` supports strict system-module startup |
+| Constructors | `new()`, `with_config(config)`, `from_path(path)?`, `with_components(registry, config)`, `with_options(registry, executor, config, metrics_collector)`, `try_with_options(options)`, `try_start(options)` | `try_start` reports ACL and pipeline configuration errors during construction |
 
 **Rust-only methods:**
 
@@ -185,7 +186,8 @@ A supplied Registry or Executor can retain modules and middleware installed befo
 |--------|---------|
 | `with_components(registry, config)` | Build a client around a pre-configured Registry |
 | `with_options(registry, executor, config, metrics_collector)` | Construct a client from optional components with lenient system-module startup |
-| `try_with_options(APCoreOptions)` | Construct a client with explicit startup and governance settings |
+| `try_with_options(APCoreOptions)` | Return a `SysModuleError` for system-module registration failures when `fail_on_error` is set. Configuration failures are returned by invocations. |
+| `try_start(APCoreOptions)` | Return an `APCoreStartupError` if ACL or pipeline initialization fails, or if system-module registration fails with `fail_on_error` set. |
 | `reload()` | Re-read the `Config` from its source file. Does **not** re-discover modules — call `discover()` for that |
 
 ## Usage
@@ -212,7 +214,7 @@ A supplied Registry or Executor can retain modules and middleware installed befo
 
     const client = new APCore();
 
-    client.module({
+    const addition = client.module({
         id: "math.add",
         description: "Add two numbers",
         inputSchema: Type.Object({ a: Type.Number(), b: Type.Number() }),
@@ -220,6 +222,7 @@ A supplied Registry or Executor can retain modules and middleware installed befo
         execute: (inputs) => ({ sum: (inputs.a as number) + (inputs.b as number) }),
     });
 
+    await addition.registration;
     const result = await client.call("math.add", { a: 10, b: 5 });
     console.log(result); // { sum: 15 }
     ```
@@ -447,10 +450,13 @@ Python `call_async()` is a coroutine distinct from the blocking `call()`. TypeSc
 
 ## Contract: APCore.validate
 
+In Python, `await client.validate_async(...)` runs the same preflight on the calling event loop, including asynchronous `preview()` hooks that use resources bound to that loop.
+
 ### Inputs
 - `module_id` (str/string/&str, required)
 - `inputs` (dict/object/Value, optional) — `None`/`null` is treated as `{}`
 - `context` (Context, optional) — used for call-chain and ACL checks; created when absent
+- `version_hint` (Python, optional keyword) — resolved by the same lookup as `call()`. Pass the same hint to preflight and execution to check the intended module's schema and approval requirements. An unmatched hint is a failed `module_lookup` check.
 
 ### Errors
 - None. Every failure — an empty or malformed `module_id` included — is reported in the returned `PreflightResult`. (`call()` raises `INVALID_MODULE_ID` for the same input; `validate()` reports it.) Rust returns `Result<PreflightResult, ModuleError>`, whose `Err` arm is not used for check failures.
@@ -458,12 +464,12 @@ Python `call_async()` is a coroutine distinct from the blocking `call()`. TypeSc
 ### Returns
 - `PreflightResult` with:
   - `valid: bool` — `true` only when every check passed
-  - `checks: list[PreflightCheckResult]` — one entry per check that ran. `module_id` comes first; a failure there, or an `executor_binding` conflict, ends the preflight. The pipeline runs Steps 1–5 and 7 in dry-run mode and each step that ran contributes a check (`context`, `call_chain`, `module_lookup`, `acl`, `schema`, …). `module_preflight` and `module_preview` are appended when the module provides those hooks and the `acl` check did not fail ([§12.8.5.1](../spec/protocol-spec.md#12851-module-level-preflight-check-7)).
+  - `checks: list[PreflightCheckResult]` — one entry per check that ran. `module_id` comes first. Pure pipeline steps contribute checks such as `context`, `call_chain`, `module_lookup`, `acl`, and `schema` (Steps 1–4 and 7 in the standard strategy). `module_preflight` and `module_preview` are appended when the module provides those hooks and ACL permits disclosure ([§12.8.5.1](../spec/protocol-spec.md#12851-module-level-preflight-check-7)).
   - `requires_approval: bool` — the governance-effective approval requirement the Step 5 gate would enforce; reported, never enforced (no `ApprovalHandler` is invoked)
   - `errors` — the failed checks' `error` values
 
 ### Properties
-- async: synchronous in Python; async in TypeScript and Rust
+- async: Python `validate()` is synchronous and `validate_async()` is asynchronous. TypeScript and Rust `validate()` are asynchronous.
 - thread_safe: true
 - pure: false (runs module-authored `preflight()` / `preview()` hooks)
 - idempotent: true (no state mutation)
@@ -539,7 +545,7 @@ Python `call_async()` is a coroutine distinct from the blocking `call()`. TypeSc
 - `DUPLICATE_MODULE_ID` — `id` is already registered (`InvalidInputError` in Python, `DuplicateModuleIdError` in TypeScript, `ErrorCode::DuplicateModuleId` in Rust)
 
 ### Returns
-- Python: the decorated function, unchanged. TypeScript: the registered `FunctionModule`. Rust: `Result<&mut Self, ModuleError>`.
+- Python returns the decorated function, unchanged. TypeScript returns the `FunctionModule` synchronously. Await its `registration` promise to observe asynchronous validation and registration failures before calling the module. Validation errors raised synchronously still propagate from `module()`. Rust returns `Result<&mut Self, ModuleError>`.
 
 ### Properties
 - async: false

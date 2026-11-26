@@ -17,6 +17,8 @@
 import { describe, it, expect, vi } from 'vitest';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { Type } from '@sinclair/typebox';
+import { APCore } from '../src/index.js';
 import { jsonSchemaToTypeBox } from '../src/schema/loader-pure.js';
 import { SchemaValidator } from '../src/schema/validator.js';
 import { findFixturesRoot } from './spec-repo.js';
@@ -28,6 +30,8 @@ interface KeywordParityCase {
   /** Every case validates an object against an object-typed root schema. */
   readonly input: Record<string, unknown>;
   readonly expected_valid: boolean;
+  readonly expected_keyword?: string;
+  readonly exercise_module_boundary?: boolean;
 }
 
 function loadFixture(name: string): { test_cases: readonly KeywordParityCase[] } {
@@ -70,7 +74,61 @@ describe('Conformance: JSON Schema keyword parity at the validation boundary', (
     });
   });
 
+  for (const tc of fixture.test_cases.filter((entry) => entry.exercise_module_boundary)) {
+    it(`${tc.id} through public input and output validation`, async () => {
+      const app = new APCore();
+      const openSchema = { type: 'object' };
+      const echo = vi.fn((input: Record<string, unknown>) => input);
+      const module = {
+        description: 'Return the supplied object',
+        execute: echo,
+      };
+      await app.register('parity.input', { ...module, inputSchema: tc.schema, outputSchema: openSchema });
+      await app.register('parity.output', { ...module, inputSchema: openSchema, outputSchema: tc.schema });
+
+      if (tc.expected_valid) {
+        await expect(app.call('parity.input', tc.input)).resolves.toEqual(tc.input);
+        await expect(app.call('parity.output', tc.input)).resolves.toEqual(tc.input);
+      } else {
+        const error = {
+          code: 'SCHEMA_VALIDATION_ERROR',
+          ...(tc.expected_keyword === undefined ? {} : {
+            details: { errors: expect.arrayContaining([expect.objectContaining({ keyword: tc.expected_keyword })]) },
+          }),
+        };
+        await expect(app.call('parity.input', tc.input)).rejects.toMatchObject(error);
+        expect(echo).not.toHaveBeenCalled();
+        await expect(app.call('parity.output', tc.input)).rejects.toMatchObject(error);
+        expect(echo).toHaveBeenCalledTimes(1);
+      }
+    });
+  }
+
+  it('validates native TypeBox decimal multiples through APCore.module input and output', async () => {
+    const app = new APCore();
+    const decimal = Type.Object({ amount: Type.Number({ multipleOf: 0.01, minimum: 0 }) });
+    const open = Type.Object({ amount: Type.Number() });
+    const execute = vi.fn((input: Record<string, unknown>) => input);
+    app.module({ id: 'parity.native_input', inputSchema: decimal, outputSchema: open, execute });
+    app.module({ id: 'parity.native_output', inputSchema: open, outputSchema: decimal, execute });
+
+    const valid = { amount: 0.07 };
+    await expect(app.call('parity.native_input', valid)).resolves.toEqual(valid);
+    await expect(app.call('parity.native_output', valid)).resolves.toEqual(valid);
+    execute.mockClear();
+
+    const failure = (keyword: string) => ({
+      code: 'SCHEMA_VALIDATION_ERROR',
+      details: { errors: expect.arrayContaining([expect.objectContaining({ path: '/amount', keyword })]) },
+    });
+    const invalid = { amount: 0.021 };
+    await expect(app.call('parity.native_input', invalid)).rejects.toMatchObject(failure('multipleOf'));
+    expect(execute).not.toHaveBeenCalled();
+    await expect(app.call('parity.native_output', invalid)).rejects.toMatchObject(failure('multipleOf'));
+    await expect(app.call('parity.native_input', { amount: -0.07 })).rejects.toMatchObject(failure('minimum'));
+  });
+
   it('drives every fixture case', () => {
-    expect(fixture.test_cases.length).toBe(122);
+    expect(fixture.test_cases.length).toBe(142);
   });
 });

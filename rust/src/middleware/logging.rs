@@ -73,7 +73,12 @@ impl Middleware for LoggingMiddleware {
 
         if self.log_inputs {
             // D-131: the captured `redacted_inputs`, never the raw inputs.
-            let display_inputs = loggable_value(ctx.redacted_inputs.as_ref(), &inputs, None);
+            let display_inputs = loggable_value(
+                ctx.redacted_inputs.as_ref(),
+                &inputs,
+                None,
+                ctx.executor.is_some(),
+            );
 
             tracing::info!(
                 trace_id = %ctx.trace_id,
@@ -103,7 +108,12 @@ impl Middleware for LoggingMiddleware {
 
         if self.log_outputs {
             // D-131: the captured `redacted_output`, never the raw output.
-            let display_output = loggable_value(ctx.redacted_output.as_ref(), &output, None);
+            let display_output = loggable_value(
+                ctx.redacted_output.as_ref(),
+                &output,
+                None,
+                ctx.executor.is_some(),
+            );
             tracing::info!(
                 trace_id = %ctx.trace_id,
                 module_id = module_id,
@@ -131,7 +141,12 @@ impl Middleware for LoggingMiddleware {
 
         if self.log_errors {
             // D-131: the captured `redacted_inputs`, never the raw inputs.
-            let display_inputs = loggable_value(ctx.redacted_inputs.as_ref(), &inputs, None);
+            let display_inputs = loggable_value(
+                ctx.redacted_inputs.as_ref(),
+                &inputs,
+                None,
+                ctx.executor.is_some(),
+            );
 
             tracing::error!(
                 trace_id = %ctx.trace_id,

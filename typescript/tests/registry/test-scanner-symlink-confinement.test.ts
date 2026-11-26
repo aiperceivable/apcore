@@ -96,4 +96,18 @@ describe('symlink confinement (D-94)', () => {
 
     expect(scan(true).length).toBeGreaterThanOrEqual(1);
   });
+
+  it('associates an in-root file alias with the canonical companion metadata', () => {
+    const canonical = join(root, 'canonical');
+    mkdirSync(canonical);
+    writeFileSync(join(canonical, 'sample.js'), 'export const sample = 1;');
+    writeFileSync(join(canonical, 'sample_meta.yaml'), 'description: Canonical sample');
+    symlinkSync(join(canonical, 'sample.js'), join(root, 'alias.js'));
+
+    const entries = scanExtensions(root, 8, true, ['canonical']);
+    expect(entries).toEqual([expect.objectContaining({
+      canonicalId: 'canonical.sample',
+      metaPath: join(canonical, 'sample_meta.yaml'),
+    })]);
+  });
 });

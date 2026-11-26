@@ -47,7 +47,12 @@ pub trait Module: Send + Sync {
     /// `yield` is delivered to the caller as soon as it is produced (true
     /// streaming, no buffering).
     ///
-    /// Note: this method is *not* `async` even though it returns a stream.
+    /// Legacy streaming hook. New streaming modules can implement
+    /// [`StreamingModule`] and expose it through [`Self::as_streaming`].
+    /// The executor tries the typed interface first and uses this hook when
+    /// no typed interface is exposed. Returning `None` selects unary execution.
+    ///
+    /// This method is synchronous even though it returns a stream.
     /// The returned `ChunkStream` is itself an async iterator; constructing
     /// it must be cheap and synchronous so the executor can wire it into
     /// its own pipeline before the first chunk is awaited.
@@ -266,8 +271,9 @@ pub trait Module: Send + Sync {
     /// Returns `None` for non-streaming modules (default). Streaming modules
     /// override this to return `Some(self)`.
     ///
-    /// **Consistency invariant:** `Some(_)` here IFF `stream()` returns `Some(_)`.
-    /// `Registry::register` enforces this by returning
+    /// This is also the executor's preferred streaming interface. A typed
+    /// module can use the default implementation of [`Self::stream`].
+    /// `Registry::register` returns
     /// `Err(StreamingInterfaceMismatch)` when `annotations.streaming = true`
     /// but `as_streaming()` returns `None`.
     fn as_streaming(&self) -> Option<&dyn StreamingModule> {
@@ -277,10 +283,8 @@ pub trait Module: Send + Sync {
 
 /// Typed streaming interface for modules that support incremental output.
 ///
-/// **Consistency invariant:** a module implementing `StreamingModule` MUST also
-/// return `Some(_)` from `Module::stream()`. `Registry::register` enforces this
-/// by returning `Err(StreamingInterfaceMismatch)` when `annotations.streaming =
-/// true` but `as_streaming()` returns `None`.
+/// Expose the typed implementation from [`Module::as_streaming`]. The
+/// executor calls `stream_typed()` when it receives this handle.
 pub trait StreamingModule: Module {
     fn stream_typed(
         &self,

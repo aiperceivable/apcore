@@ -1,6 +1,6 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { UsageCollector, UsageMiddleware, bucketKey } from '../src/observability/usage.js';
-import { STORAGE_NAMESPACE_USAGE } from '../src/observability/storage.js';
+import { InMemoryStorageBackend, STORAGE_NAMESPACE_USAGE } from '../src/observability/storage.js';
 import { Context } from '../src/context.js';
 
 describe('bucketKey', () => {
@@ -11,6 +11,37 @@ describe('bucketKey', () => {
 });
 
 describe('UsageCollector', () => {
+  it('keeps only admitted usage in default storage and expires it on collection', async () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date('2026-10-01T12:30:00Z'));
+      const collector = new UsageCollector({ retentionHours: 1, maxRecordsPerBucket: 1 });
+      const storage = collector.storage;
+      collector.record('mod.a', 'admitted', 1, true);
+      collector.record('mod.a', 'overflow', 1, true);
+      expect((await storage.list(STORAGE_NAMESPACE_USAGE)).map(([, row]) => row['caller_id']))
+        .toEqual(['admitted']);
+
+      vi.setSystemTime(new Date('2026-10-01T14:30:00Z'));
+      collector.record('mod.a', 'new', 1, true);
+      expect((await storage.list(STORAGE_NAMESPACE_USAGE)).map(([, row]) => row['caller_id']))
+        .toEqual(['new']);
+      expect(collector.getModule('mod.a').callCount).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('forwards calls outside the live window to explicitly provided storage', () => {
+    const storage = new InMemoryStorageBackend();
+    const collector = new UsageCollector({ retentionHours: 1, maxRecordsPerBucket: 1, storage });
+    const expired = new Date(Date.now() - 3 * 3600_000).toISOString();
+    collector.record('mod.a', 'archive.one', 1, true, expired);
+    collector.record('mod.a', 'archive.two', 1, true, expired);
+    expect(storage.list(STORAGE_NAMESPACE_USAGE)).toHaveLength(2);
+    expect(collector.getModule('mod.a').callCount).toBe(0);
+  });
+
   it('persists distinct usage records with the same module and timestamp', async () => {
     const collector = new UsageCollector();
     const timestamp = new Date().toISOString();

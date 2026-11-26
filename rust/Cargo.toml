@@ -134,6 +134,9 @@ jsonschema = { version = "0.28", default-features = false }
 referencing = "0.28"
 sha2 = "0.10"
 reqwest = { version = "0.12", features = ["json"], optional = true }
+# Enforce patched HTTP transport and URL parser versions for downstream events builds.
+h2 = { version = "0.4.16", optional = true, default-features = false }
+url = { version = "2.5.9", optional = true, default-features = false }
 futures-core = "0.3"
 futures-util = "0.3"
 async-stream = "0.3"
@@ -144,7 +147,7 @@ notify = { version = "8", default-features = false, features = ["macos_fsevent"]
 
 [features]
 default = []
-events = ["reqwest"]
+events = ["reqwest", "dep:h2", "dep:url"]
 
 [dev-dependencies]
 tempfile = "3"

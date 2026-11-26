@@ -6,7 +6,7 @@ import logging
 import time
 from typing import Any
 
-from apcore.context_keys import LOGGING_START
+from apcore.context_keys import LOGGING_START, _middleware_data
 from apcore.middleware.base import Context, Middleware
 
 
@@ -19,7 +19,7 @@ class LoggingMiddleware(Middleware):
     Logs module call start, completion (with duration), and errors using
     context.redacted_inputs / context.redacted_output — never the raw values
     (PROTOCOL_SPEC §10.6.1 requirement 5). Thread-safe
-    by storing per-call state in context.data.
+    by keeping the start time on the invocation.
     """
 
     def __init__(
@@ -45,7 +45,7 @@ class LoggingMiddleware(Middleware):
 
     def before(self, module_id: str, inputs: dict[str, Any], context: Context) -> None:
         """Record start time and log module call initiation with redacted inputs."""
-        LOGGING_START.set(context, time.time())
+        _middleware_data(context)[LOGGING_START.name] = time.time()
 
         # PROTOCOL_SPEC §10.6.1 requirement 5 (D-131): only the captured
         # ``context.redacted_inputs`` is logged, never the raw ``inputs``.
@@ -70,7 +70,7 @@ class LoggingMiddleware(Middleware):
         context: Context,
     ) -> None:
         """Log module completion with duration and output."""
-        start_time = LOGGING_START.get(context, default=time.time())
+        start_time = _middleware_data(context).get(LOGGING_START.name, time.time())
         duration_ms = (time.time() - start_time) * 1000
 
         if self._log_outputs:

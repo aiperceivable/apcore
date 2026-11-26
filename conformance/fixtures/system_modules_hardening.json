@@ -2,6 +2,88 @@
   "description": "System modules hardening: config persistence, contextual audit trail, Prometheus UsageCollector metrics, path-filter reload, and startup failure handling. Closes Issue #45.",
   "test_cases": [
     {
+      "id": "manifest_responses_follow_canonical_schema",
+      "description": "Public single and full manifests are valid JSON responses when optional data is absent and when a module declares a dependency.",
+      "setup": {
+        "module_id": "sample.report",
+        "dependency": {"module_id": "sample.source", "version": "^1.0.0", "optional": true}
+      },
+      "expected": {
+        "entry": {
+          "module_id": "sample.report",
+          "source_path": null,
+          "dependencies": [{"module_id": "sample.source", "version": "^1.0.0", "optional": true}]
+        },
+        "suppressed_fields": {"input_schema": null, "output_schema": null}
+      }
+    },
+    {
+      "id": "first_config_update_has_null_old_value",
+      "description": "A successful first write to an ordinary configuration key carries a present JSON null old_value field.",
+      "action": {"input": {"key": "sample.theme", "value": "blue", "reason": "set a default"}},
+      "expected": {"success": true, "key": "sample.theme", "old_value": null, "new_value": "blue"}
+    },
+    {
+      "id": "config_update_rejects_empty_path",
+      "description": "An explicit control write of an empty path leaves the existing path in use and emits no successful update event.",
+      "setup": {"initial_root": "./existing-extensions"},
+      "action": {"input": {"key": "extensions.root", "value": "", "reason": "change extension root"}},
+      "expected": {"error_code": "CONFIG_INVALID", "effective_value": "./existing-extensions", "update_events": 0}
+    },
+    {
+      "id": "config_update_rejects_persisted_toggle_keys",
+      "description": "Configuration updates leave the override store unchanged for keys reserved for module toggle state.",
+      "action": {
+        "input": {
+          "key": "toggle.example.module",
+          "value": false,
+          "reason": "test reserved configuration key"
+        }
+      },
+      "expected": {
+        "error_code": "CONFIG_KEY_RESTRICTED",
+        "overrides": {}
+      }
+    },
+    {
+      "id": "config_update_redacts_configured_keys",
+      "description": "Updating a configuration object masks its configured sensitive fields in both response and audit snapshots",
+      "setup": {
+        "sensitive_keys": ["example.profile.members.member_code"],
+        "initial_value": {"name": "North", "members": [{"member_code": "sample-a"}]}
+      },
+      "action": {
+        "input": {
+          "key": "example.profile",
+          "value": {"name": "South", "members": [{"member_code": "sample-b"}]},
+          "reason": "update sample profile"
+        }
+      },
+      "expected": {
+        "old_value": {"name": "North", "members": [{"member_code": "***REDACTED***"}]},
+        "new_value": {"name": "South", "members": [{"member_code": "***REDACTED***"}]}
+      }
+    },
+    {
+      "id": "config_update_changes_default_execution_timeout",
+      "description": "Updating executor.default_timeout through the control module affects the next invocation",
+      "setup": {
+        "initial_default_timeout_ms": 30000,
+        "probe_duration_ms": 100
+      },
+      "action": {
+        "input": {
+          "key": "executor.default_timeout",
+          "value": 10,
+          "reason": "adjust default execution budget"
+        }
+      },
+      "expected": {
+        "call_success": true,
+        "probe_error_code": "MODULE_TIMEOUT"
+      }
+    },
+    {
       "id": "overrides_persisted_on_update",
       "description": "update_config with overrides_path configured writes the change to the YAML overrides file",
       "setup": {
@@ -111,7 +193,7 @@
     },
     {
       "id": "prometheus_usage_exports_calls_total",
-      "description": "When Prometheus is enabled and UsageCollector has call data, GET /metrics includes apcore_usage_calls_total",
+      "description": "Prometheus exposes the rolling usage count as a gauge with its compatibility alias.",
       "setup": {
         "observability_prometheus_enabled": true,
         "usage_collector_data": [
@@ -128,6 +210,10 @@
       },
       "expected": {
         "metrics_endpoint_contains": [
+          "# TYPE apcore_usage_calls_24h gauge",
+          "# TYPE apcore_usage_calls_total gauge",
+          "apcore_usage_calls_24h{module_id=\"math.add\",status=\"success\"}",
+          "apcore_usage_calls_24h{module_id=\"math.add\",status=\"error\"}",
           "apcore_usage_calls_total{module_id=\"math.add\",status=\"success\"}",
           "apcore_usage_calls_total{module_id=\"math.add\",status=\"error\"}",
           "apcore_usage_error_rate{module_id=\"math.add\"}",

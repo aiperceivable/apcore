@@ -490,6 +490,7 @@ fn build_strategy_from_seed(
     pipeline_config: &Value,
     config: Option<&crate::config::Config>,
 ) -> Result<ExecutionStrategy, ModuleError> {
+    validate_pipeline_shape(pipeline_config)?;
     if let Some(cfg) = config {
         validate_pipeline_limits(pipeline_config, cfg)?;
     }
@@ -647,6 +648,40 @@ fn build_strategy_from_seed(
     }
 
     Ok(strategy)
+}
+
+fn validate_pipeline_shape(value: &Value) -> Result<(), ModuleError> {
+    let invalid = |message| ModuleError::new(ErrorCode::PipelineConfigurationError, message);
+    let section = value
+        .as_object()
+        .ok_or_else(|| invalid("pipeline must be a mapping"))?;
+    reject_unknown_keys(section, &["remove", "configure", "steps"], "pipeline")?;
+    if section.get("remove").is_some_and(|remove| {
+        !remove
+            .as_array()
+            .is_some_and(|items| items.iter().all(Value::is_string))
+    }) {
+        return Err(invalid("pipeline.remove must contain a list of step names"));
+    }
+    if section.get("configure").is_some_and(|configure| {
+        !configure
+            .as_object()
+            .is_some_and(|items| items.values().all(Value::is_object))
+    }) {
+        return Err(invalid(
+            "pipeline.configure must map step names to field mappings",
+        ));
+    }
+    if section.get("steps").is_some_and(|steps| {
+        !steps
+            .as_array()
+            .is_some_and(|items| items.iter().all(Value::is_object))
+    }) {
+        return Err(invalid(
+            "pipeline.steps must contain a list of step mappings",
+        ));
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------

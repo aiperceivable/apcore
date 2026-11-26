@@ -20,6 +20,52 @@ _SKIP_DIR_NAMES = {"__pycache__", "node_modules"}
 _SKIP_FILE_SUFFIXES = {".pyc"}
 
 
+def _ignored_entry(name: str, patterns: Sequence[str]) -> bool:
+    return (
+        name.startswith((".", "_")) or name in _SKIP_DIR_NAMES or any(match_glob(pattern, name) for pattern in patterns)
+    )
+
+
+def _watched_source(
+    path: Path,
+    root: Path,
+    max_depth: int,
+    follow_symlinks: bool,
+    ignore_patterns: Sequence[str],
+) -> Path | None:
+    """Resolve one watch event using the scanner's path eligibility rules."""
+    root = root.absolute()
+    real_root = root.resolve()
+    path = path.absolute()
+    if not path.is_relative_to(root):
+        return None
+    relative = path.relative_to(root)
+    if path.suffix != ".py" or len(relative.parts) > max_depth:
+        return None
+    cursor = root
+    for part in relative.parts:
+        if part == ".." or _ignored_entry(part, ignore_patterns):
+            return None
+        cursor = cursor / part
+        if cursor.is_symlink() and (not follow_symlinks or not cursor.resolve().is_relative_to(real_root)):
+            return None
+    resolved = path.resolve()
+    if resolved.is_file() and resolved.is_relative_to(real_root):
+        return resolved
+    return None
+
+
+def _companion_metadata_path(module_path: Path, root: Path, follow_symlinks: bool) -> Path | None:
+    candidate = module_path.with_name(f"{module_path.stem}_meta.yaml")
+    if (candidate.is_symlink() and not follow_symlinks) or not candidate.is_file():
+        return None
+    resolved = candidate.resolve()
+    if not resolved.is_relative_to(root):
+        logger.warning("Metadata companion target outside extension root, skipping: %s -> %s", candidate, resolved)
+        return None
+    return resolved
+
+
 def scan_extensions(
     root: str | Path,
     max_depth: int = 8,
@@ -70,11 +116,7 @@ def scan_extensions(
 
         for entry in entries:
             name = entry.name
-            if name.startswith(".") or name.startswith("_"):
-                continue
-            if name in _SKIP_DIR_NAMES:
-                continue
-            if any(match_glob(pattern, name) for pattern in patterns):
+            if _ignored_entry(name, patterns):
                 continue
 
             try:
@@ -173,14 +215,10 @@ def scan_extensions(
                         seen_ids_lower[lower_id],
                     )
 
-                meta_path = entry_path.with_name(entry_path.stem + "_meta.yaml")
-                if not meta_path.exists():
-                    meta_path = None
-
                 dm = DiscoveredModule(
                     file_path=real_file,
                     canonical_id=canonical_id,
-                    meta_path=meta_path,
+                    meta_path=_companion_metadata_path(real_file, root, follow_symlinks),
                     namespace=None,
                 )
                 seen_ids[canonical_id] = real_file

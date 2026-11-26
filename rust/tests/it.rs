@@ -348,6 +348,8 @@ mod test_storage_backend;
 mod test_storage_backend_conformance;
 #[path = "test_stream_chunk_reject.rs"]
 mod test_stream_chunk_reject;
+#[path = "test_stream_completion.rs"]
+mod test_stream_completion;
 #[path = "test_stream_phase1_on_error.rs"]
 mod test_stream_phase1_on_error;
 #[path = "test_streaming_interface.rs"]

@@ -10,9 +10,7 @@
 //! This SDK is correct today. The test exists because nothing said so: D-94 is a
 //! security decision, and discovery is the one place where a silent regression
 //! means executing a file the operator never put there. A behaviour with no test
-//! is a behaviour the next refactor is free to change — and this SDK's check is
-//! fused into the directory branch (`is_dir() || (is_symlink() && follow)`),
-//! which is the shape the defect took elsewhere.
+//! is a behaviour the next refactor is free to change.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -87,6 +85,37 @@ fn a_real_file_inside_the_root_is_still_discovered() {
 
     assert_eq!(scan(&fx.root, true).len(), 1);
     assert_eq!(scan(&fx.root, false).len(), 1);
+}
+
+#[test]
+fn a_symlinked_module_uses_the_canonical_companion_file() {
+    let fx = fixture();
+    let module = fx.root.join("real.rs");
+    let metadata = fx.root.join("real_meta.yaml");
+    fs::write(&module, "pub struct Real;").expect("write");
+    fs::write(&metadata, "description: Canonical metadata\n").expect("write");
+    std::os::unix::fs::symlink(&module, fx.root.join("alias.rs")).expect("symlink");
+
+    let modules = scan_extensions(&fx.root, 8, true, None, &[]).expect("scan");
+    assert_eq!(modules.len(), 1);
+    assert_eq!(modules[0].canonical_id, "real");
+    assert_eq!(modules[0].meta_path, Some(metadata.canonicalize().unwrap()));
+}
+
+#[test]
+fn test_companion_metadata_link_requires_opt_in() {
+    let fx = fixture();
+    fs::write(fx.root.join("real.rs"), "pub struct Real;").unwrap();
+    let target = fx.root.join("metadata.yaml");
+    fs::write(&target, "description: Module metadata\n").unwrap();
+    std::os::unix::fs::symlink(&target, fx.root.join("real_meta.yaml")).unwrap();
+
+    let modules = scan_extensions(&fx.root, 8, false, None, &[]).unwrap();
+    assert_eq!(modules.len(), 1);
+    assert_eq!(modules[0].meta_path, None);
+    let modules = scan_extensions(&fx.root, 8, true, None, &[]).unwrap();
+    assert_eq!(modules.len(), 1);
+    assert_eq!(modules[0].meta_path, Some(target.canonicalize().unwrap()));
 }
 
 #[test]

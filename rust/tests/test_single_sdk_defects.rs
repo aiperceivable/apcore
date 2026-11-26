@@ -273,45 +273,332 @@ async fn trace_context_inject_uses_the_current_span() {
         .register("probe.inject", Box::new(Injecting))
         .unwrap();
 
-    let out = client
-        .call("probe.inject", json!({}), None, None)
+    let inbound = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01";
+    let headers = HashMap::from([("traceparent".to_owned(), inbound.to_owned())]);
+    let parsed = TraceContext::extract(&headers).unwrap();
+    let contexts = [
+        Context::create(None, Some(parsed.clone()), None, None, Value::Null, None),
+        Context::builder()
+            .trace_parent(Some(parsed.clone()))
+            .build(),
+    ];
+    for context in &contexts {
+        exporter.clear();
+        let out = client
+            .call("probe.inject", json!({}), Some(context), None)
+            .await
+            .unwrap();
+        let traceparent = TraceContext::extract(&HashMap::from([(
+            "traceparent".to_owned(),
+            out["traceparent"].as_str().unwrap().to_owned(),
+        )]))
+        .unwrap();
+        let spans = exporter.get_spans();
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0].trace_id, parsed.trace_id);
+        assert_eq!(
+            spans[0].parent_span_id.as_deref(),
+            Some(parsed.parent_id.as_str())
+        );
+        assert_eq!(traceparent.parent_id, spans[0].span_id);
+    }
+
+    let mut restarted_parent = parsed;
+    restarted_parent.trace_id = "f".repeat(32);
+    let restarted = Context::builder()
+        .trace_parent(Some(restarted_parent))
+        .build();
+    exporter.clear();
+    client
+        .call("probe.inject", json!({}), Some(&restarted), None)
         .await
         .unwrap();
-    let traceparent = out["traceparent"].as_str().unwrap().to_string();
-    let parent_id = traceparent.split('-').nth(2).unwrap().to_string();
     let spans = exporter.get_spans();
-    assert_eq!(spans.len(), 1);
-    assert_eq!(
-        parent_id, spans[0].span_id,
-        "the outbound parent must be the span wrapping the call"
-    );
+    assert_ne!(spans[0].trace_id, "f".repeat(32));
+    assert!(spans[0].parent_span_id.is_none());
+}
+
+#[derive(Default)]
+struct SpanProbeGate {
+    started: tokio::sync::Notify,
+    release: tokio::sync::Notify,
+}
+
+impl SpanProbeGate {
+    async fn observe(&self, fail: bool, ctx: &Context<Value>) -> Result<Value, ModuleError> {
+        use apcore::trace_context::TraceContext;
+
+        self.started.notify_one();
+        self.release.notified().await;
+        let traceparent = json!(TraceContext::inject(ctx)["traceparent"]);
+        if fail {
+            return Err(
+                ModuleError::new(ErrorCode::ModuleExecuteError, "probe failure")
+                    .with_details(HashMap::from([("traceparent".to_owned(), traceparent)])),
+            );
+        }
+        Ok(json!({"traceparent": traceparent}))
+    }
+}
+
+enum SpanProbe {
+    Parent {
+        a: Arc<SpanProbeGate>,
+        b: Arc<SpanProbeGate>,
+        a_finishes_first: bool,
+    },
+    Sibling(Arc<SpanProbeGate>),
+}
+
+#[async_trait]
+impl Module for SpanProbe {
+    fn input_schema(&self) -> Value {
+        json!({"type": "object"})
+    }
+
+    fn output_schema(&self) -> Value {
+        json!({"type": "object"})
+    }
+
+    fn description(&self) -> &'static str {
+        "Runs a nested trace or reports its active span"
+    }
+
+    fn stream(&self, inputs: Value, ctx: &Context<Value>) -> Option<apcore::module::ChunkStream> {
+        let Self::Sibling(gate) = self else {
+            return None;
+        };
+        let gate = Arc::clone(gate);
+        let ctx = ctx.clone();
+        Some(Box::pin(futures_util::stream::once(async move {
+            gate.observe(inputs["fail"] == true, &ctx).await
+        })))
+    }
+
+    async fn execute(&self, inputs: Value, ctx: &Context<Value>) -> Result<Value, ModuleError> {
+        use futures_util::StreamExt;
+
+        match self {
+            Self::Sibling(gate) => gate.observe(inputs["fail"] == true, ctx).await,
+            Self::Parent {
+                a,
+                b,
+                a_finishes_first,
+            } => {
+                let executor = ctx.executor().unwrap();
+                let ctx_a = ctx.clone();
+                let executor_a = Arc::clone(&executor);
+                let first = tokio::spawn(async move {
+                    executor_a
+                        .call("probe.a", json!({}), Some(&ctx_a), None)
+                        .await
+                        .unwrap()
+                });
+                a.started.notified().await;
+                // Separate the starts so a crossed timing association is observable.
+                tokio::time::sleep(Duration::from_millis(40)).await;
+                let ctx_b = ctx.clone();
+                let fail = !*a_finishes_first;
+                let second = tokio::spawn(async move {
+                    let (mut chunks, _) = executor.stream_with_completion(
+                        "probe.b",
+                        json!({"fail": fail}),
+                        Some(&ctx_b),
+                        None,
+                    );
+                    let result = chunks.next().await.unwrap();
+                    assert!(chunks.next().await.is_none());
+                    if fail {
+                        let error = result.unwrap_err();
+                        assert_eq!(error.code, ErrorCode::ModuleExecuteError);
+                        json!({"traceparent": error.details["traceparent"]})
+                    } else {
+                        result.unwrap()
+                    }
+                });
+                b.started.notified().await;
+
+                let (a_out, b_out) = if *a_finishes_first {
+                    a.release.notify_one();
+                    let a_out = first.await.unwrap();
+                    b.release.notify_one();
+                    (a_out, second.await.unwrap())
+                } else {
+                    b.release.notify_one();
+                    let b_out = second.await.unwrap();
+                    a.release.notify_one();
+                    (first.await.unwrap(), b_out)
+                };
+                Ok(json!({"a": a_out, "b": b_out}))
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn test_sibling_calls_keep_their_timing_and_span_parent_in_either_finish_order() {
+    use apcore::observability::exporters::InMemoryExporter;
+    use apcore::observability::logging::{ContextLogger, ObsLoggingMiddleware};
+    use apcore::observability::metrics::{MetricsCollector, MetricsMiddleware};
+    use apcore::observability::span::SpanStatus;
+    use apcore::observability::tracing_middleware::TracingMiddleware;
+    use apcore::observability::usage::{UsageCollector, UsageMiddleware};
+    use apcore::trace_context::TraceContext;
+
+    for a_finishes_first in [true, false] {
+        let exporter = InMemoryExporter::new();
+        let metrics = MetricsCollector::new();
+        let usage = UsageCollector::new();
+        let client = APCore::new();
+        let mut logger = ContextLogger::new("probe");
+        let capture = Capture::default();
+        logger.set_writer(Box::new(capture.clone()));
+        client
+            .use_middleware(Box::new(TracingMiddleware::new(Box::new(exporter.clone()))))
+            .unwrap();
+        client
+            .use_middleware(Box::new(MetricsMiddleware::new(metrics.clone())))
+            .unwrap();
+        client
+            .use_middleware(Box::new(UsageMiddleware::new(usage.clone())))
+            .unwrap();
+        client
+            .use_middleware(Box::new(ObsLoggingMiddleware::new(logger)))
+            .unwrap();
+        let a = Arc::new(SpanProbeGate::default());
+        let b = Arc::new(SpanProbeGate::default());
+        client
+            .register("probe.a", Box::new(SpanProbe::Sibling(Arc::clone(&a))))
+            .unwrap();
+        client
+            .register("probe.b", Box::new(SpanProbe::Sibling(Arc::clone(&b))))
+            .unwrap();
+        client
+            .register(
+                "probe.parent",
+                Box::new(SpanProbe::Parent {
+                    a,
+                    b,
+                    a_finishes_first,
+                }),
+            )
+            .unwrap();
+        let outputs = tokio::time::timeout(
+            Duration::from_secs(3),
+            client.call("probe.parent", json!({}), None, None),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let spans = exporter.get_spans();
+        assert_eq!(spans.len(), 3);
+        let expected_first = if a_finishes_first {
+            "probe.a"
+        } else {
+            "probe.b"
+        };
+        assert_eq!(spans[0].attributes["module_id"], expected_first);
+        let root = &spans[2];
+        assert_eq!(root.attributes["module_id"], "probe.parent");
+        for label in ["a", "b"] {
+            let id = format!("probe.{label}");
+            let span = spans
+                .iter()
+                .find(|span| span.attributes["module_id"] == id)
+                .unwrap();
+            let traceparent = TraceContext::extract(&HashMap::from([(
+                "traceparent".to_owned(),
+                outputs[label]["traceparent"].as_str().unwrap().to_owned(),
+            )]))
+            .unwrap();
+            assert_eq!(span.parent_span_id.as_deref(), Some(root.span_id.as_str()));
+            assert_eq!(traceparent.parent_id, span.span_id);
+            let expected_status = if label == "b" && !a_finishes_first {
+                SpanStatus::Error
+            } else {
+                SpanStatus::Ok
+            };
+            assert_eq!(span.status, expected_status);
+        }
+
+        let snapshot = metrics.snapshot();
+        let duration = |id| {
+            snapshot["histograms"][format!("apcore_module_duration_seconds|module_id=probe.{id}")]
+                ["sum"]
+                .as_f64()
+                .unwrap()
+        };
+        assert!(duration("a") > duration("b"));
+        let usage_a = usage.get_module_summary("probe.a").unwrap();
+        let usage_b = usage.get_module_summary("probe.b").unwrap();
+        assert_eq!(usage_b.error_count, u64::from(!a_finishes_first));
+        assert!(usage_a.avg_latency_ms > usage_b.avg_latency_ms);
+        let logged_durations: HashMap<String, f64> = capture
+            .text()
+            .lines()
+            .map(|line| serde_json::from_str::<Value>(line).unwrap())
+            .filter_map(|record| {
+                let extra = &record["extra"];
+                Some((
+                    extra["module_id"].as_str()?.to_owned(),
+                    extra["duration_ms"].as_f64()?,
+                ))
+            })
+            .collect();
+        assert!(logged_durations["probe.a"] > logged_durations["probe.b"]);
+    }
 }
 
 #[cfg(feature = "events")]
 #[tokio::test]
-async fn otlp_endpoint_is_the_full_url() {
+async fn otlp_posts_to_full_url_with_original_trace_and_parent_ids() {
     use apcore::observability::exporters::OTLPExporter;
     use apcore::observability::span::{Span, SpanExporter};
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
     use tokio::net::TcpListener;
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
     let server = tokio::spawn(async move {
-        let (mut stream, _) = listener.accept().await.unwrap();
-        let mut buf = [0u8; 256];
-        let n = stream.read(&mut buf).await.unwrap();
+        let (stream, _) = listener.accept().await.unwrap();
+        let mut stream = BufReader::new(stream);
+        let mut request_line = String::new();
+        stream.read_line(&mut request_line).await.unwrap();
+        let mut content_length = None;
+        loop {
+            let mut line = String::new();
+            assert!(stream.read_line(&mut line).await.unwrap() > 0);
+            if line == "\r\n" {
+                break;
+            }
+            if let Some((name, value)) = line.split_once(':') {
+                if name.eq_ignore_ascii_case("content-length") {
+                    content_length = Some(value.trim().parse::<usize>().unwrap());
+                }
+            }
+        }
+        let mut body = vec![0; content_length.unwrap()];
+        stream.read_exact(&mut body).await.unwrap();
         stream
+            .get_mut()
             .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
             .await
             .unwrap();
-        String::from_utf8_lossy(&buf[..n]).into_owned()
+        (
+            request_line,
+            serde_json::from_slice::<Value>(&body).unwrap(),
+        )
     });
 
     // The shape `observability.tracing.otlp_endpoint` and the default carry.
     let exporter = OTLPExporter::new(format!("http://127.0.0.1:{port}/v1/traces"));
-    exporter.export(&Span::new("s", "t")).await.unwrap();
-    let request = tokio::time::timeout(Duration::from_secs(2), server)
+    let mut span = Span::new("s", "4bf92f3577b34da6a3ce929d0e0e4736");
+    span.parent_span_id = Some("00f067aa0ba902b7".to_owned());
+    tokio::time::timeout(Duration::from_secs(2), exporter.export(&span))
+        .await
+        .unwrap()
+        .unwrap();
+    let (request, payload) = tokio::time::timeout(Duration::from_secs(2), server)
         .await
         .unwrap()
         .unwrap();
@@ -319,6 +606,10 @@ async fn otlp_endpoint_is_the_full_url() {
         request.starts_with("POST /v1/traces HTTP/1.1"),
         "the endpoint must be posted to as given: {request}"
     );
+    let exported = &payload["resourceSpans"][0]["scopeSpans"][0]["spans"][0];
+    assert_eq!(exported["traceId"], span.trace_id);
+    assert_eq!(exported["spanId"], span.span_id);
+    assert_eq!(exported["parentSpanId"], span.parent_span_id.unwrap());
 }
 
 // ---------------------------------------------------------------------------
@@ -723,6 +1014,351 @@ async fn reload_module_can_reload_the_config_of_an_apcore_client() {
         .await
         .unwrap();
     assert_eq!(out["config_reloaded"], json!(true), "{out}");
+}
+
+#[tokio::test]
+async fn test_update_config_rejects_empty_path_without_persisting_or_emitting() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut client = APCore::with_config(sys_config(
+        dir.path(),
+        "  control:\n    overrides_path: overrides.yaml\nextensions:\n  root: original\n",
+    ));
+    let changes = Arc::new(AtomicUsize::new(0));
+    let observed = Arc::clone(&changes);
+    client
+        .on("apcore.config.updated", move |_| {
+            observed.fetch_add(1, Ordering::Relaxed);
+        })
+        .unwrap();
+
+    let invalid = client
+        .call(
+            "system.control.update_config",
+            json!({"key": "extensions.root", "value": "", "reason": "test"}),
+            None,
+            None,
+        )
+        .await;
+    client.events().unwrap().flush_default().await.unwrap();
+    assert_eq!(changes.load(Ordering::Relaxed), 0);
+    assert!(!dir.path().join("overrides.yaml").exists());
+    assert_eq!(invalid.unwrap_err().code, ErrorCode::ConfigInvalid);
+
+    let valid = client
+        .call(
+            "system.control.update_config",
+            json!({"key": "extensions.root", "value": "replacement", "reason": "test"}),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(valid["old_value"], "original");
+    assert_eq!(valid["new_value"], "replacement");
+}
+
+struct TimeoutProbe;
+
+#[async_trait]
+impl Module for TimeoutProbe {
+    fn input_schema(&self) -> Value {
+        json!({ "type": "object" })
+    }
+
+    fn output_schema(&self) -> Value {
+        json!({ "type": "object" })
+    }
+
+    fn description(&self) -> &'static str {
+        "Await the executor's default timeout"
+    }
+
+    async fn execute(&self, _inputs: Value, _ctx: &Context<Value>) -> Result<Value, ModuleError> {
+        std::future::pending().await
+    }
+}
+
+async fn expect_runtime_timeout(client: &APCore, timeout_ms: u64) {
+    let error = client
+        .call("probe.timeout", json!({}), None, None)
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, ErrorCode::ModuleTimeout);
+    assert_eq!(error.details["timeout_ms"], timeout_ms);
+}
+
+fn read_executor_config(path: &std::path::Path, timeout_ms: u64) -> Config {
+    std::fs::write(
+        path,
+        format!(
+            "version: '1.0'\nproject:\n  name: executor-probe\nexecutor:\n  default_timeout: {timeout_ms}\n"
+        ),
+    )
+    .unwrap();
+    Config::from_yaml_file(path).unwrap()
+}
+
+#[tokio::test]
+async fn test_control_reload_refreshes_the_supplied_executor_and_rolls_back_on_failure() {
+    let dir = tempfile::tempdir().unwrap();
+    let executor_source = dir.path().join("executor.yaml");
+    let executor =
+        apcore::Executor::new(Registry::new(), read_executor_config(&executor_source, 40));
+    let mut client =
+        APCore::with_options(None, Some(executor), Some(sys_config(dir.path(), "")), None);
+    client
+        .register("probe.timeout", Box::new(TimeoutProbe))
+        .unwrap();
+    let reloads = Arc::new(AtomicUsize::new(0));
+    let observed = Arc::clone(&reloads);
+    client
+        .on("apcore.config.reloaded", move |_| {
+            observed.fetch_add(1, Ordering::Relaxed);
+        })
+        .unwrap();
+    expect_runtime_timeout(&client, 40).await;
+    read_executor_config(&executor_source, 25);
+
+    let input = json!({"reload_config": true, "reason": "test"});
+    let result = client
+        .call("system.control.reload_module", input.clone(), None, None)
+        .await
+        .unwrap();
+    assert_eq!(
+        result,
+        json!({"success": true, "module_id": null, "config_reloaded": true})
+    );
+    client.events().unwrap().flush_default().await.unwrap();
+    assert_eq!(reloads.load(Ordering::Relaxed), 1);
+    expect_runtime_timeout(&client, 25).await;
+
+    sys_config(dir.path(), "extensions:\n  root: changed\n");
+    std::fs::remove_file(executor_source).unwrap();
+    let result = client
+        .call("system.control.reload_module", input, None, None)
+        .await
+        .unwrap();
+    assert_eq!(
+        result,
+        json!({"success": false, "module_id": null, "config_reloaded": false})
+    );
+    client.events().unwrap().flush_default().await.unwrap();
+    assert_eq!(reloads.load(Ordering::Relaxed), 1);
+    expect_runtime_timeout(&client, 25).await;
+    let result = client
+        .call(
+            "system.control.update_config",
+            json!({"key": "extensions.root", "value": "another", "reason": "test"}),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(result["old_value"], "./extensions");
+}
+
+#[tokio::test]
+async fn test_control_reload_reapplies_persisted_config_overrides() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = sys_config(
+        dir.path(),
+        "  control:\n    overrides_path: overrides.yaml\nexecutor:\n  default_timeout: 45\n",
+    );
+    let client = APCore::with_config(config);
+    client
+        .register("probe.timeout", Box::new(TimeoutProbe))
+        .unwrap();
+    let updated = client
+        .call(
+            "system.control.update_config",
+            json!({"key": "executor.default_timeout", "value": 22, "reason": "test"}),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(updated["new_value"], 22);
+    let key = "apcore.executor.default_timeout";
+    let updated = client
+        .call(
+            "system.control.update_config",
+            json!({"key": key, "value": 18, "reason": "test"}),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(updated["key"], key);
+    assert_eq!(updated["old_value"], 22);
+    assert_eq!(updated["new_value"], 18);
+    let result = client
+        .call(
+            "system.control.reload_module",
+            json!({"reload_config": true, "reason": "test"}),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(result["config_reloaded"], true);
+    expect_runtime_timeout(&client, 18).await;
+}
+
+#[tokio::test]
+async fn test_control_reload_removes_a_persisted_override_from_the_source_less_executor() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = sys_config(
+        dir.path(),
+        "  control:\n    overrides_path: overrides.yaml\nexecutor:\n  default_timeout: 45\n",
+    );
+    let mut executor_config = Config::from_defaults();
+    executor_config.set("executor.default_timeout", json!(35));
+    let executor = apcore::Executor::new(Registry::new(), executor_config);
+    let client = APCore::with_options(None, Some(executor), Some(config), None);
+    client
+        .register("probe.timeout", Box::new(TimeoutProbe))
+        .unwrap();
+    client
+        .call(
+            "system.control.update_config",
+            json!({"key": "executor.default_timeout", "value": 22, "reason": "test"}),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    expect_runtime_timeout(&client, 22).await;
+
+    std::fs::remove_file(dir.path().join("overrides.yaml")).unwrap();
+    let result = client
+        .call(
+            "system.control.reload_module",
+            json!({"reload_config": true, "reason": "test"}),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(result["config_reloaded"], true);
+    expect_runtime_timeout(&client, 35).await;
+}
+
+#[tokio::test]
+async fn test_control_update_reports_the_bare_value_for_a_qualified_path() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("apcore.yaml");
+    std::fs::write(
+        &path,
+        "apcore:\n  version: '1.0'\n  project:\n    name: path-probe\n  sys_modules:\n    enabled: true\n    events:\n      enabled: true\n",
+    )
+    .unwrap();
+    let client = APCore::with_config(Config::from_yaml_file(&path).unwrap());
+    let key = "apcore.extensions.root";
+    let result = client
+        .call(
+            "system.control.update_config",
+            json!({"key": key, "value": "replacement", "reason": "test"}),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        result,
+        json!({"success": true, "key": key, "old_value": "./extensions", "new_value": "replacement"})
+    );
+    let result = client
+        .call(
+            "system.control.update_config",
+            json!({"key": "extensions.root", "value": "another", "reason": "test"}),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(result["old_value"], "replacement");
+}
+
+#[tokio::test]
+async fn test_control_update_reports_the_supplied_executor_value_for_a_qualified_key() {
+    let dir = tempfile::tempdir().unwrap();
+    let executor = apcore::Executor::new(
+        Registry::new(),
+        read_executor_config(&dir.path().join("executor.yaml"), 45),
+    );
+    let mut client = APCore::with_options(
+        None,
+        Some(executor),
+        Some(sys_config(dir.path(), "executor:\n  default_timeout: 72\n")),
+        None,
+    );
+    client
+        .register("probe.timeout", Box::new(TimeoutProbe))
+        .unwrap();
+    let changes = Arc::new(StdMutex::new(Vec::new()));
+    let observed = Arc::clone(&changes);
+    client
+        .on("apcore.config.updated", move |event| {
+            observed.lock().unwrap().push(event.data.clone());
+        })
+        .unwrap();
+
+    let key = "apcore.executor.default_timeout";
+    let result = client
+        .call(
+            "system.control.update_config",
+            json!({"key": key, "value": 20, "reason": "test"}),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        result,
+        json!({"success": true, "key": key, "old_value": 45, "new_value": 20})
+    );
+    client.events().unwrap().flush_default().await.unwrap();
+    let changes = changes.lock().unwrap().clone();
+    assert_eq!(changes.len(), 1);
+    for field in ["key", "old_value", "new_value"] {
+        assert_eq!(changes[0][field], result[field]);
+    }
+    expect_runtime_timeout(&client, 20).await;
+}
+
+#[tokio::test]
+async fn test_control_update_redacts_the_canonical_path_of_a_qualified_key() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut client = APCore::with_config(sys_config(
+        dir.path(),
+        "obs:\n  redaction:\n    sensitive_keys: ['executor.default_*']\n",
+    ));
+    let changes = Arc::new(StdMutex::new(Vec::new()));
+    let observed = Arc::clone(&changes);
+    client
+        .on("apcore.config.updated", move |event| {
+            observed.lock().unwrap().push(event.data.clone());
+        })
+        .unwrap();
+
+    let key = "apcore.executor.default_timeout";
+    let result = client
+        .call(
+            "system.control.update_config",
+            json!({"key": key, "value": 20, "reason": "test"}),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(result["key"], key);
+    assert_eq!(result["old_value"], "***REDACTED***");
+    assert_eq!(result["new_value"], "***REDACTED***");
+    client.events().unwrap().flush_default().await.unwrap();
+    let changes = changes.lock().unwrap();
+    assert_eq!(changes.len(), 1);
+    assert_eq!(changes[0]["old_value"], "***REDACTED***");
+    assert_eq!(changes[0]["new_value"], "***REDACTED***");
 }
 
 #[test]

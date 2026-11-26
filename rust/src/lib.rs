@@ -37,6 +37,7 @@ pub mod pipeline_config;
 pub mod policy;
 pub mod registry;
 pub mod schema;
+pub mod stream_completion;
 pub mod sys_modules;
 pub mod trace_context;
 pub mod utils;
@@ -74,7 +75,7 @@ pub use builtin_steps::{
     BuiltinModuleLookup, BuiltinOutputValidation, BuiltinReturnResult,
 };
 pub use cancel::{CancelToken, ExecutionCancelledError};
-pub use client::{APCore, APCoreOptions, TypedModuleOptions};
+pub use client::{APCore, APCoreOptions, APCoreStartupError, TypedModuleOptions};
 pub use config::{
     Config, ConfigMode, EnvStyle, ExecutorConfig, MetricsConfig, MountSource, NamespaceInfo,
     NamespaceRegistration, ObservabilityConfig, TracingConfig, RESERVED_NAMESPACES,
@@ -135,6 +136,7 @@ pub use observability::processor::{
 };
 pub use observability::prometheus_exporter::PrometheusExporter;
 pub use observability::redaction::{RedactionConfig, RedactionConfigBuilder, RedactionConfigError};
+pub use observability::render_prometheus_metrics;
 pub use observability::span::{Span, SpanExporter};
 pub use observability::storage::{
     default_storage_backend, InMemoryStorageBackend, StorageBackend, StorageError,
@@ -166,6 +168,10 @@ pub use schema::{
     assert_openai_strict_compatible, detect_openai_strict_incompatibilities, to_strict_schema,
     ExportProfile, RefResolver, SchemaDefinition, SchemaExporter, SchemaLoader, SchemaStrategy,
     SchemaValidator,
+};
+pub use stream_completion::{
+    StreamChunks, StreamCompletion, StreamCompletionHandle, StreamEndReason,
+    StreamFailureDisposition, StreamSkipReason, StreamStepOutcome,
 };
 pub use sys_modules::control::UpdateConfigModule;
 pub use sys_modules::overrides::{

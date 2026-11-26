@@ -325,7 +325,7 @@ describe('ApprovalGate call()', () => {
     expect(req.action).toBe('test.approval_required');
   });
 
-  it('strips _approval_token and calls checkApproval without mutating caller inputs', async () => {
+  it('strips _approval_token and calls scoped approval without mutating caller inputs', async () => {
     const registry = createTestRegistry();
     const checkCalledWith: string[] = [];
 
@@ -333,7 +333,12 @@ describe('ApprovalGate call()', () => {
       async requestApproval(_request: ApprovalRequest) {
         return createApprovalResult({ status: 'approved' });
       },
-      async checkApproval(approvalId: string) {
+      async checkApproval() {
+        throw new Error('The status query cannot authorize execution');
+      },
+      async checkApprovalForCall(approvalId: string, request: ApprovalRequest) {
+        expect(request.moduleId).toBe('test.approval_required');
+        expect(request.arguments).not.toHaveProperty('_approval_token');
         checkCalledWith.push(approvalId);
         return createApprovalResult({ status: 'approved', approvedBy: 'token-check' });
       },
@@ -413,7 +418,12 @@ describe('ApprovalGate callAsync()', () => {
       async requestApproval() {
         return createApprovalResult({ status: 'approved' });
       },
-      async checkApproval(approvalId: string) {
+      async checkApproval() {
+        throw new Error('The status query cannot authorize execution');
+      },
+      async checkApprovalForCall(approvalId: string, request: ApprovalRequest) {
+        expect(request.moduleId).toBe('test.approval_required');
+        expect(request.arguments).not.toHaveProperty('_approval_token');
         checkCalledWith.push(approvalId);
         return createApprovalResult({ status: 'approved' });
       },
@@ -515,6 +525,7 @@ describe('ApprovalAuditEvents', () => {
     const approvalEvents = spansStack[0].events.filter(e => e['name'] === 'approval_decision');
     expect(approvalEvents).toHaveLength(1);
     expect(approvalEvents[0]['status']).toBe('pending');
+    expect(approvalEvents[0]['approval_id']).toBe('');
   });
 
   it('does not emit audit log when gate is skipped', async () => {

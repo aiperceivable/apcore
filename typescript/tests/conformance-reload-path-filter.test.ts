@@ -9,7 +9,7 @@
  * and `module_id` are mutually exclusive (`MODULE_RELOAD_CONFLICT`), and a
  * `path_filter` matching zero modules is a no-op rather than an error.
  *
- * DRIVER SHAPE: each case exercises the real `ReloadModule.execute()` against a
+ * DRIVER SHAPE: each case exercises the public Executor against a
  * real `Registry`. `Registry.discover()` is stubbed to re-register the case's
  * `registered_modules`, which is what a genuine re-discovery of an unchanged
  * source tree does — without it the reload path has nothing to find and the
@@ -22,12 +22,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
+import { AutoApproveHandler } from '../src/approval.js';
 import { ModuleError } from '../src/errors.js';
 import { EventEmitter } from '../src/events/emitter.js';
+import { Executor } from '../src/executor.js';
 import { Registry } from '../src/registry/registry.js';
+import { jsonSchemaToTypeBox } from '../src/schema/loader.js';
+import { SchemaValidator } from '../src/schema/validator.js';
 import { InMemoryAuditStore } from '../src/sys-modules/audit.js';
 import { ReloadModule } from '../src/sys-modules/control.js';
-import { findFixturesRoot } from './spec-repo.js';
+import { findFixturesRoot, findSchemasRoot } from './spec-repo.js';
 
 // ---------------------------------------------------------------------------
 // Fixture loading
@@ -45,6 +49,9 @@ function loadFixture(name: string): { description: string; test_cases: readonly 
 }
 
 const fixture = loadFixture('reload_path_filter');
+const responseSchema = jsonSchemaToTypeBox(
+  JSON.parse(fs.readFileSync(path.join(findSchemasRoot(), 'sys-control-reload-module.schema.json'), 'utf-8')),
+);
 
 function dummyModule(): Record<string, unknown> {
   return {
@@ -89,11 +96,13 @@ describe('Conformance: reload_module path_filter (reload_path_filter.json)', () 
 
       const auditStore = new InMemoryAuditStore();
       const mod = new ReloadModule(registry, new EventEmitter(), auditStore);
+      await registry.registerInternal('system.control.reload_module', mod);
+      const executor = new Executor({ registry, approvalHandler: new AutoApproveHandler() });
 
       let result: Record<string, unknown> | null = null;
       let error: unknown = null;
       try {
-        result = await mod.execute({ ...tc.input }, null);
+        result = await executor.call('system.control.reload_module', { ...tc.input });
       } catch (err) {
         error = err;
       }
@@ -108,6 +117,11 @@ describe('Conformance: reload_module path_filter (reload_path_filter.json)', () 
         expect((error as ModuleError).code).toBe(expected['error_code']);
       } else if (error !== null) {
         throw error;
+      } else {
+        const wire = JSON.parse(JSON.stringify(result)) as Record<string, unknown>;
+        const validator = new SchemaValidator();
+        expect(validator.validate(wire, responseSchema)).toMatchObject({ valid: true });
+        expect(validator.validate({ ...wire, unexpected: true }, responseSchema).valid).toBe(false);
       }
 
       if ('success' in expected) {

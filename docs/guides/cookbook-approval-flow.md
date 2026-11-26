@@ -188,14 +188,18 @@ A `rejected` result reaches the caller as `APPROVAL_DENIED`; `timeout` as `APPRO
 
 ## 3. Phase B — return `pending`, resume later
 
-When sign-off takes minutes or hours, the handler returns `pending` with an `approval_id` straight away. The call fails with `APPROVAL_PENDING` carrying that id. Once a reviewer has decided, the caller repeats the call with the id as `_approval_token` in the inputs; the gate removes the token and asks the handler's `check_approval()` for the decision.
+When sign-off takes minutes or hours, the handler returns `pending` with an `approval_id` straight away. The call fails with `APPROVAL_PENDING` carrying that id. Once a reviewer has decided, the caller repeats the call with the id as `_approval_token` in the inputs; the gate removes the credential and passes the current invocation to the handler's scoped resume method.
 
-`CallbackApprovalHandler` answers every `check_approval()` with `rejected`, so Phase B needs its own handler. This one keeps decisions in memory; a real one would use your ticketing or workflow system.
+Phase B uses a scoped handler. This example keeps short-lived approvals in memory. For resumption across processes or restarts, store the scope, expiry, and decision together, and consume an approved credential in one transaction.
 
 === "Python"
     ```python
+    import json
+    import time
     import uuid
+    from threading import Lock
 
+    from apcore import ApprovalRequest, ApprovalResult, Context, Identity
     from apcore.errors import ApprovalPendingError
 
 
@@ -203,74 +207,128 @@ When sign-off takes minutes or hours, the handler returns `pending` with an `app
         """Queues each request and answers once a reviewer has decided."""
 
         def __init__(self) -> None:
-            self._decisions: dict[str, ApprovalResult | None] = {}
+            self._lock = Lock()
+            self._reviews: dict[str, tuple[str, float, ApprovalResult]] = {}
+
+        @staticmethod
+        def _scope(request: ApprovalRequest) -> str:
+            identity = request.context.identity
+            principal = [identity.type, identity.id] if identity else None
+            return json.dumps(
+                [principal, request.caller_id, request.module_id, request.arguments],
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            )
 
         async def request_approval(self, request: ApprovalRequest) -> ApprovalResult:
             approval_id = uuid.uuid4().hex
-            self._decisions[approval_id] = None  # open a review ticket here
-            return ApprovalResult(status="pending", approval_id=approval_id, reason="queued for review")
+            pending = ApprovalResult(status="pending", approval_id=approval_id)
+            with self._lock:
+                self._reviews[approval_id] = (self._scope(request), time.monotonic() + 300, pending)
+            return pending
 
         async def check_approval(self, approval_id: str) -> ApprovalResult:
-            if approval_id not in self._decisions:
-                return ApprovalResult(status="rejected", reason="unknown or already used approval id")
-            decision = self._decisions[approval_id]
-            if decision is None:
-                return ApprovalResult(status="pending", approval_id=approval_id, reason="still in review")
-            del self._decisions[approval_id]  # a token is good for one call
-            return decision
+            with self._lock:
+                entry = self._reviews.get(approval_id)
+                if entry is None:
+                    return ApprovalResult(status="rejected")
+                return ApprovalResult(status=entry[2].status, approved_by=entry[2].approved_by)
+
+        async def check_approval_for_call(self, approval_id: str, request: ApprovalRequest) -> ApprovalResult:
+            scope = self._scope(request)
+            with self._lock:
+                entry = self._reviews.get(approval_id)
+                if entry is None or entry[0] != scope:
+                    return ApprovalResult(status="rejected")
+                if time.monotonic() >= entry[1]:
+                    del self._reviews[approval_id]
+                    return ApprovalResult(status="timeout")
+                decision = entry[2]
+                if decision.status == "approved":
+                    del self._reviews[approval_id]
+                return decision
 
         def record(self, approval_id: str, approved: bool, reviewer: str) -> None:
-            status = "approved" if approved else "rejected"
-            self._decisions[approval_id] = ApprovalResult(status=status, approved_by=reviewer)
+            with self._lock:
+                scope, expiry, _ = self._reviews[approval_id]
+                self._reviews[approval_id] = (
+                    scope, expiry, ApprovalResult(status="approved" if approved else "rejected", approved_by=reviewer)
+                )
 
 
     queue = ReviewQueueHandler()
     client.executor.set_approval_handler(queue)
 
     args = {"order_id": "o-2", "amount_cents": 25_000, "reason": "damaged"}
+    context = Context.create(identity=Identity(id="requester"))
     try:
-        client.call("finance.refund", args)
-    except ApprovalPendingError as e:
-        approval_id = e.approval_id  # persist it together with args
+        client.call("finance.refund", args, context=context)
+    except ApprovalPendingError as error:
+        approval_id = error.approval_id
+        assert approval_id is not None
+    else:
+        raise RuntimeError("Expected the refund to await review")
 
     # Later, after the reviewer has signed off:
     queue.record(approval_id, approved=True, reviewer="alice@example.com")
-    result = client.call("finance.refund", {**args, "_approval_token": approval_id})
+    result = client.call("finance.refund", {**args, "_approval_token": approval_id}, context=context)
     print(result)  # {'refund_id': 'rf_o-2'}
     ```
 
 === "TypeScript"
     ```typescript
     import { randomUUID } from 'node:crypto';
-    import { ApprovalPendingError } from 'apcore-js';
-    import type { ApprovalHandler } from 'apcore-js';
+    import { isDeepStrictEqual } from 'node:util';
+    import { ApprovalPendingError, Context, createApprovalResult, createIdentity } from 'apcore-js';
+    import type { ApprovalHandler, ApprovalRequest, ApprovalResult } from 'apcore-js';
+
+    function scopeOf(request: ApprovalRequest) {
+      const identity = request.context.identity;
+      return {
+        principal: identity ? [identity.type, identity.id] : null,
+        callerId: request.callerId,
+        moduleId: request.moduleId,
+        arguments: structuredClone(request.arguments),
+      };
+    }
 
     class ReviewQueueHandler implements ApprovalHandler {
-      private readonly decisions = new Map<string, ApprovalResult | null>();
+      private readonly reviews = new Map<string, {
+        scope: ReturnType<typeof scopeOf>;
+        expiry: number;
+        decision: ApprovalResult;
+      }>();
 
-      async requestApproval(_request: ApprovalRequest): Promise<ApprovalResult> {
+      async requestApproval(request: ApprovalRequest): Promise<ApprovalResult> {
         const approvalId = randomUUID();
-        this.decisions.set(approvalId, null); // open a review ticket here
-        return createApprovalResult({ status: 'pending', approvalId, reason: 'queued for review' });
-      }
-
-      async checkApproval(approvalId: string): Promise<ApprovalResult> {
-        if (!this.decisions.has(approvalId)) {
-          return createApprovalResult({ status: 'rejected', reason: 'unknown or already used approval id' });
-        }
-        const decision = this.decisions.get(approvalId);
-        if (!decision) {
-          return createApprovalResult({ status: 'pending', approvalId, reason: 'still in review' });
-        }
-        this.decisions.delete(approvalId); // a token is good for one call
+        const decision = createApprovalResult({ status: 'pending', approvalId });
+        this.reviews.set(approvalId, { scope: scopeOf(request), expiry: Date.now() + 300_000, decision });
         return decision;
       }
 
+      async checkApproval(approvalId: string): Promise<ApprovalResult> {
+        const decision = this.reviews.get(approvalId)?.decision;
+        return createApprovalResult({ status: decision?.status ?? 'rejected', approvedBy: decision?.approvedBy });
+      }
+
+      async checkApprovalForCall(approvalId: string, request: ApprovalRequest): Promise<ApprovalResult> {
+        const entry = this.reviews.get(approvalId);
+        if (!entry || !isDeepStrictEqual(entry.scope, scopeOf(request))) {
+          return createApprovalResult({ status: 'rejected' });
+        }
+        if (Date.now() >= entry.expiry) {
+          this.reviews.delete(approvalId);
+          return createApprovalResult({ status: 'timeout' });
+        }
+        if (entry.decision.status === 'approved') this.reviews.delete(approvalId);
+        return entry.decision;
+      }
+
       record(approvalId: string, approved: boolean, reviewer: string): void {
-        this.decisions.set(
-          approvalId,
-          createApprovalResult({ status: approved ? 'approved' : 'rejected', approvedBy: reviewer }),
-        );
+        const entry = this.reviews.get(approvalId);
+        if (!entry) throw new Error('No pending review');
+        entry.decision = createApprovalResult({ status: approved ? 'approved' : 'rejected', approvedBy: reviewer });
       }
     }
 
@@ -278,9 +336,11 @@ When sign-off takes minutes or hours, the handler returns `pending` with an `app
     client.executor.setApprovalHandler(queue);
 
     const args = { order_id: 'o-2', amount_cents: 25_000, reason: 'damaged' };
-    let approvalId = '';
+    const context = Context.create(createIdentity('requester'));
+    let approvalId: string;
     try {
-      await client.call('finance.refund', args);
+      await client.call('finance.refund', args, context);
+      throw new Error('Expected the refund to await review');
     } catch (e) {
       if (!(e instanceof ApprovalPendingError) || e.approvalId === null) throw e;
       approvalId = e.approvalId; // persist it together with args
@@ -288,59 +348,96 @@ When sign-off takes minutes or hours, the handler returns `pending` with an `app
 
     // Later, after the reviewer has signed off:
     queue.record(approvalId, true, 'alice@example.com');
-    const resumed = await client.call('finance.refund', { ...args, _approval_token: approvalId });
+    const resumed = await client.call('finance.refund', { ...args, _approval_token: approvalId }, context);
     console.log(resumed); // { refund_id: 'rf_o-2' }
     ```
 
 === "Rust"
     ```rust
-    use apcore::{ApprovalHandler, ApprovalRequest, ErrorCode};
+    use apcore::{APCore, ApprovalHandler, ApprovalRequest, ApprovalResult, Config, Context, ErrorCode, Executor, Identity, ModuleError, Registry};
+    use async_trait::async_trait;
+    use serde_json::{json, Value};
     use std::collections::HashMap;
-    use std::sync::atomic::{AtomicU64, Ordering};
-    use std::sync::Mutex;
+    use std::sync::{Arc, Mutex};
+    use std::time::{Duration, Instant};
+    use uuid::Uuid;
 
-    /// Queues each request and answers once a reviewer has decided.
+    #[derive(Debug)]
+    struct Review {
+        scope: Value,
+        expiry: Instant,
+        decision: ApprovalResult,
+    }
+
     #[derive(Debug, Default)]
     struct ReviewQueueHandler {
-        next_id: AtomicU64,
-        decisions: Mutex<HashMap<String, Option<ApprovalResult>>>,
+        reviews: Mutex<HashMap<String, Review>>,
+    }
+
+    fn scope_of(request: &ApprovalRequest) -> Value {
+        let identity = request.context.as_ref().and_then(|ctx| ctx.identity.as_ref());
+        let principal = identity.map(|identity| [identity.identity_type(), identity.id()]);
+        json!([principal, request.caller_id, request.module_id, request.arguments])
     }
 
     impl ReviewQueueHandler {
         fn record(&self, approval_id: &str, approved: bool, reviewer: &str) {
-            let decision = if approved {
+            let mut reviews = self.reviews.lock().unwrap();
+            let entry = reviews.get_mut(approval_id).expect("pending review");
+            entry.decision = if approved {
                 ApprovalResult::approved(reviewer)
             } else {
                 ApprovalResult::rejected(format!("rejected by {reviewer}"))
             };
-            self.decisions.lock().unwrap().insert(approval_id.to_string(), Some(decision));
         }
-    }
-
-    fn pending(approval_id: &str, reason: &str) -> ApprovalResult {
-        let mut result = ApprovalResult::default(); // #[non_exhaustive]: assign fields
-        result.status = "pending".to_string();
-        result.approval_id = Some(approval_id.to_string());
-        result.reason = Some(reason.to_string());
-        result
     }
 
     #[async_trait]
     impl ApprovalHandler for ReviewQueueHandler {
-        async fn request_approval(&self, _request: &ApprovalRequest) -> Result<ApprovalResult, ModuleError> {
-            let approval_id = format!("apr-{}", self.next_id.fetch_add(1, Ordering::SeqCst));
-            self.decisions.lock().unwrap().insert(approval_id.clone(), None); // open a review ticket here
-            Ok(pending(&approval_id, "queued for review"))
+        async fn request_approval(&self, request: &ApprovalRequest) -> Result<ApprovalResult, ModuleError> {
+            let approval_id = Uuid::new_v4().to_string();
+            let mut decision = ApprovalResult::default();
+            decision.status = "pending".to_owned();
+            decision.approval_id = Some(approval_id.clone());
+            self.reviews.lock().unwrap().insert(approval_id, Review {
+                scope: scope_of(request),
+                expiry: Instant::now() + Duration::from_secs(300),
+                decision: decision.clone(),
+            });
+            Ok(decision)
         }
 
         async fn check_approval(&self, approval_id: &str) -> Result<ApprovalResult, ModuleError> {
-            let mut decisions = self.decisions.lock().unwrap();
-            Ok(match decisions.get(approval_id) {
-                None => ApprovalResult::rejected("unknown or already used approval id"),
-                Some(None) => pending(approval_id, "still in review"),
-                // A token is good for one call.
-                Some(Some(_)) => decisions.remove(approval_id).flatten().expect("decision present"),
-            })
+            let reviews = self.reviews.lock().unwrap();
+            let Some(entry) = reviews.get(approval_id) else {
+                return Ok(ApprovalResult::rejected("No pending review"));
+            };
+            let mut result = ApprovalResult::default();
+            result.status = entry.decision.status.clone();
+            Ok(result)
+        }
+
+        async fn check_approval_for_call(
+            &self, approval_id: &str, request: &ApprovalRequest,
+        ) -> Result<ApprovalResult, ModuleError> {
+            let mut reviews = self.reviews.lock().unwrap();
+            let Some(entry) = reviews.get(approval_id) else {
+                return Ok(ApprovalResult::rejected("No pending review"));
+            };
+            if entry.scope != scope_of(request) {
+                return Ok(ApprovalResult::rejected("Review scope differs"));
+            }
+            if Instant::now() >= entry.expiry {
+                reviews.remove(approval_id);
+                let mut result = ApprovalResult::default();
+                result.status = "timeout".to_owned();
+                return Ok(result);
+            }
+            let result = entry.decision.clone();
+            if result.status == "approved" {
+                reviews.remove(approval_id);
+            }
+            Ok(result)
         }
     }
 
@@ -353,7 +450,8 @@ When sign-off takes minutes or hours, the handler returns `pending` with an `app
         client.register("finance.refund", Box::new(RefundModule))?;
 
         let args = json!({"order_id": "o-2", "amount_cents": 25_000, "reason": "damaged"});
-        let approval_id = match client.call("finance.refund", args.clone(), None, None).await {
+        let context = Context::new(Identity::new("requester".into(), "user".into(), vec![], HashMap::new()));
+        let approval_id = match client.call("finance.refund", args.clone(), Some(&context), None).await {
             // The approval id travels in the error's details.
             Err(e) if e.code == ErrorCode::ApprovalPending => e.details["approval_id"]
                 .as_str()
@@ -367,7 +465,7 @@ When sign-off takes minutes or hours, the handler returns `pending` with an `app
         queue.record(&approval_id, true, "alice@example.com");
         let mut resume = args.clone();
         resume["_approval_token"] = json!(approval_id);
-        let result = client.call("finance.refund", resume, None, None).await?;
+        let result = client.call("finance.refund", resume, Some(&context), None).await?;
         println!("{result}"); // {"refund_id":"rf_o-2"}
         Ok(())
     }
@@ -408,14 +506,22 @@ const client = new APCore({ policy: new ExecutionPolicy(null, { strict: true }) 
 
 The approval handler is always attached in code; there is no `apcore.yaml` key for it.
 
+### Deploying a scoped approval handler
+
+For deployments with pending approvals, deploy a handler that supports scoped resumption before routing resume requests to the new runtime. Plan the cutover with any service that shares approval records.
+
+1. Resume existing records only when the approval store can establish the original trusted principal when present, `caller_id`, canonical target ID, arguments and expiry. Keep credential verification and consumption in one atomic operation.
+2. Expire records that lack this information and ask the requester to submit a new approval request. Preserve the audit record and avoid replaying the business action during migration.
+3. In a staging deployment using the same store and adapter as production, create a pending request before the cutover. Confirm it resumes once after cutover when the original scope is available. Confirm that expired records and records missing scope require a new request. Use a module with a harmless, observable side effect for this check.
+
 ## 5. Pitfalls
 
 | Pitfall | Symptom | Fix |
 |---------|---------|-----|
 | No handler attached | Warning at call time; the module runs without sign-off | Attach a handler, or use `ExecutionPolicy(strict=True)` to fail closed |
-| Using `CallbackApprovalHandler` for Phase B | Every resume fails with `APPROVAL_DENIED` ("Phase B not supported") | Implement `check_approval()` in your own handler (section 3) |
+| Using `CallbackApprovalHandler` for Phase B | Every resume fails with `APPROVAL_DENIED` ("Phase B not supported") | Implement `check_approval_for_call()` in your handler (section 3) |
 | Handler raises instead of returning `rejected` | The caller gets the raised error (a non-apcore exception arrives as `MODULE_EXECUTE_ERROR`), not `APPROVAL_DENIED` | Return an `ApprovalResult` with `status="rejected"` for a refusal; let only genuine failures raise |
-| Reusable tokens | One sign-off approves many calls | Consume the token in `check_approval()` (section 3); see [security-considerations.md §2.3](../spec/security-considerations.md#23-approval-gate-replay-t2) |
+| Reusable tokens | One sign-off approves many calls | Consume the credential in `check_approval_for_call()` (section 3); see [security-considerations.md §2.3](../spec/security-considerations.md#23-approval-gate-replay-t2) |
 | Resuming re-runs the early pipeline | ACL audit entries and approval events appear twice for one logical call | Expected: a resume starts again at step 1 — context creation, call-chain guard, lookup, ACL, approval. Middleware `before` hooks run once, on the call that gets through |
 | Retrying `APPROVAL_TIMEOUT` in a tight loop | Repeated prompts to the same reviewer | Back off, or turn the timeout into a Phase B `pending` |
 

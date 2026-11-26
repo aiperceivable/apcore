@@ -15,8 +15,11 @@
 
 import { describe, it, expect } from 'vitest';
 import * as fs from 'node:fs';
+import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 import * as yaml from 'js-yaml';
+import { BindingLoader } from '../src/bindings.js';
+import { Registry } from '../src/registry/registry.js';
 import {
   BindingFileInvalidError,
   BindingInvalidTargetError,
@@ -138,6 +141,33 @@ describe('Conformance: binding_yaml_canonical.yaml', () => {
     expect(entry).toHaveProperty('output_schema');
     expect(entry['version']).toBe('2.0.0');
     expect(entry['display']).toEqual({ alias: 'explicit_test', cli: { alias: 'explicit-test' } });
+  });
+
+  it('registers the canonical display overlay as descriptor metadata', async () => {
+    const directory = fs.mkdtempSync(path.join(tmpdir(), 'apcore-display-binding-'));
+    try {
+      const moduleId = 'conformance.explicit_schema';
+      const entry = doc.bindings.find((binding) => binding['module_id'] === moduleId)!;
+      const modulePath = path.join(directory, 'target.mjs');
+      const filePath = path.join(directory, 'display.binding.yaml');
+      fs.writeFileSync(modulePath, 'export function explicitFn() { return { greeting: "hello" }; }');
+      fs.writeFileSync(filePath, yaml.dump({
+        spec_version: doc.spec_version,
+        bindings: [{ ...entry, target: `${modulePath}:explicitFn`, metadata: { owner_team: 'conformance' } }],
+      }));
+
+      const registry = new Registry();
+      const [module] = await new BindingLoader().loadBindings(filePath, registry);
+
+      expect(module.display).toEqual(entry['display']);
+      expect(registry.getDefinition(moduleId)).toMatchObject({
+        moduleId,
+        description: entry['description'],
+        metadata: { display: entry['display'], owner_team: 'conformance' },
+      });
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
   });
 
   it('entry 3 declares auto_schema strict mode', () => {

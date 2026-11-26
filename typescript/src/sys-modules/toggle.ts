@@ -15,7 +15,7 @@ import type { Context } from '../context.js';
 import type { AuditStore } from './audit.js';
 import { buildAuditEntry, extractAuditIdentity } from './audit.js';
 import type { OverridesStore } from './overrides.js';
-import { persistOverride } from './override-update.js';
+import { persistOverride, TOGGLE_OVERRIDE_PREFIX } from './override-update.js';
 
 /**
  * Toggle state container. Tracks which modules are disabled.
@@ -59,7 +59,6 @@ export function checkModuleDisabled(moduleId: string): void {
 /**
  * Disable or enable a module without unloading it from the Registry.
  * A disabled module remains registered but calls return MODULE_DISABLED error.
- * @internal
  */
 export class ToggleFeatureModule {
   readonly description = 'Disable or enable a module without unloading it';
@@ -142,7 +141,7 @@ export class ToggleFeatureModule {
     console.warn(`[apcore:control] Feature toggled: module_id=${moduleId} enabled=${enabled} reason=${reason}`);
 
     if (this._overridesStore !== null) {
-      persistOverride(this._overridesStore, `toggle.${moduleId}`, enabled);
+      persistOverride(this._overridesStore, `${TOGGLE_OVERRIDE_PREFIX}${moduleId}`, enabled);
     }
 
     return { success: true, module_id: moduleId, enabled };

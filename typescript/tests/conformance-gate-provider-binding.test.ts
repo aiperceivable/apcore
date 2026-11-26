@@ -115,6 +115,28 @@ function camel(field: string): string {
 }
 
 describe('conformance: gate_provider_binding.json', () => {
+  it('keeps each executor’s gate providers isolated when strategies are shared', async () => {
+    const registry = new Registry();
+    await registry.register('demo.target', {
+      description: 'Shared strategy target',
+      inputSchema: { type: 'object' },
+      outputSchema: { type: 'object' },
+      execute: () => ({ ok: true }),
+    });
+    const strategy = buildStandardStrategy({
+      registry, config: null, acl: null, approvalHandler: null,
+      middlewareManager: new MiddlewareManager(),
+    });
+    Executor.registerStrategy('shared-provider-test', strategy);
+    const denying = new Executor({ registry, strategy: 'shared-provider-test', acl: makeAcl('deny_all') });
+    const allowing = new Executor({ registry, strategy, acl: makeAcl('allow_all') });
+    await expect(denying.call('demo.target')).rejects.toMatchObject({ code: 'ACL_DENIED' });
+    await expect(allowing.call('demo.target')).resolves.toEqual({ ok: true });
+    await expect(denying.callWithTrace('demo.target', {}, null, { strategy }))
+      .rejects.toMatchObject({ code: 'ACL_DENIED' });
+    await expect(allowing.call('demo.target')).resolves.toEqual({ ok: true });
+  });
+
   for (const testCase of fixture.test_cases) {
     it(testCase.id, async () => {
       const executor = await build(testCase.setup);

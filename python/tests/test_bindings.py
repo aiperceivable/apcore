@@ -457,6 +457,40 @@ class TestSchemaMode:
 class TestRegistrationAndIntegration:
     """Tests for registry integration and directory loading."""
 
+    def test_display_is_available_on_the_registered_descriptor(self, loader, registry, tmp_path):
+        source = tmp_path / "display.binding.yaml"
+        source.write_text(
+            "bindings:\n"
+            "  - module_id: demo.email\n"
+            "    target: binding_helpers:typed_function\n"
+            "    metadata: {team: ops}\n"
+            "    display: {alias: send, mcp: {alias: send_message}}\n"
+        )
+
+        loader.load_bindings(str(source), registry)
+
+        descriptor = registry.get_definition("demo.email")
+        assert descriptor is not None
+        assert descriptor.metadata["display"] == {"alias": "send", "mcp": {"alias": "send_message"}}
+        assert descriptor.metadata["team"] == "ops"
+
+    def test_invalid_binding_file_can_be_corrected_and_retried(self, loader, registry, tmp_path):
+        source = tmp_path / "retry.binding.yaml"
+        entries = (
+            "bindings:\n"
+            "  - module_id: demo.first\n"
+            "    target: binding_helpers:typed_function\n"
+            "  - module_id: demo.second\n"
+        )
+        source.write_text(entries)
+        with pytest.raises(BindingFileInvalidError, match="missing 'target'"):
+            loader.load_bindings(str(source), registry)
+        assert registry.get("demo.first") is None
+
+        source.write_text(entries + "    target: binding_helpers:typed_function\n")
+        loader.load_bindings(str(source), registry)
+        assert registry.list() == ["demo.first", "demo.second"]
+
     def test_load_bindings_registers(self, loader, registry, tmp_path):
         """load_bindings registers all modules with provided registry."""
         f = tmp_path / "test.binding.yaml"

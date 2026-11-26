@@ -545,6 +545,7 @@ impl<T: Default> Context<T> {
         let mut initial_data = data.unwrap_or_default();
         let trace_id = if let Some(tp) = trace_parent {
             let tid = accept_or_regenerate_trace_id(&tp.trace_id);
+            crate::trace_context::seed_inbound_parent(&mut initial_data, &tid, &tp);
             // Stash inbound trace-flags as a 2-char hex string for symmetry
             // with the W3C wire format; readers parse via `u8::from_str_radix`.
             initial_data
@@ -712,6 +713,7 @@ impl<T: Default> ContextBuilder<T> {
         };
         let mut initial_data = self.data.unwrap_or_default();
         if let Some(tp) = self.trace_parent.as_ref() {
+            crate::trace_context::seed_inbound_parent(&mut initial_data, &trace_id, tp);
             // Stash inbound trace-flags as a 2-char hex string for symmetry
             // with the W3C wire format; readers parse via `u8::from_str_radix`.
             initial_data

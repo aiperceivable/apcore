@@ -24,6 +24,7 @@ import { Executor } from '../src/executor.js';
 import { ExtensionManager } from '../src/extensions.js';
 import { Middleware } from '../src/middleware/index.js';
 import { Registry } from '../src/registry/registry.js';
+import { STREAMING_MARKER } from '../src/streaming.js';
 
 // ---------------------------------------------------------------------------
 // Module implementations
@@ -248,41 +249,46 @@ describe('ApprovalCallback', () => {
 // ---------------------------------------------------------------------------
 
 describe('ApprovalPhaseB', () => {
-  it('pending then resume with token', async () => {
+  it('validates the resume request through the scoped handler', async () => {
     const registry = createTestRegistry();
-    let callCount = 0;
-
+    let pendingArgs: Record<string, unknown> | null = null;
     const handler: ApprovalHandler = {
-      async requestApproval(_request: ApprovalRequest) {
-        callCount++;
-        return createApprovalResult({ status: 'pending', approvalId: 'pending-tok-1' });
+      async requestApproval(request: ApprovalRequest) {
+        pendingArgs = { ...request.arguments };
+        return createApprovalResult({ status: 'pending', approvalId: 'test-resume-credential' });
       },
-      async checkApproval(approvalId: string) {
-        if (approvalId === 'pending-tok-1') {
-          return createApprovalResult({ status: 'approved', approvedBy: 'reviewer' });
-        }
-        return createApprovalResult({ status: 'rejected' });
+      async checkApproval() {
+        throw new Error('The status query cannot authorize execution');
+      },
+      async checkApprovalForCall(approvalId: string, request: ApprovalRequest) {
+        expect(request.moduleId).toBe('admin.delete_user');
+        expect(request.context.identity?.id).toBe('operator');
+        expect(request.arguments).toEqual(pendingArgs);
+        expect(approvalId).toBe('test-resume-credential');
+        pendingArgs = null;
+        return createApprovalResult({ status: 'approved', approvedBy: 'reviewer' });
       },
     };
 
     const executor = new Executor({ registry, approvalHandler: handler });
-
-    // First call → pending
-    try {
-      await executor.call('admin.delete_user', { user_id: '123' });
-      expect.unreachable('Should have thrown');
-    } catch (e) {
-      expect(e).toBeInstanceOf(ApprovalPendingError);
-      expect((e as ApprovalPendingError).approvalId).toBe('pending-tok-1');
-    }
-    expect(callCount).toBe(1);
-
-    // Resume with token → approved
+    const context = Context.create(createIdentity('operator', 'user'));
+    await expect(executor.call('admin.delete_user', { user_id: '123' }, context)).rejects.toMatchObject({
+      approvalId: 'test-resume-credential',
+    });
     const result = await executor.call('admin.delete_user', {
       user_id: '123',
-      _approval_token: 'pending-tok-1',
-    });
+      _approval_token: 'test-resume-credential',
+    }, context);
     expect(result['deleted']).toBe(true);
+    expect(pendingArgs).toBeNull();
+  });
+
+  it('keeps synchronous approval working for a status-only handler', async () => {
+    const executor = new Executor({ registry: createTestRegistry(), approvalHandler: new AutoApproveHandler() });
+    await expect(executor.call('admin.delete_user', { user_id: '123' })).resolves.toMatchObject({ deleted: true });
+    await expect(executor.call('admin.delete_user', {
+      user_id: '123', _approval_token: 'test-resume-credential',
+    })).rejects.toThrow(ApprovalDeniedError);
   });
 });
 
@@ -400,9 +406,16 @@ describe('_approval_token versus additionalProperties: false', () => {
 
   it('is stripped on the approved path', async () => {
     const seen: Record<string, unknown>[] = [];
+    class ProbeHandler extends AutoApproveHandler {
+      async checkApprovalForCall(credential: string, request: ApprovalRequest) {
+        expect(credential).toBe('tok');
+        expect(request.arguments).toEqual({ a: 'x' });
+        return createApprovalResult({ status: 'approved' });
+      }
+    }
     const executor = new Executor({
       registry: await buildRegistry(true, seen),
-      approvalHandler: new AutoApproveHandler(),
+      approvalHandler: new ProbeHandler(),
     });
     const result = await executor.call('probe.strict', { a: 'x', _approval_token: 'tok' });
     expect(result['ok']).toBe('x');
@@ -418,5 +431,92 @@ describe('_approval_token versus additionalProperties: false', () => {
     const inputs: Record<string, unknown> = { a: 'x', _approval_token: 'tok' };
     await executor.call('probe.strict', inputs);
     expect(inputs['_approval_token']).toBe('tok');
+  });
+
+  it('keeps the credential out of unary and native stream inputs when the gate is absent', async () => {
+    const registry = new Registry();
+    await registry.register('probe.streaming', {
+      [STREAMING_MARKER]: true,
+      description: 'Echo the application input',
+      inputSchema: StrictInput,
+      outputSchema: AnyOutput,
+      execute: (inputs: Record<string, unknown>) => inputs,
+      async *stream(inputs: Record<string, unknown>) {
+        yield inputs;
+      },
+    });
+    const executor = new Executor({ registry });
+    executor.currentStrategy.remove('approval_gate');
+    const inspectedInputs = vi.fn();
+    executor.addStepMiddleware({ beforeStep: (_, state) => inspectedInputs({ ...state.context.inputs }) });
+    const inputs = { a: 'x', _approval_token: 'sample-credential' };
+
+    await expect(executor.callAsync('probe.streaming', inputs)).resolves.toEqual({ a: 'x' });
+    const stream = executor.streamWithCompletion('probe.streaming', inputs);
+    expect(await stream.chunks.next()).toEqual({ value: { a: 'x' }, done: false });
+    expect(await stream.chunks.next()).toMatchObject({ done: true });
+    await expect(stream.completion).resolves.toMatchObject({ reason: 'completed', output: { a: 'x' } });
+
+    expect(inspectedInputs).toHaveBeenCalled();
+    for (const [argumentsSeen] of inspectedInputs.mock.calls) expect(argumentsSeen).toEqual({ a: 'x' });
+    expect(inputs._approval_token).toBe('sample-credential');
+  });
+
+  it('rejects malformed credentials on real calls with no gate', async () => {
+    const executor = new Executor({ registry: await buildRegistry(false, []) });
+    executor.currentStrategy.remove('approval_gate');
+    await expect(executor.call('probe.strict', { a: 'x', _approval_token: 42 })).rejects.toMatchObject({
+      code: 'GENERAL_INVALID_INPUT',
+      message: expect.stringContaining('_approval_token must be a string'),
+    });
+  });
+
+  it('ignores credentials in preflight and keeps them out of module hooks', async () => {
+    const preflight = vi.fn(() => []);
+    const preview = vi.fn(() => null);
+    const handler = new CallbackApprovalHandler(async () => {
+      throw new Error('Preflight must never request approval');
+    });
+    const registry = new Registry();
+    await registry.register('probe.preflight', {
+      description: 'Report application inputs',
+      inputSchema: StrictInput,
+      outputSchema: AnyOutput,
+      annotations: gatedAnnotations(true),
+      execute: () => ({}),
+      preflight,
+      preview,
+    });
+    const executor = new Executor({ registry, approvalHandler: handler });
+    const result = await executor.validate('probe.preflight', { a: 'x', _approval_token: 42 });
+    expect(result).toMatchObject({ valid: true, requiresApproval: true });
+    expect(preflight).toHaveBeenCalledWith({ a: 'x' }, expect.any(Context));
+    expect(preview).toHaveBeenCalledWith({ a: 'x' }, expect.any(Context));
+  });
+
+  it('gives approval a detached snapshot before trusted middleware rewrites nested inputs', async () => {
+    const requestApproval = vi.fn(async (_request: ApprovalRequest) => createApprovalResult({ status: 'approved' }));
+    const registry = new Registry();
+    await registry.register('probe.snapshot', {
+      description: 'Echo a nested value',
+      inputSchema: Type.Object({ message: Type.Object({ text: Type.String() }) }),
+      outputSchema: AnyOutput,
+      annotations: gatedAnnotations(true),
+      execute: (inputs: Record<string, unknown>) => ({ ...inputs }),
+    });
+    const executor = new Executor({
+      registry,
+      approvalHandler: new CallbackApprovalHandler(requestApproval),
+    });
+    executor.useBefore((_moduleId, inputs) => {
+      (inputs.message as { text: string }).text = 'normalized';
+      return null;
+    });
+
+    await expect(executor.call('probe.snapshot', { message: { text: 'caller value' } })).resolves.toEqual({
+      message: { text: 'normalized' },
+    });
+    expect(requestApproval).toHaveBeenCalledOnce();
+    expect(requestApproval.mock.calls[0][0].arguments).toEqual({ message: { text: 'caller value' } });
   });
 });

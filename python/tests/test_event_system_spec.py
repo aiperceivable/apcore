@@ -759,8 +759,7 @@ def test_flush_property_thread_safe() -> None:
 def test_flush_property_pure_false() -> None:
     """event_system.flush.property.pure
 
-    flush waits on shared pending futures and clears completed ones — it
-    mutates shared state (observable: pending set empties).
+    flush waits until submitted deliveries finish.
     """
     emitter = EventEmitter()
     sub = RecordingSubscriber()
@@ -768,9 +767,7 @@ def test_flush_property_pure_false() -> None:
     try:
         emitter.emit(_make_event())
         emitter.flush(timeout=2.0)
-        with emitter._pending_lock:
-            pending = [f for f in emitter._pending_futures if not f.done()]
-        assert pending == []
+        assert sub.received == [_make_event()]
     finally:
         emitter.shutdown(timeout=1.0)
 

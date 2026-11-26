@@ -5,7 +5,7 @@ import { APCore } from 'apcore-js';
 const client = new APCore();
 
 // 2. Register modules
-client.module({
+const addition = client.module({
   id: 'math.add',
   description: 'Add two integers',
   inputSchema: Type.Object({ a: Type.Number(), b: Type.Number() }),
@@ -13,7 +13,7 @@ client.module({
   execute: (inputs) => ({ sum: (inputs.a as number) + (inputs.b as number) }),
 });
 
-client.module({
+const greeting = client.module({
   id: 'greet',
   description: 'Greet a user by name',
   inputSchema: Type.Object({
@@ -27,6 +27,7 @@ client.module({
 });
 
 // 3. Call the modules
+await Promise.all([addition.registration, greeting.registration]);
 const result = await client.call('math.add', { a: 10, b: 5 });
 console.log('Sync result:', result); // { sum: 15 }
 

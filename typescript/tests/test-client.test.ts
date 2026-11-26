@@ -13,7 +13,7 @@ import { APCore } from '../src/client.js';
 import { Config } from '../src/config.js';
 import { FunctionModule } from '../src/decorator.js';
 import { Executor } from '../src/executor.js';
-import { ACLDeniedError, ModuleNotFoundError, SysModuleRegistrationError, SysModulesDisabledError } from '../src/errors.js';
+import { ACLDeniedError, InvalidInputError, ModuleNotFoundError, SysModuleRegistrationError, SysModulesDisabledError } from '../src/errors.js';
 import { EventEmitter, type ApCoreEvent } from '../src/events/emitter.js';
 import { Middleware } from '../src/middleware/index.js';
 import { ExecutionPolicy, PolicyRule } from '../src/policy.js';
@@ -152,6 +152,43 @@ describe('APCore.module()', () => {
     const client = new APCore();
     registerAdd(client);
     expect(client.registry.has('math.add')).toBe(true);
+  });
+
+  it('exposes completion of asynchronous registration on the returned module', async () => {
+    const client = new APCore();
+    let finish!: () => void;
+    const validation = new Promise<string[]>((resolve) => { finish = () => resolve([]); });
+    client.registry.setValidator({ validate: () => validation });
+
+    const fm = registerAdd(client);
+    expect(fm).toBeInstanceOf(FunctionModule);
+    expect(client.registry.has('math.add')).toBe(false);
+    finish();
+
+    await expect(fm.registration).resolves.toBeUndefined();
+    expect(await client.call('math.add', { a: 1, b: 2 })).toEqual({ result: 3 });
+  });
+
+  it('keeps asynchronous registration errors observable when awaited later', async () => {
+    const client = new APCore();
+    let finish!: () => void;
+    const validation = new Promise<string[]>((resolve) => { finish = () => resolve(['rejected']); });
+    client.registry.setValidator({ validate: () => validation });
+
+    const fm = registerAdd(client);
+    expect(fm.registration).toBeInstanceOf(Promise);
+    finish();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    await expect(fm.registration).rejects.toBeInstanceOf(InvalidInputError);
+    expect(client.registry.has('math.add')).toBe(false);
+  });
+
+  it('still throws synchronous registration errors from the factory', () => {
+    const client = new APCore();
+    client.registry.setValidator({ validate: () => ['rejected'] });
+
+    expect(() => registerAdd(client)).toThrow(InvalidInputError);
   });
 
   it('sets description and metadata', () => {

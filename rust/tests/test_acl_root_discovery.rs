@@ -24,9 +24,22 @@ use apcore::context::Context;
 use apcore::errors::{ErrorCode, ModuleError};
 use apcore::module::Module;
 use apcore::registry::{ModuleDescriptor, Registry};
-use apcore::APCore;
+use apcore::{APCore, APCoreOptions, APCoreStartupError, SysModuleError};
 use async_trait::async_trait;
+use futures_util::StreamExt;
 use serde_json::{json, Value};
+
+#[test]
+fn system_module_error_keeps_the_published_exhaustive_match() {
+    let error = SysModuleError::RegistrationFailed {
+        module_id: "system.health.summary".to_string(),
+        source: ModuleError::new(ErrorCode::DuplicateModuleId, "duplicate module"),
+    };
+    let SysModuleError::RegistrationFailed { module_id, .. } = &error;
+    assert_eq!(module_id, "system.health.summary");
+    assert_eq!(module_id, error.module_id());
+    assert_eq!(error.error_code(), ErrorCode::SysModuleRegistrationFailed);
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -198,6 +211,56 @@ async fn present_dir_without_global_acl_yaml_discovers_none() {
         discovered.is_none(),
         "acl dir present but missing global_acl.yaml must yield None"
     );
+}
+
+#[tokio::test]
+async fn unavailable_acl_blocks_client_startup_and_execution() {
+    let tmp = tempfile::tempdir().expect("create tempdir");
+    let acl_dir = tmp.path().join("acl");
+    std::fs::create_dir(&acl_dir).expect("create policy directory");
+    std::fs::write(acl_dir.join("global_acl.yaml"), "default_effect: []\n")
+        .expect("write invalid policy");
+    let config_path = write_config(tmp.path(), "./acl");
+    let config = Config::load(&config_path).expect("config loads");
+
+    let path_error = APCore::from_path(&config_path).expect_err("invalid ACL at startup");
+    assert!(matches!(
+        APCore::try_start(APCoreOptions {
+            config: Some(config.clone()),
+            ..Default::default()
+        }),
+        Err(APCoreStartupError::AclLoadFailed { source }) if source.code == path_error.code
+    ));
+
+    let client = APCore::try_with_options(APCoreOptions {
+        config: Some(config),
+        fail_on_error: true,
+        ..Default::default()
+    })
+    .expect("the registration-only constructor keeps its public error contract");
+    register_echo(client.registry(), "secure.module");
+    let error = client
+        .call("secure.module", json!({}), None, None)
+        .await
+        .expect_err("an invalid policy blocks execution");
+    assert_eq!(error.code, ErrorCode::ConfigInvalid);
+    let mut stream = client.stream("secure.module", json!({}), None, None);
+    let error = stream
+        .next()
+        .await
+        .expect("stream reports startup failure")
+        .expect_err("an invalid policy blocks streaming");
+    assert_eq!(error.code, ErrorCode::ConfigInvalid);
+}
+
+#[test]
+fn an_acl_policy_path_must_be_a_regular_file() {
+    let tmp = tempfile::tempdir().expect("create tempdir");
+    std::fs::create_dir_all(tmp.path().join("acl/global_acl.yaml")).expect("create policy path");
+    let config_path = write_config(tmp.path(), "./acl");
+    let config = Config::load(&config_path).expect("config loads");
+    let error = ACL::discover(&config).expect_err("a present non-file policy path is invalid");
+    assert_eq!(error.code, ErrorCode::ConfigInvalid);
 }
 
 // ---------------------------------------------------------------------------

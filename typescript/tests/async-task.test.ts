@@ -68,6 +68,99 @@ describe('TaskStatus', () => {
 
 describe('AsyncTaskManager', () => {
   describe('submit and status transitions', () => {
+    it('reconciles a completed result after the runner exhausts its store writes', async () => {
+      let notifyFailed!: () => void;
+      const writesFailed = new Promise<void>((resolve) => { notifyFailed = resolve; });
+      class Store extends InMemoryTaskStore {
+        blocked = true;
+        failures = 0;
+
+        override async save(task: TaskInfo): Promise<void> {
+          if (this.blocked && task.status === TaskStatus.COMPLETED) {
+            if (++this.failures === 2) notifyFailed();
+            throw new Error('completion storage unavailable');
+          }
+          await super.save(task);
+        }
+      }
+      const store = new Store();
+      const executor = new Executor({ registry: createRegistry() });
+      const execute = vi.spyOn(executor, 'call');
+      const manager = new AsyncTaskManager({ executor, store, maxTasks: 1 });
+      const task = await manager.submit('test.simple', { x: 9 });
+      await writesFailed;
+      // Give the runner a turn to finish processing the write failures.
+      await new Promise<void>((resolve) => { setImmediate(resolve); });
+      store.blocked = false;
+      await expect(manager.getResult(task)).resolves.toEqual({ value: 9 });
+      expect(execute).toHaveBeenCalledTimes(1);
+      await manager.shutdown();
+    });
+
+    it('keeps a worker active if storing cancellation fails', async () => {
+      let started!: () => void;
+      let finish!: () => void;
+      const running = new Promise<void>((resolve) => { started = resolve; });
+      const gate = new Promise<void>((resolve) => { finish = resolve; });
+      class Store extends InMemoryTaskStore {
+        override async save(task: TaskInfo): Promise<void> {
+          if (task.status === TaskStatus.CANCELLED) throw new Error('temporary write failure');
+          await super.save(task);
+        }
+      }
+      const executor = new Executor({ registry: createRegistry() });
+      vi.spyOn(executor, 'call').mockImplementation(async () => {
+        started();
+        await gate;
+        return { value: 7 };
+      });
+      const manager = new AsyncTaskManager({ executor, store: new Store(), maxTasks: 1 });
+      const task = await manager.submit('test.simple', {});
+      await running;
+      try {
+        await expect(manager.cancel(task)).rejects.toThrow('temporary write failure');
+      } finally {
+        finish();
+      }
+      await vi.waitFor(async () => {
+        await expect(manager.getResult(task)).resolves.toEqual({ value: 7 });
+      });
+      await manager.shutdown();
+    });
+
+    it('serializes cancellation with an already pending completion write', async () => {
+      let startWrite!: () => void;
+      let releaseWrite!: () => void;
+      const writing = new Promise<void>((resolve) => { startWrite = resolve; });
+      const gate = new Promise<void>((resolve) => { releaseWrite = resolve; });
+      class DelayedStore extends InMemoryTaskStore {
+        override async save(task: TaskInfo): Promise<void> {
+          if (task.status === TaskStatus.COMPLETED) {
+            startWrite();
+            await gate;
+          }
+          return super.save({ ...task });
+        }
+      }
+      const manager = new AsyncTaskManager({
+        executor: new Executor({ registry: createRegistry() }),
+        store: new DelayedStore(),
+      });
+      const taskId = await manager.submit('test.simple', { x: 42 });
+      await writing;
+      let cancelled: boolean | undefined;
+      const cancellation = manager.cancel(taskId).then((value) => { cancelled = value; });
+      try {
+        await new Promise<void>((resolve) => { setImmediate(resolve); });
+        expect(cancelled).toBeUndefined();
+      } finally {
+        releaseWrite();
+        await cancellation;
+      }
+      expect(cancelled).toBe(false);
+      await expect(manager.getStatus(taskId)).resolves.toMatchObject({ status: TaskStatus.COMPLETED });
+    });
+
     it.each([TaskStatus.RUNNING, TaskStatus.COMPLETED])('recovers a transient %s write without repeating module execution', async (failedStatus) => {
       class CopyingStore extends InMemoryTaskStore {
         private failOnce = true;
@@ -830,6 +923,101 @@ describe('AsyncTaskManager', () => {
   });
 
   describe('terminal-status guards in the runner', () => {
+    it.each(['read', 'write', 'committed', 'deleted'] as const)(
+      'reconciles a terminal storage failure (%s) without repeating execution',
+      async (failure) => {
+        class FaultStore extends InMemoryTaskStore {
+          executed = false;
+          failures = 0;
+          terminalWrites = 0;
+
+          override async get(taskId: string): Promise<TaskInfo | null> {
+            if (failure === 'read' && this.executed && this.failures === 0) {
+              this.failures++;
+              throw new TaskStoreError('get', 'connection interrupted');
+            }
+            return super.get(taskId);
+          }
+
+          override async save(info: TaskInfo): Promise<void> {
+            if (info.status === TaskStatus.COMPLETED) {
+              this.terminalWrites++;
+              if (failure === 'write' && this.terminalWrites <= 2) {
+                this.failures++;
+                throw new TaskStoreError('save', 'connection interrupted');
+              }
+              if (failure === 'committed' || failure === 'deleted') {
+                this.failures++;
+                if (failure === 'committed') await super.save(info);
+                else await super.delete(info.taskId);
+                throw new TaskStoreError('save', 'connection interrupted');
+              }
+            }
+            await super.save(info);
+          }
+        }
+
+        const store = new FaultStore();
+        const executor = new Executor({ registry: createRegistry() });
+        const call = executor.call.bind(executor);
+        const calls = vi.spyOn(executor, 'call').mockImplementation(async (...args) => {
+          const output = await call(...args);
+          store.executed = true;
+          return output;
+        });
+        const manager = new AsyncTaskManager({ executor, store });
+        const taskId = await manager.submit('test.simple', { x: 7 });
+        await vi.waitFor(() => expect(store.failures).toBe(failure === 'write' ? 2 : 1));
+
+        if (failure === 'deleted') {
+          expect(await manager.getStatus(taskId)).toBeNull();
+        } else {
+          expect(await manager.getResult(taskId)).toEqual({ value: 7 });
+        }
+        expect(await manager.cancel(taskId)).toBe(false);
+        expect(calls).toHaveBeenCalledOnce();
+        expect(store.terminalWrites).toBe(failure === 'write' ? 3 : 1);
+      },
+    );
+
+    it.each([true, false])('isolates a persistently rejected result (retryable: %s)', async (retryable) => {
+      class RejectResultStore extends InMemoryTaskStore {
+        attempts = 0;
+
+        override async save(info: TaskInfo): Promise<void> {
+          if (info.status === TaskStatus.COMPLETED && info.result?.['value'] === 77) {
+            this.attempts++;
+            throw new TaskStoreError('save', 'result refused', { retryable });
+          }
+          await super.save(info);
+        }
+      }
+
+      const store = new RejectResultStore();
+      const executor = new Executor({ registry: createRegistry() });
+      const calls = vi.spyOn(executor, 'call');
+      const manager = new AsyncTaskManager({ executor, store });
+      const rejected = await manager.submit('test.simple', { x: 77 });
+      await vi.waitFor(() => expect(store.attempts).toBeGreaterThan(0));
+      if (!retryable) {
+        await vi.waitFor(async () => expect((await store.get(rejected))?.status).toBe(TaskStatus.FAILED));
+      }
+      await expect(manager.listTasks()).resolves.toHaveLength(1);
+      const healthy = await manager.submit('test.simple', { x: 1 });
+      await vi.waitFor(async () => expect(await manager.getResult(healthy)).toEqual({ value: 1 }));
+      await store.save({
+        ...(await store.get(rejected))!,
+        taskId: 'external-pending',
+        status: TaskStatus.PENDING,
+      });
+      await manager.shutdown();
+      expect((await store.get('external-pending'))?.status).toBe(TaskStatus.CANCELLED);
+      expect((await store.get(rejected))?.status).toBe(
+        retryable ? TaskStatus.CANCELLED : TaskStatus.FAILED,
+      );
+      expect(calls).toHaveBeenCalledTimes(2);
+    });
+
     it('does not overwrite a terminal status written out of band', async () => {
       const store = new InMemoryTaskStore();
       const registry = createRegistry();

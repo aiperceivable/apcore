@@ -39,7 +39,7 @@ function padHourlyDistribution(buckets: HourlyBucket[]): Record<string, unknown>
   });
 }
 
-/** @internal */
+/** Report usage across modules. */
 export class UsageSummaryModule {
   readonly description = 'All modules usage overview with trend detection';
   readonly annotations = { readonly: true, destructive: false, idempotent: true, requiresApproval: false, openWorld: false, streaming: false, cacheable: false, cacheTtl: 0, cacheKeyFields: null, paginated: false, paginationStyle: 'cursor' as const };
@@ -101,7 +101,7 @@ export class UsageSummaryModule {
   }
 }
 
-/** @internal */
+/** Report usage for one module. */
 export class UsageModule {
   readonly description = 'Detailed usage statistics for a single module';
   readonly annotations = { readonly: true, destructive: false, idempotent: true, requiresApproval: false, openWorld: false, streaming: false, cacheable: false, cacheTtl: 0, cacheKeyFields: null, paginated: false, paginationStyle: 'cursor' as const };

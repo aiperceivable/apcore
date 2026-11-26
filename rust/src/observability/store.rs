@@ -90,6 +90,7 @@ pub struct InMemoryObservabilityStore {
 #[derive(Debug, Default)]
 struct InMemoryState {
     errors: Vec<ErrorEntry>,
+    retained_errors: std::collections::HashMap<String, (u64, ErrorEntry)>,
     metrics: Vec<MetricPoint>,
 }
 
@@ -97,6 +98,17 @@ impl InMemoryObservabilityStore {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    pub(crate) fn retain_error(&self, sequence: u64, entry: &ErrorEntry) {
+        self.inner
+            .lock()
+            .retained_errors
+            .insert(entry.fingerprint.clone(), (sequence, entry.clone()));
+    }
+
+    pub(crate) fn evict_error(&self, fingerprint: &str) {
+        self.inner.lock().retained_errors.remove(fingerprint);
     }
 }
 
@@ -108,19 +120,16 @@ impl ObservabilityStore for InMemoryObservabilityStore {
 
     async fn get_errors(&self, module_id: Option<&str>, limit: Option<usize>) -> Vec<ErrorEntry> {
         let state = self.inner.lock();
-        let filtered: Vec<ErrorEntry> = match module_id {
-            Some(id) => state
-                .errors
-                .iter()
-                .filter(|e| e.module_id == id)
-                .cloned()
-                .collect(),
-            None => state.errors.clone(),
-        };
-        match limit {
-            Some(n) => filtered.into_iter().take(n).collect(),
-            None => filtered,
-        }
+        let mut retained: Vec<_> = state.retained_errors.values().collect();
+        retained.sort_unstable_by_key(|(sequence, _)| *sequence);
+        state
+            .errors
+            .iter()
+            .chain(retained.into_iter().map(|(_, entry)| entry))
+            .filter(|entry| module_id.is_none_or(|id| entry.module_id == id))
+            .take(limit.unwrap_or(usize::MAX))
+            .cloned()
+            .collect()
     }
 
     async fn record_metric(&self, metric: MetricPoint) {
@@ -153,6 +162,7 @@ impl ObservabilityStore for InMemoryObservabilityStore {
     async fn clear(&self) {
         let mut state = self.inner.lock();
         state.errors.clear();
+        state.retained_errors.clear();
         state.metrics.clear();
     }
 

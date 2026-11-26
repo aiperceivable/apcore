@@ -97,6 +97,20 @@ impl InMemoryStorageBackend {
     pub fn new() -> Self {
         Self::default()
     }
+
+    pub(crate) fn put(&self, namespace: &str, key: &str, value: serde_json::Value) {
+        self.inner
+            .write()
+            .entry(namespace.to_string())
+            .or_default()
+            .insert(key.to_string(), value);
+    }
+
+    pub(crate) fn remove(&self, namespace: &str, key: &str) {
+        if let Some(entries) = self.inner.write().get_mut(namespace) {
+            entries.remove(key);
+        }
+    }
 }
 
 #[async_trait]
@@ -107,11 +121,7 @@ impl StorageBackend for InMemoryStorageBackend {
         key: &str,
         value: serde_json::Value,
     ) -> Result<(), StorageError> {
-        let mut guard = self.inner.write();
-        guard
-            .entry(namespace.to_string())
-            .or_default()
-            .insert(key.to_string(), value);
+        self.put(namespace, key, value);
         Ok(())
     }
 
@@ -142,10 +152,7 @@ impl StorageBackend for InMemoryStorageBackend {
 
     async fn delete(&self, namespace: &str, key: &str) -> Result<(), StorageError> {
         // Idempotent: missing namespace OR missing key both succeed silently.
-        let mut guard = self.inner.write();
-        if let Some(ns) = guard.get_mut(namespace) {
-            ns.remove(key);
-        }
+        self.remove(namespace, key);
         Ok(())
     }
 }

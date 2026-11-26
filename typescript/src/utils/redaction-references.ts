@@ -1,4 +1,4 @@
-/** Local-only reference resolution for sensitive-field redaction. */
+/** Local-only reference resolution for schema conversion and redaction. */
 interface RedactionSchemaResource {
   readonly rootSchema: Record<string, unknown>;
   readonly anchors: Map<string, Record<string, unknown>>;
@@ -156,11 +156,11 @@ export function createRedactionReferenceContext(
   return { rootSchema, rootUri, resources, scopes, dialects };
 }
 
-export function resolveRedactionReference(
+export function resolveLocalSchemaReference(
   reference: string,
   context: RedactionReferenceContext,
   fromSchema = context.rootSchema,
-): Record<string, unknown> | undefined {
+): Record<string, unknown> | boolean | undefined {
   const uri = resolveSchemaUri(reference, context.scopes.get(fromSchema) ?? context.rootUri);
   if (uri === undefined) return undefined;
   const resource = context.resources.get(withoutFragment(uri));
@@ -185,5 +185,14 @@ export function resolveRedactionReference(
       return undefined;
     target = (target as Record<string, unknown>)[key];
   }
+  return typeof target === 'boolean' || isSchema(target) ? target : undefined;
+}
+
+export function resolveRedactionReference(
+  reference: string,
+  context: RedactionReferenceContext,
+  fromSchema = context.rootSchema,
+): Record<string, unknown> | undefined {
+  const target = resolveLocalSchemaReference(reference, context, fromSchema);
   return isSchema(target) ? target : undefined;
 }

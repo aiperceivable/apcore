@@ -150,6 +150,23 @@ describe('BindingLoader', () => {
   });
 
   describe('loadBindings', () => {
+    it('prepares all entries before registering any modules from the file', async () => {
+      const modulePath = writeTempModule('prepare.mjs', 'export function run() { return {}; }');
+      const valid = { module_id: 'test.first', target: `${modulePath}:run` };
+      const later = { module_id: 'test.second', target: `${modulePath}:run` };
+      const file = writeTempYaml('prepare.binding.yaml', dump({
+        spec_version: '1.0',
+        bindings: [valid, { ...later, unknown_field: true }],
+      }));
+
+      await expect(loader.loadBindings(file, registry)).rejects.toThrow(BindingFileInvalidError);
+      expect(registry.list()).toEqual([]);
+
+      writeFileSync(file, dump({ spec_version: '1.0', bindings: [later, valid] }));
+      const modules = await loader.loadBindings(file, registry);
+      expect(modules.map((module) => module.moduleId)).toEqual(['test.second', 'test.first']);
+    });
+
     it('reports conflicting schema modes before resolving an unavailable target', async () => {
       const file = writeTempYaml('conflicting.binding.yaml', `bindings:
   - module_id: test.conflicting

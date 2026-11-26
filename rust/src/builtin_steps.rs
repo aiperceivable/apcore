@@ -346,9 +346,7 @@ impl Step for BuiltinModuleLookup {
         //      MUST read the instance store (not the process-global) so toggles
         //      stay isolated per `APCore`. Mirrors apcore-python
         //      BuiltinModuleLookup (builtin_steps.py:252).
-        if matches!(registry.is_enabled(&ctx.module_id), Some(false))
-            || self.toggle_state.is_disabled(&ctx.module_id)
-        {
+        if !lease.enabled || self.toggle_state.is_disabled(&ctx.module_id) {
             return Err(ModuleError::module_disabled(&ctx.module_id));
         }
         ctx.module = Some(module.clone());
@@ -425,7 +423,9 @@ impl Step for BuiltinACLCheck {
             // union it with the module annotation and the policy (§6.9 rows
             // 3-6). Recorded even on a denial, where it is always false.
             ctx.acl_approval_required = decision.approval_required;
-            if !decision.is_allowed() {
+            let allowed = decision.is_allowed();
+            ctx.acl_decision = Some(decision);
+            if !allowed {
                 // Publish a governance event on denial (canonical name proposed
                 // in apcore#77). Guarded by dry_run so a validate() preflight
                 // probe never emits a spurious denial event; fires only on deny
@@ -459,14 +459,17 @@ impl Step for BuiltinACLCheck {
 impl BuiltinApprovalGate {
     /// Emit an `approval_decision` audit/observability event for a resolved
     /// approval. Mirrors apcore-python (`_emit_audit`) and apcore-typescript:
-    /// emits a structured `tracing` log and, when a tracing span stack is
-    /// present in `ctx.data` (`TRACING_SPANS`), appends an `approval_decision`
+    /// emits a structured `tracing` log and attaches an `approval_decision`
     /// event carrying `{module_id, status, approved_by, reason, approval_id}`
-    /// to the active (last) span.
-    fn emit_approval_decision(ctx: &PipelineContext, result: &crate::approval::ApprovalResult) {
+    /// to the active span of this invocation or its enclosing call.
+    fn emit_approval_decision(
+        ctx: &PipelineContext,
+        result: &crate::approval::ApprovalResult,
+        audit_id: Option<&str>,
+    ) {
         let approved_by = result.approved_by.clone().unwrap_or_default();
         let reason = result.reason.clone().unwrap_or_default();
-        let approval_id = result.approval_id.clone().unwrap_or_default();
+        let approval_id = audit_id.unwrap_or_default();
 
         tracing::info!(
             module_id = %ctx.module_id,
@@ -477,28 +480,17 @@ impl BuiltinApprovalGate {
             "approval_decision"
         );
 
-        // Append the event to the active tracing span when the span stack is
-        // present in context data (cross-SDK parity). No-op when tracing is
-        // inactive, matching the reference SDKs.
-        if let Some(mut spans) = crate::context_keys::TRACING_SPANS.get(&ctx.context) {
-            if let Some(last) = spans.last_mut() {
-                if let Some(events) = last.as_object_mut().and_then(|obj| {
-                    obj.entry("events")
-                        .or_insert_with(|| serde_json::json!([]))
-                        .as_array_mut()
-                }) {
-                    events.push(serde_json::json!({
-                        "name": "approval_decision",
-                        "module_id": ctx.module_id,
-                        "status": result.status,
-                        "approved_by": approved_by,
-                        "reason": reason,
-                        "approval_id": approval_id,
-                    }));
-                    crate::context_keys::TRACING_SPANS.set(&ctx.context, spans);
-                }
-            }
-        }
+        crate::observability::tracing_middleware::add_context_span_event(
+            &ctx.context,
+            "approval_decision",
+            serde_json::json!({
+                "module_id": ctx.module_id,
+                "status": result.status,
+                "approved_by": approved_by,
+                "reason": reason,
+                "approval_id": approval_id,
+            }),
+        );
     }
 
     /// Publish `apcore.approval.decision` on the event bus (apcore#77) when an
@@ -509,6 +501,7 @@ impl BuiltinApprovalGate {
     async fn emit_approval_decision_event(
         ctx: &PipelineContext,
         result: &crate::approval::ApprovalResult,
+        audit_id: Option<&str>,
     ) {
         let Some(emitter) = ctx.event_emitter.clone() else {
             return;
@@ -525,7 +518,7 @@ impl BuiltinApprovalGate {
                 "status": result.status,
                 "approved_by": result.approved_by,
                 "reason": result.reason,
-                "approval_id": result.approval_id,
+                "approval_id": audit_id,
                 "trace_id": ctx.context.trace_id,
             }),
             ctx.module_id.clone(),
@@ -554,26 +547,18 @@ impl BuiltinApprovalGate {
             "policy_override"
         );
 
-        if let Some(mut spans) = crate::context_keys::TRACING_SPANS.get(&ctx.context) {
-            if let Some(last) = spans.last_mut() {
-                if let Some(events) = last.as_object_mut().and_then(|obj| {
-                    obj.entry("events")
-                        .or_insert_with(|| serde_json::json!([]))
-                        .as_array_mut()
-                }) {
-                    events.push(serde_json::json!({
-                        "name": "policy_override",
-                        "module_id": decision.module_id,
-                        "pattern": pattern,
-                        "requires_approval": decision.requires_approval,
-                        "destructive": decision.destructive,
-                        "needs_approval": decision.needs_approval,
-                        "reason": reason,
-                    }));
-                    crate::context_keys::TRACING_SPANS.set(&ctx.context, spans);
-                }
-            }
-        }
+        crate::observability::tracing_middleware::add_context_span_event(
+            &ctx.context,
+            "policy_override",
+            serde_json::json!({
+                "module_id": decision.module_id,
+                "pattern": pattern,
+                "requires_approval": decision.requires_approval,
+                "destructive": decision.destructive,
+                "needs_approval": decision.needs_approval,
+                "reason": reason,
+            }),
+        );
     }
 
     /// Publish `apcore.policy.override` on the event bus (apcore#77) when an
@@ -618,61 +603,42 @@ impl BuiltinApprovalGate {
         tracing::warn!("{}", message);
     }
 
-    /// Remove `_approval_token` from `ctx.inputs` and return it, or `None`.
-    ///
-    /// PROTOCOL_SPEC §7.4 states this unconditionally: "The `_approval_token`
-    /// key MUST be removed from arguments before passing to subsequent steps."
-    /// It is a protocol-level key, not part of any module's input contract, so
-    /// it has to go before *every* exit from this step — including the
-    /// not-gated and the no-handler-skip paths, which used to leak it into
-    /// Step 7 input validation (where `additionalProperties: false` rejects it
-    /// as an undeclared key) and into the module's own `execute()`. Parity with
-    /// apcore-python (`_take_approval_token`) and apcore-typescript
-    /// (`_takeApprovalToken`), which both extract it first thing.
-    ///
-    /// The inputs are REBUILT rather than mutated through `as_object_mut()`:
-    /// `PipelineContext` holds the very value the caller handed to `call()`, so
-    /// removing the key in place silently edited the caller's own data. Both
-    /// peer SDKs rebuild for the same reason.
-    ///
-    /// The non-string rejection lives here too, ahead of every early return, so
-    /// a malformed token never survives the gate regardless of whether the
-    /// module turns out to be gated at all.
-    fn take_approval_token(ctx: &mut PipelineContext) -> Result<Option<String>, ModuleError> {
-        let Some(token) = ctx
-            .inputs
-            .as_object()
-            .and_then(|obj| obj.get(crate::policy::APPROVAL_TOKEN_KEY))
-            .cloned()
-        else {
-            return Ok(None);
+    /// Preserve the full decision for the caller, including the pending
+    /// credential at its existing details key for older clients.
+    fn approval_error(module_id: &str, result: &crate::approval::ApprovalResult) -> ModuleError {
+        let reason = result.reason.as_deref().unwrap_or("no reason given");
+        let (code, message) = match result.status.as_str() {
+            "rejected" => (
+                ErrorCode::ApprovalDenied,
+                format!("Approval denied for module '{module_id}': {reason}"),
+            ),
+            "timeout" => (
+                ErrorCode::ApprovalTimeout,
+                format!("Approval timed out for module '{module_id}': {reason}"),
+            ),
+            "pending" => (
+                ErrorCode::ApprovalPending,
+                format!("Approval pending for module '{module_id}': {reason}"),
+            ),
+            status => {
+                tracing::warn!(%module_id, %status, "Unknown approval status, treating as denied");
+                (
+                    ErrorCode::ApprovalDenied,
+                    format!("Approval denied for module '{module_id}': unknown status '{status}'"),
+                )
+            }
         };
-        if let Some(obj) = ctx.inputs.as_object() {
-            let rest: serde_json::Map<String, serde_json::Value> = obj
-                .iter()
-                .filter(|(key, _)| key.as_str() != crate::policy::APPROVAL_TOKEN_KEY)
-                .map(|(key, value)| (key.clone(), value.clone()))
-                .collect();
-            ctx.inputs = serde_json::Value::Object(rest);
+        let mut error = ModuleError::new(code, message);
+        error
+            .details
+            .insert("result".to_owned(), serde_json::json!(result));
+        if code == ErrorCode::ApprovalPending {
+            error.details.insert(
+                "approval_id".to_owned(),
+                serde_json::json!(result.approval_id),
+            );
         }
-        match token {
-            serde_json::Value::String(token) => Ok(Some(token)),
-            other => Err(ModuleError::new(
-                ErrorCode::GeneralInvalidInput,
-                format!(
-                    "_approval_token must be a string, got {}",
-                    match other {
-                        serde_json::Value::Number(_) => "number",
-                        serde_json::Value::Bool(_) => "boolean",
-                        serde_json::Value::Array(_) => "array",
-                        serde_json::Value::Object(_) => "object",
-                        serde_json::Value::Null => "null",
-                        // covered by the String arm above
-                        serde_json::Value::String(_) => "string",
-                    }
-                ),
-            )),
-        }
+        error
     }
 }
 
@@ -690,12 +656,7 @@ impl Step for BuiltinApprovalGate {
 
     #[allow(clippy::too_many_lines)] // approval gate logic is inherently multi-step; splitting would obscure the protocol flow
     async fn execute(&self, ctx: &mut PipelineContext) -> Result<StepResult, ModuleError> {
-        // PROTOCOL_SPEC §7.4: `_approval_token` MUST be removed from the
-        // arguments before they reach any subsequent step, so it comes off
-        // FIRST — ahead of the not-gated and no-handler-skip returns below,
-        // both of which used to leave it in `ctx.inputs`. See
-        // [`Self::take_approval_token`].
-        let approval_token = Self::take_approval_token(ctx)?;
+        let approval_token = ctx.take_approval_credential()?;
 
         let registry = ctx
             .registry
@@ -743,12 +704,7 @@ impl Step for BuiltinApprovalGate {
         // apart the first time this was fixed inline here.
         let module_annotations = crate::module::ModuleAnnotations::governance_union(
             module.as_ref().map(|m| m.annotations()).as_ref(),
-            registry
-                .get_definition(&ctx.module_id)
-                .ok()
-                .flatten()
-                .and_then(|d| d.annotations)
-                .as_ref(),
+            ctx.declared_module_annotations().as_ref(),
         );
 
         // Consult the ExecutionPolicy (apcore#76). A matched rule (or
@@ -759,12 +715,8 @@ impl Step for BuiltinApprovalGate {
         // already in scope here because the gate is Step 5. The built-in
         // pattern rules MUST NOT consult them, so no existing verdict moves;
         // the inputs exist so the call site reaches the audit trail (rule 3).
-        // Those arguments have NOT been schema-validated: input validation is
-        // Step 7. `_approval_token` is already gone (taken above), and
-        // `resolve_with_call_site` strips it defensively as well — §7.9.6 rule
-        // 5 requires it explicitly because §7.4's "before passing to subsequent
-        // steps" does not reach a decision made INSIDE Step 5, so a policy
-        // reached through another door must never see the token either.
+        // These are the business arguments at the gate. Module middleware and
+        // schema validation run later, and the resume credential is isolated.
         let decision: Option<PolicyDecision> = ctx.policy.clone().map(|policy| {
             policy.resolve_with_call_site(
                 &ctx.module_id,
@@ -845,16 +797,9 @@ impl Step for BuiltinApprovalGate {
                     ),
                     ..Default::default()
                 };
-                Self::emit_approval_decision(ctx, &result);
-                Self::emit_approval_decision_event(ctx, &result).await;
-                return Err(ModuleError::new(
-                    ErrorCode::ApprovalDenied,
-                    format!(
-                        "Approval denied for module '{}': {}",
-                        ctx.module_id,
-                        result.reason.unwrap_or_default()
-                    ),
-                ));
+                Self::emit_approval_decision(ctx, &result, None);
+                Self::emit_approval_decision_event(ctx, &result, None).await;
+                return Err(Self::approval_error(&ctx.module_id, &result));
             }
             // Non-strict: keep the PROTOCOL_SPEC §7.4 skip behavior but warn
             // once per module (fail-loud, not silent). Emits no decision event
@@ -873,159 +818,34 @@ impl Step for BuiltinApprovalGate {
             return Ok(StepResult::continue_step());
         };
 
-        // Phase B: resume with the `_approval_token` taken at the top of this
-        // step, when the caller supplied one.
-        let approval_result = if let Some(token_str) = approval_token {
-            handler.check_approval(&token_str).await?
+        let module = module.ok_or_else(|| ModuleError::module_not_found(&ctx.module_id))?;
+        let mut annotations = module_annotations.unwrap_or_default();
+        annotations.requires_approval = true;
+        annotations.destructive = effective_destructive;
+        let description = module.description();
+        let request = crate::approval::ApprovalRequest {
+            module_id: ctx.module_id.clone(),
+            arguments: ctx.inputs.clone(),
+            context: Some(ctx.context.clone()),
+            annotations,
+            caller_id: ctx.context.caller_id.clone(),
+            action: ctx.module_id.clone(),
+            description: (!description.is_empty()).then(|| description.to_owned()),
+            tags: module.tags(),
+        };
+        let approval_result = if let Some(credential) = approval_token.as_deref() {
+            handler
+                .check_approval_for_call(credential, &request)
+                .await?
         } else {
-            // Spec (PROTOCOL_SPEC §7.4 Step 5): ApprovalRequest MUST carry the
-            // module's real annotations / description / tags so handlers can
-            // inspect them.
-            //
-            // The GOVERNANCE half of that comes from `module_annotations` — the
-            // D-96 union the gate fired on — and not from a second, narrower
-            // read of `module.annotations()`. Rebuilding it from the live
-            // instance re-opened half the bypass in the field that matters most
-            // to a handler: a descriptor declaring `destructive: true` fired the
-            // gate and then described the call to the handler as
-            // `destructive: false`, so a handler routing by risk (auto-approve
-            // the non-destructive, escalate the rest) took the low-risk path for
-            // a call the operator marked high-risk. Gating on one source and
-            // describing from another is the exact shape D-96 exists to close;
-            // it survived the fix because the union landed on the decision and
-            // this request was left reading the instance.
-            //
-            // Description and tags stay module-sourced, matching apcore-python
-            // (`getattr(module, ...)`) and apcore-typescript (`mod[...]`): they
-            // are descriptive, not governance, and the peers' descriptors are
-            // DERIVED from the module so no second source exists there.
-            let module = module.ok_or_else(|| {
-                ModuleError::new(
-                    ErrorCode::ModuleNotFound,
-                    format!("Module '{}' not found in registry", ctx.module_id),
-                )
-            })?;
-            // `module_annotations` is `Some` on every path that reaches here —
-            // the live module resolved just above, so the union has at least
-            // its half — but defaulting keeps the contract below total.
-            let mut annotations = module_annotations.clone().unwrap_or_default();
-            // Preserve the ApprovalRequest contract ("requires_approval is
-            // guaranteed true", PROTOCOL_SPEC §7) under policy overrides: the
-            // handler sees the effective governance values, not the module's
-            // raw declaration. Reaching this point means the call needs
-            // approval, so requires_approval is true by definition (covers a
-            // rule override, gate_destructive, and — since v1.28.0 — an ACL
-            // rule carrying `approval`). §7.4 rule 3 makes it explicit: an
-            // ACL-sourced requirement makes `requires_approval` effectively
-            // true for that call. (apcore#76, apcore#108)
-            annotations.requires_approval = true;
-            // `effective_destructive` is the policy decision's value when a
-            // policy resolved, and the union's otherwise — the same value the
-            // fail-loud `destructive_ungated` warning above is keyed on, so the
-            // gate, the warning and the handler cannot disagree.
-            annotations.destructive = effective_destructive;
-            let module_description = module.description();
-            let description = if module_description.is_empty() {
-                None
-            } else {
-                Some(module_description.to_string())
-            };
-            let tags = module.tags();
-            let request = crate::approval::ApprovalRequest {
-                module_id: ctx.module_id.clone(),
-                arguments: ctx.inputs.clone(),
-                context: Some(ctx.context.clone()),
-                annotations,
-                // Decision D-03 (spec v1.32.0 §7.3.1): populated from the same
-                // Context and module_id already in scope at this call site —
-                // caller_id is None/null for a top-level call (§5.7), with no
-                // "@external" substitution; action is a flat duplicate of
-                // module_id so a handler can read it without cross-referencing.
-                caller_id: ctx.context.caller_id.clone(),
-                action: ctx.module_id.clone(),
-                description,
-                tags,
-            };
             handler.request_approval(&request).await?
         };
+        let audit_id = approval_result.observable_id(approval_token.as_deref());
+        Self::emit_approval_decision(ctx, &approval_result, audit_id);
+        Self::emit_approval_decision_event(ctx, &approval_result, audit_id).await;
 
-        // D10-001: emit an `approval_decision` audit/observability event before
-        // the status -> Err mapping below. Cross-SDK parity with apcore-python
-        // (`_emit_audit`) and apcore-typescript: log the decision and append an
-        // `approval_decision` event to the active tracing span when one exists.
-        Self::emit_approval_decision(ctx, &approval_result);
-        Self::emit_approval_decision_event(ctx, &approval_result).await;
-
-        match approval_result.status.as_str() {
-            "approved" => {}
-            "rejected" => {
-                return Err(ModuleError::new(
-                    ErrorCode::ApprovalDenied,
-                    format!(
-                        "Approval denied for module '{}': {}",
-                        ctx.module_id,
-                        approval_result
-                            .reason
-                            .unwrap_or_else(|| "no reason given".to_string())
-                    ),
-                ));
-            }
-            "timeout" => {
-                return Err(ModuleError::new(
-                    ErrorCode::ApprovalTimeout,
-                    format!(
-                        "Approval timed out for module '{}': {}",
-                        ctx.module_id,
-                        approval_result
-                            .reason
-                            .unwrap_or_else(|| "no reason given".to_string())
-                    ),
-                ));
-            }
-            "pending" => {
-                // The `approval_id` MUST travel on the error: it is the token a
-                // caller needs to resume via `_approval_token` once the external
-                // approval lands (protocol-spec.md §7.4 "Resume semantics", and
-                // conformance fixture approval_gate.json `gate_fires_pending`).
-                // Without it a pending result is a dead end. Mirrors
-                // apcore-python `ApprovalPendingError.__init__`, which sets
-                // `self.details["approval_id"]`.
-                let mut details: std::collections::HashMap<String, serde_json::Value> =
-                    std::collections::HashMap::new();
-                details.insert(
-                    "approval_id".to_string(),
-                    match &approval_result.approval_id {
-                        Some(approval_id) => serde_json::Value::String(approval_id.clone()),
-                        None => serde_json::Value::Null,
-                    },
-                );
-                return Err(ModuleError::new(
-                    ErrorCode::ApprovalPending,
-                    format!(
-                        "Approval pending for module '{}': {}",
-                        ctx.module_id,
-                        approval_result
-                            .reason
-                            .clone()
-                            .unwrap_or_else(|| "no reason given".to_string())
-                    ),
-                )
-                .with_details(details));
-            }
-            _ => {
-                tracing::warn!(
-                    module_id = %ctx.module_id,
-                    status = %approval_result.status,
-                    "Unknown approval status, treating as denied"
-                );
-                return Err(ModuleError::new(
-                    ErrorCode::ApprovalDenied,
-                    format!(
-                        "Approval denied for module '{}': unknown status '{}'",
-                        ctx.module_id, approval_result.status
-                    ),
-                ));
-            }
+        if approval_result.status != "approved" {
+            return Err(Self::approval_error(&ctx.module_id, &approval_result));
         }
 
         Ok(StepResult::continue_step())
@@ -1126,21 +946,19 @@ impl Step for BuiltinMiddlewareBefore {
 /// `module.execute()` bare, with neither the per-module timeout nor the
 /// deadline clamp, while both peer SDKs run the full pipeline and get both.
 pub(crate) fn resolve_effective_timeout_ms(
-    registry: Option<&std::sync::Arc<crate::registry::registry::Registry>>,
+    annotations: Option<&crate::module::ModuleAnnotations>,
     module_id: &str,
     global_deadline: Option<f64>,
     default_timeout: u64,
 ) -> Result<u64, ModuleError> {
-    let declared_timeout: Option<serde_json::Value> = registry
-        .and_then(|reg| reg.get_definition(module_id).ok().flatten())
-        .and_then(|desc| desc.annotations)
-        .and_then(|ann| ann.extra.get("resources").cloned())
-        .and_then(|res| res.get("timeout").cloned());
+    let declared_timeout = annotations
+        .and_then(|ann| ann.extra.get("resources"))
+        .and_then(|resources| resources.get("timeout"));
     // A negative declared timeout is invalid and MUST be rejected rather than
     // silently swallowed (`as_u64()` would return None and fall back to the
     // default). Spec Edge Cases table; peer Python builtin_steps.py:620 raises
     // InvalidInputError (sync finding A-D-W1).
-    if let Some(ref v) = declared_timeout {
+    if let Some(v) = declared_timeout {
         let is_negative = v.as_i64().is_some_and(|n| n < 0) || v.as_f64().is_some_and(|f| f < 0.0);
         if is_negative {
             return Err(ModuleError::new(
@@ -1151,7 +969,7 @@ pub(crate) fn resolve_effective_timeout_ms(
             ));
         }
     }
-    let per_module_timeout_ms: Option<u64> = declared_timeout.and_then(|v| v.as_u64());
+    let per_module_timeout_ms = declared_timeout.and_then(Value::as_u64);
     let mut timeout_ms = per_module_timeout_ms.unwrap_or(default_timeout);
     if let Some(deadline) = global_deadline {
         let now = std::time::SystemTime::now()
@@ -1162,10 +980,7 @@ pub(crate) fn resolve_effective_timeout_ms(
         // intentional: remaining_ms is non-negative and fits in u64 for any reasonable deadline
         let remaining_ms = ((deadline - now) * 1000.0) as u64;
         if remaining_ms == 0 {
-            let retryable = registry
-                .and_then(|reg| reg.get_definition(module_id).ok().flatten())
-                .and_then(|desc| desc.annotations)
-                .is_some_and(|ann| ann.idempotent);
+            let retryable = annotations.is_some_and(|ann| ann.idempotent);
             return Err(ModuleError::new(
                 ErrorCode::ModuleTimeout,
                 format!("Module '{module_id}' execution aborted: global deadline already exceeded"),
@@ -1195,6 +1010,13 @@ impl Step for BuiltinExecute {
             .as_ref()
             .ok_or_else(|| missing_pipeline_input("module"))?
             .clone();
+        if ctx.stream.is_some() {
+            let producer = crate::executor::open_stream(ctx, &module).await?;
+            if let (Some(stream), Some(producer)) = (&mut ctx.stream, producer) {
+                stream.producer = Some(parking_lot::Mutex::new(producer));
+                return Ok(StepResult::continue_step());
+            }
+        }
         let config = ctx
             .config
             .as_ref()
@@ -1206,7 +1028,7 @@ impl Step for BuiltinExecute {
         // then clamped against the remaining global deadline below.
         // Spec: docs/features/core-executor.md §Step 8 (dual-timeout model).
         let timeout_ms = match resolve_effective_timeout_ms(
-            ctx.registry.as_ref(),
+            ctx.declared_module_annotations().as_ref(),
             &ctx.module_id,
             ctx.context.global_deadline,
             config.executor.default_timeout,
@@ -1215,17 +1037,12 @@ impl Step for BuiltinExecute {
             Err(error) => {
                 if matches!(error.code, ErrorCode::ModuleTimeout) {
                     if let Some(token) = &ctx.context.cancel_token {
-                        token.cancel();
+                        token.cancel_after_timeout(&error);
                     }
                 }
                 return Err(error);
             }
         };
-
-        // Note: Streaming is handled exclusively by `Executor::stream()`, which
-        // bypasses this step entirely. `ctx.stream` is intentionally ignored
-        // here — `BuiltinExecute` always calls `module.execute()` for the
-        // unary path. See `Executor::stream` for the streaming pipeline.
 
         // Cancellation check immediately before invoking the module
         // (D-21 — `Cancel Token Mid-Pipeline Check`, point 2). Acts as a
@@ -1250,7 +1067,7 @@ impl Step for BuiltinExecute {
                 let result = module.execute(inputs, &context).await;
                 if let Err(error) = &result {
                     tracing::debug!(
-                        code = error.code.wire_str(),
+                        code = %error.wire_code(),
                         "Module invocation finished with an error"
                     );
                 }
@@ -1268,11 +1085,12 @@ impl Step for BuiltinExecute {
                     format!("Module execution task failed: {error}"),
                 )),
                 Err(_elapsed) => {
+                    let error = ModuleError::module_timeout(&ctx.module_id, timeout_ms)
+                        .with_retryable(retryable);
                     if let Some(token) = &ctx.context.cancel_token {
-                        token.cancel();
+                        token.cancel_after_timeout(&error);
                     }
-                    Err(ModuleError::module_timeout(&ctx.module_id, timeout_ms)
-                        .with_retryable(retryable))
+                    Err(error)
                 }
             }
         } else {
@@ -1280,10 +1098,14 @@ impl Step for BuiltinExecute {
         };
 
         match execute_result {
-            Ok(output) if output.is_object() || output.is_null() => {
+            Ok(output) if output.is_object() => {
                 ctx.output = Some(output);
                 Ok(StepResult::continue_step())
             }
+            Ok(Value::Null) => Err(ModuleError::new(
+                ErrorCode::ModuleExecuteError,
+                "Return value cannot be None",
+            )),
             Ok(_) => Err(ModuleError::new(
                 ErrorCode::ModuleExecuteError,
                 "Return value must be Map",
@@ -1357,6 +1179,12 @@ impl Step for BuiltinMiddlewareAfter {
         let Some(output) = ctx.output.take() else {
             return Ok(StepResult::continue_step());
         };
+        if ctx.context.redacted_output.is_none() {
+            if let Some(module) = &ctx.module {
+                ctx.context.redacted_output =
+                    Some(capture_redacted(&output, &module.output_schema(), ctx));
+            }
+        }
 
         let snapshot = ctx
             .middleware_snapshot

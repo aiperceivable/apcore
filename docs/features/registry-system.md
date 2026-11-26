@@ -30,13 +30,13 @@ The Registry is where modules live. It discovers modules from extension director
 `discover()` turns files under the extension roots into registered modules. The steps, in the order the SDKs run them:
 
 1. **Scan** — walk each extension root (see [Scanner](#contract-scannerscan_extensions)) and derive a canonical ID from each file path (Algorithm A01). Files that would land in the `ephemeral.*` namespace are rejected.
-2. **ID map** — apply `id_map.overrides` (or an ID-map file given to the registry), replacing derived IDs.
+2. **ID map** — apply `id_map.overrides` (or an ID-map file given to the registry), replacing derived IDs. The final IDs also undergo ID grammar and reserved-namespace checks. Python runs those checks before importing any candidate module.
 3. **Metadata** — load each module's companion `<stem>_meta.yaml` and merge it with code-defined metadata; the YAML wins on conflicting keys.
 4. **Entry point** — load the file and pick the module inside it: the single class/export that implements the module interface, or the one named by the metadata's `entry_point`. A file with several candidates and no `entry_point` is not loaded (for several modules per file, see [Multi-Module Discovery](./multi-module-discovery.md)).
 5. **Validate** — check each module's structure, or run the custom validator instead if one is installed. Invalid modules are skipped (Python logs a warning; TypeScript drops them silently).
 6. **Dependency order** — topologically sort by declared `dependencies`; a cycle raises `CIRCULAR_DEPENDENCY`, a missing required dependency `DEPENDENCY_NOT_FOUND`.
-7. **Conflict check** — check the ID grammar and conflicts with already-registered modules; a clashing module is skipped with a warning. (TypeScript runs this check before step 6.)
-8. **Register** — register each module in dependency order through the same path as `register()`: `on_load`, then publish, then the `register` event.
+7. **Conflict check** — check for conflicts with already-registered modules. A clashing module is skipped with a warning. Python and TypeScript also check for duplicate IDs among candidates before dependency ordering. The first valid candidate in scan order keeps its own entry point and companion metadata. TypeScript checks for conflicts with existing registrations at the same stage.
+8. **Register** — check that required dependencies finished loading and satisfy their version constraints. Run `on_load`, publish the module, and emit the `register` event. A failed required dependency skips the dependent. A failed optional dependency produces a warning and loading continues.
 
 Discovery loads no schema files and resolves no package-level plugins — modules come only from the extension roots (and from a custom discoverer, see [Extension System](./extension-system.md#custom-discoverer)).
 
@@ -47,6 +47,8 @@ Discovery loads no schema files and resolves no package-level plugins — module
 | Rust | `registry.discover_internal().await` after `set_discoverer(...)` + `set_extension_roots(...)`; filesystem discovery uses `DefaultDiscoverer` (configured with `DefaultDiscoverer::from_config(&config)` and a `ModuleFactory` that builds each module) | `Result<usize, ModuleError>` |
 
 Rust has no runtime reflection, so its `DefaultDiscoverer` finds the files and derives the IDs, and a `ModuleFactory` you supply turns each into a module instance.
+
+TypeScript imports discovered files through their filesystem URLs, so discovery and reload preserve path characters such as spaces and `#`. Python registers the loading module in `sys.modules` while its file executes, so decorators and tools that resolve a class's defining module can inspect it during import.
 
 ### Key components
 
@@ -91,6 +93,7 @@ Normative behavioral contract. All SDK implementations MUST satisfy these guaran
 
 - `module_id`: string, required. Must pass module-ID validation (pattern, length, reserved words). Invalid IDs MUST be rejected before any mutation of the registry.
 - `module`: Module instance, required. Must implement the module protocol (`description`, `input_schema`, `output_schema`, `execute`).
+- Python's programmatic registration accepts an explicit `None` schema as a permissive object schema. Both schema attributes must be declared.
 - `version`: string, optional. See [Multi-version registration](#multi-version-registration).
 - `metadata`: mapping, optional. A `dependencies` entry — a list of `{module_id, version?, optional?}` — reaches the registered descriptor as a **parsed** field, so `get_definition(module_id).dependencies` returns what the caller declared (§12.2).
 
@@ -182,6 +185,8 @@ Portable code should register one version per ID. `metadata.dependencies` works 
 | Rust | `.rs` (configurable) | entries starting with `.` or `_`; `__pycache__/`, `node_modules/`, `target/`, `.git/`; `*.pyc`, `*.pyo` |
 
 Two files under one root that map to the same ID: the first one found is kept and the other is skipped with a warning; IDs that differ only in case produce a warning.
+
+The scanner locates `<stem>_meta.yaml` beside the module's canonical file, using that file's stem. A companion metadata symlink is followed only when `follow_symlinks` is enabled and its resolved file is inside the scan root.
 
 ### Errors
 
@@ -342,27 +347,101 @@ Two files under one root that map to the same ID: the first one found is kept an
 
 `watch()` watches the extension roots for file changes; `unwatch()` stops it. It is for development — production registries should not watch. What happens on a change is language-defined (D11-005):
 
-- **Python** (`watch()` needs the `watchdog` package): re-imports the changed file, calls `on_suspend()` and `on_unload()` on the old instance, `on_load()` on the new one — restoring the old instance if that fails — publishes it, then calls `on_resume(state)`. A deleted file unregisters its module.
+- **Python** (`watch()` needs the `watchdog` package): re-imports the changed file with its companion metadata, using the scanner's symlink rules. It waits up to the safe-unregister timeout for in-flight calls before suspending and unloading the old instance. It runs `on_load()` before publishing the replacement, then calls `on_resume(state)`. If loading fails, it restores the old registration. Deleting the source uses the same drain timeout.
 - **TypeScript**: unregisters the module and emits `file_changed` with `{ filePath }`; it does not re-import (ES module specifiers cannot be reloaded portably), so the application re-runs discovery itself.
-- **Rust**: re-runs `discover_internal()`. New files are registered; modules that are already registered are not replaced.
+- **Rust**: a registry held in `Arc` watches its extension roots recursively and groups file events until 300 ms have passed without another event. The configured discoverer supplies candidates for new registrations and replacements. A change to a source file or its `<stem>_meta.yaml` sidecar can replace the current instance. A deleted source is unregistered when the discoverer no longer returns its module. Rust instantiates modules through the discoverer or its factory, so editing a Rust source file still requires a rebuild to change the compiled implementation.
 
-Whatever the mechanism, a reloaded module MUST NOT become visible before its `on_load()` has run — the same rule as [`register`](#contract-registryregister) step 8 — and recovery from a failed load follows the reload rules of [System Modules](./system-modules.md#reload-failure-semantics) (D-123).
+On Rust replacement, the old instance runs `on_suspend()` before `safe_unregister()` waits up to five seconds for in-flight calls and unloads it. The replacement is published after `on_load()` succeeds. It receives `on_resume(state)` if the suspend hook returned `Some(state)`. If the replacement cannot register, the registry attempts to register the previous instance again. A failed restoring load leaves the module unavailable. Removing a deleted source also uses the five-second drain timeout.
 
-Code that relies on `on_suspend` / `on_resume` firing on file change is portable only on Python. Cross-language hosts should subscribe to `register` / `unregister` (and `file_changed` on TypeScript) and move state explicitly; `system.control.reload_module` calls the suspend/resume hooks in every SDK.
+Python and Rust invoke state migration hooks when a watched module is replaced. TypeScript watch clients can use `file_changed` to arrange replacement themselves. For an explicit reload through the runtime, see [`system.control.reload_module`](./system-modules.md#contract-systemcontrolreload_module).
 
-```python
-from apcore import Registry
+=== "Python"
+    ```python
+    from apcore import Registry
 
-registry = Registry(extensions_dir="./extensions")
-registry.discover()
+    registry = Registry(extensions_dir="./extensions")
+    registry.discover()
+    registry.on("register", lambda module_id, module: print(f"Module registered: {module_id}"))
+    registry.on("unregister", lambda module_id, module: print(f"Module removed: {module_id}"))
 
-registry.on("register", lambda module_id, module: print(f"Module registered: {module_id}"))
-registry.on("unregister", lambda module_id, module: print(f"Module removed: {module_id}"))
-registry.watch()
+    registry.watch()
+    try:
+        input("Edit an extension file, then press Enter to stop watching.\n")
+    finally:
+        registry.unwatch()
+    ```
 
-# ... later
-registry.unwatch()
-```
+=== "TypeScript"
+    ```typescript
+    import { createInterface } from 'node:readline/promises';
+    import { Registry } from 'apcore-js';
+
+    const registry = new Registry({ extensionsDir: './extensions' });
+    await registry.discover();
+    registry.on('file_changed', (moduleId, { filePath }) => {
+      console.log(`Module ${moduleId} changed at ${filePath}`);
+    });
+
+    await registry.watch();
+    const terminal = createInterface({ input: process.stdin, output: process.stdout });
+    try {
+      await terminal.question('Edit an extension file, then press Enter to stop watching.\n');
+    } finally {
+      registry.unwatch();
+      terminal.close();
+    }
+    ```
+
+=== "Rust"
+    Create `extensions/hello.rs` with a comment before running the watcher. The file selects the compiled `Hello` module by name. Edit the file and observe the registration event for the replacement.
+
+    ```rust
+    use std::sync::Arc;
+
+    use apcore::{Context, DefaultDiscoverer, Module, ModuleError, ModuleFactory, Registry};
+    use async_trait::async_trait;
+    use serde_json::{json, Value};
+
+    struct Hello;
+
+    #[async_trait]
+    impl Module for Hello {
+        fn description(&self) -> &str {
+            "Return a greeting"
+        }
+
+        fn input_schema(&self) -> Value {
+            json!({"type": "object"})
+        }
+
+        fn output_schema(&self) -> Value {
+            json!({"type": "object", "properties": {"message": {"type": "string"}}})
+        }
+
+        async fn execute(&self, _inputs: Value, _context: &Context<Value>) -> Result<Value, ModuleError> {
+            Ok(json!({"message": "Hello"}))
+        }
+    }
+
+    #[tokio::main]
+    async fn main() -> Result<(), Box<dyn std::error::Error>> {
+        let registry = Arc::new(Registry::new());
+        registry.set_extension_roots(vec!["./extensions".to_owned()]);
+        let factory: ModuleFactory = Arc::new(|_, entry_point| {
+            Ok((entry_point == "Hello").then(|| Arc::new(Hello) as Arc<dyn Module>))
+        });
+        registry.set_discoverer(Box::new(DefaultDiscoverer::new().with_factory(factory)));
+        registry.on("register", Box::new(|module_id, _| println!("Module registered: {module_id}")))?;
+        registry.discover_internal().await?;
+
+        registry.watch().await?;
+        println!("Edit the extension file, then press Enter to stop watching.");
+        let input = tokio::task::spawn_blocking(|| std::io::stdin().read_line(&mut String::new())).await;
+        registry.unwatch();
+        input??;
+        Ok(())
+    }
+    ```
 
 ## Registration ordering invariants
 
@@ -554,7 +633,7 @@ The event set is **closed** (D-80):
 | `file_changed` | a watched file changed and the registry does not re-register it itself (TypeScript's notify-only `watch()`) | `(moduleId, { filePath })` |
 
 1. `on` / `off` **MUST** reject an event name outside this set with `InvalidInputError(code=GENERAL_INVALID_INPUT)`, so a typo does not become a silently dead subscription.
-2. An implementation **MUST** accept in `on` every event name it can itself emit — which is why TypeScript accepts `file_changed` and Python and Rust (whose `watch()` re-registers or re-discovers) do not.
+2. An implementation **MUST** accept in `on` every event name it can itself emit. TypeScript accepts `file_changed`; Python and Rust emit registration events during watch replacement.
 3. An implementation whose `watch()` re-registers the module emits `unregister` / `register` and **MUST NOT** also emit `file_changed` for the same change.
 
 | SDK | Subscribe | Unsubscribe |

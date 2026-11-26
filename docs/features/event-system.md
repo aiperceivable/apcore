@@ -149,6 +149,7 @@ Python's `EventEmitter.subscribe()` raises `TypeError` when `on_event` is not a 
         def unsubscribe(self, subscriber: EventSubscriber) -> None: ...
         def emit(self, event: ApCoreEvent) -> None: ...
         def flush(self, timeout: float = 5.0) -> None: ...     # seconds
+        def close(self, timeout: float = 5.0) -> None: ...     # seconds
         def shutdown(self, timeout: float = 5.0) -> None: ...  # seconds
     ```
 
@@ -183,10 +184,14 @@ Python's `EventEmitter.subscribe()` raises `TypeError` when `on_event` is not a 
 
 **Dispatch model:**
 
-- `emit()` snapshots the subscribers and returns; delivery runs in the background (a thread pool driving a private event loop in Python, pending promises in TypeScript, spawned tasks in Rust). Subscribing or unsubscribing during delivery is safe.
-- Each matching subscriber is delivered to independently, with its own retry loop, so a slow or failing subscriber does not delay the others.
+- `emit()` snapshots the subscribers and returns. Delivery runs on a private event loop on a daemon thread in Python, as pending promises in TypeScript, or as spawned tasks in Rust. Subscribing or unsubscribing during delivery is safe.
+- Each matching subscriber is delivered to independently, with its own retry loop. Python runs one event batch at a time on its private loop and accepts the `max_workers` constructor argument for compatibility.
 - `flush()` waits for pending deliveries up to its timeout and returns without error when the timeout elapses. The unit is per-SDK and named by the parameter: Python takes seconds, TypeScript and Rust milliseconds. Pass a positive value — `0` returns immediately in Python and waits indefinitely in TypeScript and Rust.
 - After `shutdown()`, `emit()` drops events silently and `flush()` returns immediately.
+
+**Python delivery lifecycle.** `close()` and `shutdown()` stop admission and drain previously submitted batches within one timeout. Batches still queued at expiration are skipped. A batch already running may finish on the daemon thread, which then releases the skipped batches and closes the loop. Python can exit while that thread is still running. Subscriber-owned resources follow their own lifecycle.
+
+`close()` keeps subscriptions. It drops new emissions during draining, and the first emission after the worker exits starts a fresh worker. `shutdown()` makes the emitter terminal, including when invoked during a concurrent `close()`. A callback can request either operation on its own emitter and returns immediately, with draining handled by the delivery worker.
 
 ### Subscribing
 
@@ -545,7 +550,7 @@ Events the framework emits. The envelope's `module_id` carries the associated mo
 | `apcore.health.error_threshold_exceeded` | error | `PlatformNotifyMiddleware` | `error_rate`, `threshold` |
 | `apcore.health.latency_threshold_exceeded` | warn | `PlatformNotifyMiddleware` | `p99_latency_ms`, `threshold` |
 | `apcore.health.recovered` | info | `PlatformNotifyMiddleware` (error rate back below half the threshold) | `status`, `error_rate` |
-| `apcore.approval.decision` | info (approved/pending) / warn (rejected/timeout) | Approval gate (§7) | `module_id`, `status`, `approved_by`, `reason`, `approval_id`, `trace_id` |
+| `apcore.approval.decision` | info (approved/pending) / warn (rejected/timeout) | Approval gate (§7) | `module_id`, `status`, `approved_by`, `reason`, `approval_id` (non-secret `audit_id` or null), `trace_id` |
 | `apcore.policy.override` | info | Approval gate, when an `ExecutionPolicy` rule applies (§7.9) | `module_id`, `pattern`, `requires_approval`, `destructive`, `needs_approval`, `reason`, `trace_id` |
 | `apcore.acl.denied` | warn | ACL check (§6) | `module_id`, `caller_id`, `reason`, `trace_id` |
 | `apcore.acl.audit` | the ACL file's `audit.log_level` (default info) | ACL check — the default audit sink (§6.3.2) | the `AuditEntry` fields (§6.3.1) |
@@ -776,7 +781,7 @@ Python wraps every subscriber created from `sys_modules.events.subscribers` in a
 ## Contract: EventEmitter.unsubscribe
 
 ### Inputs
-- `subscriber` — the object passed to `subscribe` (Python and TypeScript compare by identity). Rust's `subscribe` consumes the `Box`, so Rust removes by `SubscriberHandle` (`unsubscribe_handle`) or by `subscriber_id` (`unsubscribe_by_id`; `unsubscribe(&dyn EventSubscriber)` also matches by ID and warns when several subscribers share it).
+- `subscriber` — the object passed to `subscribe` (Python and TypeScript compare by identity). Python removes the first registration of that object and future emissions use the resulting subscriber list. Rust's `subscribe` consumes the `Box`, so Rust removes by `SubscriberHandle` (`unsubscribe_handle`) or by `subscriber_id` (`unsubscribe_by_id`; `unsubscribe(&dyn EventSubscriber)` also matches by ID and warns when several subscribers share it).
 
 ### Errors
 - None. Removing an absent subscriber is a no-op.
@@ -796,7 +801,7 @@ Python wraps every subscriber created from `sys_modules.events.subscribers` in a
 - `timeout` — maximum wait for in-flight deliveries: Python `timeout` in **seconds** (default 5.0), TypeScript `timeoutMs` and Rust `timeout_ms` in **milliseconds** (default 5000; Rust `flush_default()`). Pass a positive value; `0` is not portable.
 
 ### Errors
-- None raised to the caller. If the timeout elapses, `flush` returns and the remaining deliveries continue in the background. Python applies the timeout per pending batch, so the worst-case wait is longer than `timeout`.
+- None raised to the caller. If the timeout elapses, `flush` returns and the remaining deliveries continue in the background. Python applies the timeout to the whole pending snapshot. Calling `flush()` from a Python subscriber on the same emitter returns immediately.
 
 ### Returns
 - Nothing (Rust `Result<(), ModuleError>`, always `Ok`).

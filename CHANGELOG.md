@@ -11,15 +11,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Expose Prometheus text rendering without starting an HTTP listener in Python and Rust. TypeScript uses the existing exporter render method.
+- Expose a single-invocation stream completion handle in Python, TypeScript, and Rust. The handle reports the output-validation snapshot, post-processing outcomes, and a distinct terminal reason.
 - Expose system-module startup errors and an opt-in fail-fast startup mode on the APCore client. ([#230](https://github.com/aiperceivable/apcore/issues/230))
+- Add Rust `APCore::try_start` for fail-fast ACL and pipeline configuration checks.
+- Add Python `validate_async` and allow Python preflight to select the same module version as execution.
 - Add an Executor diagnostic that lists modules with a declared approval requirement and no effective approval enforcement. ([#231](https://github.com/aiperceivable/apcore/issues/231))
 
 ### Changed
 
+- Export rolling usage calls as `apcore_usage_calls_24h`. The deprecated `apcore_usage_calls_total` name remains available as a gauge alias. Use `apcore_module_calls_total` for cumulative counter queries.
+- The Python Prometheus listener binds to loopback by default. Deployments that use a remote scraper can pass the intended listening address as `host`.
+- **Protocol 2.0.0 draft, §7 and §9.16.2.** Phase B resumption requires a handler that verifies and consumes the approval for the current invocation. Implement the scoped handler method before resuming pending approvals. Approval telemetry uses the optional non-secret audit ID. See the [approval cutover guide](docs/guides/cookbook-approval-flow.md#deploying-a-scoped-approval-handler) for pending records.
 - **Protocol 2.0.0 draft, §9.2.2.** All path-typed configuration values use the project root captured when the `Config` was created or loaded. For an explicitly selected configuration outside the working directory, relative values such as `schema.root`, `extensions.root`, and `bindings.dir` now resolve beside that configuration. For a user-level configuration found by discovery, relative `acl.root` resolves from the working directory. Use the previous absolute paths when migrating a deployment that relies on its existing directories, and verify that the expected ACL loads. ([#113](https://github.com/aiperceivable/apcore/issues/113))
 
 ### Fixed
 
+- Verify the declared minimum SDK runtimes in CI and execute the Quick Start and governed-stream documentation examples against the installed distributions. Ship TypeScript type declarations for existing public runtime exports.
+- Match Python event subscriptions by object identity and enforce a single drain budget for the event emitter lifecycle.
+- Document Rust registry watch replacement, removal, state handoff, and recovery.
+- Attribute timings and spans to individual invocations. Link local spans to validated upstream trace parents and send the same IDs through OTLP.
+- Validate integral JSON numbers against native Pydantic integers and let Python class modules opt in to validated native inputs.
+- Keep Prometheus metric families contiguous and terminate the exposition text with a newline. Deliver metric points to explicitly supplied Python and TypeScript observability sinks.
+- Align the protocol's validation error examples with `details.errors`, use standard Draft 2020-12 nullable types, and publish the canonical module document Schema.
+- Report committed configuration values in control responses and events. Rust configuration reloads refresh bound runtime snapshots and persisted overrides together.
+- Expose TypeScript module registration completion, load discovered TypeScript files by filesystem URL, and make Python discovery follow the module import lifecycle.
+- Clarify portable pipeline configuration and the side-effect-free approval report returned by preflight.
+- Keep incoming approval credentials outside business arguments and preserve the gate-time argument snapshot. Include the approval result in Rust caller errors.
+- Resume the configured TypeScript pipeline after native streams drain and merge Rust chunks incrementally.
+- Require patched HTTP/2 and URL parser dependencies when Rust's `events` feature is enabled.
+- Return detached ACL rule snapshots in Python and TypeScript and preserve each Python discovery candidate's metadata through final ID validation and conflict checks.
+- Bound Python Prometheus listener concurrency and socket reads and writes. Bound Rust response writes and preserve shutdown requests sent immediately after startup.
+- Keep Rust's system-module registration error compatible with existing exhaustive matches.
+- Preserve custom module error codes in Rust execution and wire serialization.
+- Pass validated native values to Python function modules and detach published schema snapshots in Python and TypeScript.
+- Publish binding display overlays in the module descriptor across SDKs, and prepare complete binding files before registering their modules in Python and TypeScript.
+- Isolate TypeScript strategy gates per executor. Reject invalid Rust pipeline configuration, retain the selected module's governance metadata throughout execution, and require an ACL allow verdict for module preflight hooks.
+- Keep resume credentials and sensitive configuration values out of telemetry. Preserve Schema reference redaction in TypeScript and use captured values in Rust logging.
+- Protect persisted module toggles from the configuration writer and create override files with owner-only Unix permissions.
+- Validate programmatic registrations, reject null execution output, preserve module identity during discovery and reload, and apply the Rust stream deadline while opening the producer.
+- Reconcile terminal task writes independently of module execution and keep the Rust concurrency slot until timed-out work drains.
+- Match TypeScript Prometheus endpoints by URL pathname.
+- Enforce stream cancellation and the execution deadline through producer exhaustion and post-processing in Python, TypeScript, and Rust. Preserve completion snapshots once the configured output boundary is reached, including when after-middleware fails.
+- Preserve registry metadata across Python watch reloads and TypeScript reload rollback. Wait for in-flight Python calls before watcher unloads and apply discovery's symlink policy to Rust companion metadata.
+- Apply updates to `executor.default_timeout` to subsequent executions in all three SDKs.
+- Keep Python task result persistence failures from replaying completed module calls, and serialize TypeScript task cancellation with state writes.
+- Contain TypeScript metrics storage failures and preserve Rust strategy and reaper state when a step insertion fails or an older reaper stops.
 - Connect enabled system event buses to client-created executors so governance events reach APCore subscribers. ([#125](https://github.com/aiperceivable/apcore/issues/125))
 - Normalize typed module results to plain JSON object data for calls and streams. ([#126](https://github.com/aiperceivable/apcore/issues/126))
 - Run custom I/O-backed task-store operations through a runtime from synchronous Python and Rust callers. ([#127](https://github.com/aiperceivable/apcore/issues/127))

@@ -15,17 +15,19 @@ export function validateModule(
   }
   const errors: string[] = [];
   const obj = moduleOrClass as Record<string, unknown>;
-  const constructor = allowStaticSchemas ? obj.constructor as unknown as Record<string, unknown> : undefined;
+  const moduleConstructor = allowStaticSchemas
+    ? obj.constructor as unknown as Record<string, unknown>
+    : undefined;
 
   // Check inputSchema
-  const inputSchema = obj['inputSchema'] ?? constructor?.['inputSchema'];
+  const inputSchema = obj['inputSchema'] ?? moduleConstructor?.['inputSchema'];
   if ((inputSchema == null && requireMetadata) ||
       (inputSchema != null && (typeof inputSchema !== 'object' || Array.isArray(inputSchema)))) {
     errors.push('Missing or invalid inputSchema: must be a TSchema object');
   }
 
   // Check outputSchema
-  const outputSchema = obj['outputSchema'] ?? constructor?.['outputSchema'];
+  const outputSchema = obj['outputSchema'] ?? moduleConstructor?.['outputSchema'];
   if ((outputSchema == null && requireMetadata) ||
       (outputSchema != null && (typeof outputSchema !== 'object' || Array.isArray(outputSchema)))) {
     errors.push('Missing or invalid outputSchema: must be a TSchema object');

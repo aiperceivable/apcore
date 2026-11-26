@@ -78,6 +78,7 @@ function makeMockApprovalHandler(result: ApprovalResult): ApprovalHandler {
   return {
     requestApproval: vi.fn().mockResolvedValue(result),
     checkApproval: vi.fn().mockResolvedValue(result),
+    checkApprovalForCall: vi.fn().mockResolvedValue(result),
   };
 }
 
@@ -311,7 +312,7 @@ describe('BuiltinApprovalGate', () => {
     await expect(step.execute(pctx)).rejects.toThrow(/pending/i);
   });
 
-  it('strips _approval_token from inputs and uses checkApproval', async () => {
+  it('strips _approval_token from inputs and uses scoped approval', async () => {
     const handler = makeMockApprovalHandler(createApprovalResult({ status: 'approved', approvedBy: 'admin' }));
     const step = new BuiltinApprovalGate(handler);
     const mod = makeModule({ annotations: { requiresApproval: true } });
@@ -321,7 +322,10 @@ describe('BuiltinApprovalGate', () => {
     });
     const result = await step.execute(pctx);
     expect(result.action).toBe('continue');
-    expect(handler.checkApproval).toHaveBeenCalledWith('tok123');
+    expect(handler.checkApproval).not.toHaveBeenCalled();
+    expect(handler.checkApprovalForCall).toHaveBeenCalledWith('tok123', expect.objectContaining({
+      arguments: { key: 'value' },
+    }));
     expect(pctx.inputs).not.toHaveProperty('_approval_token');
   });
 
@@ -561,10 +565,8 @@ describe('BuiltinExecute', () => {
     const mod = makeModule({ stream: streamGen });
     const pctx = makePipelineContext({ module: mod, stream: true });
     const result = await step.execute(pctx);
-    // Stream path returns skip_to=return_result so post-execute steps record as
-    // skipped in PipelineTrace, matching apcore-python (sync A-D-019).
-    expect(result.action).toBe('skip_to');
-    expect((result as { skipTo?: string }).skipTo).toBe('return_result');
+    // The executor pauses the pipeline while it drains the producer.
+    expect(result.action).toBe('continue');
     expect(pctx.outputStream).toBeDefined();
   });
 });

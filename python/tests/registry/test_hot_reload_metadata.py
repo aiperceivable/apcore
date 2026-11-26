@@ -17,8 +17,12 @@ into an alphabetical one.
 from __future__ import annotations
 
 import textwrap
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from time import monotonic, sleep
 from typing import Any
+
+import pytest
 
 from apcore.registry.registry import Registry
 from apcore.registry.types import DependencyInfo
@@ -68,13 +72,54 @@ def _write_probe(path: Path, *, description: str, version: str, tags: list[str],
     )
 
 
-def _load_probe_class(path: Path) -> type:
-    from apcore.registry.entry_point import resolve_entry_point
-
-    return resolve_entry_point(path)
-
-
 class TestHotReloadPreservesMetadata:
+    def test_watcher_loads_companion_metadata_for_the_new_revision(self, tmp_path: Path) -> None:
+        path = tmp_path / "probe.py"
+        _write_probe(path, description="code before", version="1.0.0", tags=["code"], documentation="probe")
+        companion = tmp_path / "probe_meta.yaml"
+        companion.write_text("description: companion before\nversion: 1.1.0\ntags: [registered]\n", encoding="utf-8")
+        registry = Registry(extensions_dir=str(tmp_path))
+        assert registry.discover() == 1
+        original = registry.get("probe")
+
+        _write_probe(path, description="code replacement", version="2.0.0", tags=["code"], documentation="probe")
+        companion.write_text("description: companion after\nversion: 2.1.0\ntags: [registered]\n", encoding="utf-8")
+        registry._handle_file_change(str(path))
+
+        descriptor = registry.get_definition("probe")
+        assert descriptor is not None
+        assert descriptor.description == "companion after"
+        assert descriptor.version == "2.1.0"
+        assert descriptor.tags == ["registered"]
+        replacement = registry.get("probe", version_hint="2.1.0")
+        assert replacement is not None and replacement is not original
+
+    @pytest.mark.parametrize("operation", ["change", "delete"])
+    def test_watcher_drains_active_lease_before_unloading(self, tmp_path: Path, operation: str) -> None:
+        path = tmp_path / "probe.py"
+        _write_probe(path, description="code before", version="1.0.0", tags=[], documentation="probe")
+        registry = Registry(extensions_dir=str(tmp_path))
+        assert registry.discover() == 1
+        old_hooks: list[str] = []
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            with registry.acquire("probe") as old:
+                old.on_suspend = lambda: old_hooks.append("suspend")
+                old.on_unload = lambda: old_hooks.append("unload")
+                if operation == "change":
+                    _write_probe(path, description="replacement", version="2.0.0", tags=[], documentation="probe")
+                    watched = pool.submit(registry._handle_file_change, str(path))
+                else:
+                    path.unlink()
+                    watched = pool.submit(registry._handle_file_deletion, str(path))
+                deadline = monotonic() + 1
+                while not registry.is_draining("probe") and not watched.done() and monotonic() < deadline:
+                    sleep(0.001)
+                assert registry.is_draining("probe")
+                assert old_hooks == []
+            watched.result(timeout=1)
+        assert old_hooks == (["suspend", "unload"] if operation == "change" else ["unload"])
+        assert registry.has("probe") is (operation == "change")
+
     def test_watcher_preserves_previous_registration_when_custom_validator_rejects(self, tmp_path: Path) -> None:
         class Validator:
             def validate(self, module: Any) -> list[str]:
@@ -82,10 +127,10 @@ class TestHotReloadPreservesMetadata:
 
         path = tmp_path / "probe.py"
         _write_probe(path, description="original", version="1.0.0", tags=[], documentation="probe")
-        original = _load_probe_class(path)()
         reg = Registry(extensions_dir=str(tmp_path))
+        assert reg.discover() == 1
+        original = reg.get("probe")
         reg.set_validator(Validator())
-        reg.register("probe", original)
 
         _write_probe(path, description="invalid", version="2.0.0", tags=[], documentation="probe")
         reg._handle_file_change(str(path))
@@ -102,8 +147,8 @@ class TestHotReloadPreservesMetadata:
             documentation="v1 docs",
         )
 
-        registry = Registry()
-        registry.register("executor.reload_probe", _load_probe_class(probe_path)())
+        registry = Registry(extensions_dirs=[{"root": str(tmp_path), "namespace": "executor"}])
+        assert registry.discover() == 1
 
         before = registry.get_definition("executor.reload_probe")
         assert before is not None
@@ -148,8 +193,8 @@ class TestHotReloadPreservesMetadata:
             documentation="v1 docs",
         )
 
-        registry = Registry()
-        registry.register("executor.reload_probe", _load_probe_class(probe_path)())
+        registry = Registry(extensions_dirs=[{"root": str(tmp_path), "namespace": "executor"}])
+        assert registry.discover() == 1
 
         _write_probe(
             probe_path,

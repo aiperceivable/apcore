@@ -168,6 +168,7 @@ impl Module for ManifestModule {
         json!({
             "type": "object",
             "required": ["module_id", "description"],
+            "additionalProperties": false,
             "properties": {
                 "module_id": {"type": "string", "description": "Canonical module ID"},
                 "description": {"type": "string", "description": "Module description (max 200 characters, plain text)"},
@@ -177,7 +178,20 @@ impl Module for ManifestModule {
                 "output_schema": {"type": ["object", "null"], "description": "Module output JSON Schema"},
                 "annotations": {"type": ["object", "null"], "description": "Module annotation metadata"},
                 "tags": {"type": "array", "items": {"type": "string"}, "description": "Module tags"},
-                "dependencies": {"type": "array", "description": "Declared module dependencies"},
+                "dependencies": {
+                    "type": "array",
+                    "description": "Declared module dependencies",
+                    "items": {
+                        "type": "object",
+                        "required": ["module_id"],
+                        "additionalProperties": false,
+                        "properties": {
+                            "module_id": {"type": "string"},
+                            "version": {"type": "string"},
+                            "optional": {"type": "boolean"}
+                        }
+                    }
+                },
                 "metadata": {"type": ["object", "null"], "description": "Additional module metadata"}
             }
         })
@@ -254,6 +268,7 @@ impl Module for ManifestFullModule {
         json!({
             "type": "object",
             "required": ["project_name", "module_count", "modules"],
+            "additionalProperties": false,
             "properties": {
                 "project_name": {"type": "string", "description": "Project name from configuration"},
                 "module_count": {"type": "integer", "description": "Number of modules returned"},

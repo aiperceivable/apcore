@@ -886,6 +886,37 @@ class AsyncTaskManager:
                 await asyncio.sleep(delay)
         return await self._store_get(task_id)
 
+    async def _persist_terminal(self, info: TaskInfo) -> None:
+        """Finish the record independently of module execution and its retries."""
+        delay = 0.01
+        while True:
+            writing = False
+            try:
+                # A write can commit despite a reported failure. A retry
+                # also must respect cancellation or removal by another worker.
+                current = await self._store_get(info.task_id)
+                if current is None or current.status in _TERMINAL_STATUSES:
+                    return
+                writing = True
+                await self._save(info)
+                return
+            except Exception as error:
+                if delay == 0.01:
+                    _logger.warning("Task %s could not persist its terminal state; retrying", info.task_id)
+                if (
+                    writing
+                    and info.status is TaskStatus.COMPLETED
+                    and isinstance(error, TaskStoreError)
+                    and not error.retryable
+                ):
+                    # A store can reject the result itself (e.g. its size).
+                    # Persist a lightweight terminal record without its payload.
+                    info = dataclasses.replace(
+                        info, status=TaskStatus.FAILED, result=None, error="Task result could not be persisted"
+                    )
+                await asyncio.sleep(delay)
+                delay = min(delay * 2, 1.0)
+
     async def _run(
         self,
         task_id: str,
@@ -909,24 +940,43 @@ class AsyncTaskManager:
                 return
 
             try:
-                async with self._semaphore:
-                    if await self._store_reached_terminal(task_id):
-                        return
-                    info.status = TaskStatus.RUNNING
-                    if info.started_at is None:
-                        info.started_at = time.time()
-                    await self._save(info)
-
-                    result = await self._executor.call_async(module_id, inputs, context)
-
-                    if await self._store_reached_terminal(task_id):
-                        return
-                    info.status = TaskStatus.COMPLETED
-                    info.completed_at = time.time()
-                    info.result = result
-                    await self._save(info)
+                try:
+                    async with self._semaphore:
+                        if await self._store_reached_terminal(task_id):
+                            return
+                        info.status = TaskStatus.RUNNING
+                        if info.started_at is None:
+                            info.started_at = time.time()
+                        await self._save(info)
+                        result = await self._executor.call_async(module_id, inputs, context)
+                except Exception as error:
+                    attempt_error = error
+                else:
+                    await self._persist_terminal(
+                        dataclasses.replace(info, status=TaskStatus.COMPLETED, completed_at=time.time(), result=result)
+                    )
                     return
 
+                if await self._store_reached_terminal(task_id):
+                    return
+                if retry_policy is None or info.retry_count >= max_retries:
+                    await self._persist_terminal(
+                        dataclasses.replace(
+                            info, status=TaskStatus.FAILED, completed_at=time.time(), error=str(attempt_error)
+                        )
+                    )
+                    _logger.error("Task %s failed: %s", task_id, attempt_error, exc_info=attempt_error)
+                    return
+
+                info.retry_count += 1
+                delay = retry_policy.delay_for(info.retry_count)
+                # A task waiting through backoff is PENDING (D-12).
+                info.status = TaskStatus.PENDING
+                await self._save(info)
+                _logger.info(
+                    "Task %s failed (attempt %d/%d), retrying in %.3fs", task_id, info.retry_count, max_retries, delay
+                )
+                await asyncio.sleep(delay)
             except asyncio.CancelledError:
                 if not await self._store_reached_terminal(task_id):
                     info.status = TaskStatus.CANCELLED
@@ -934,39 +984,3 @@ class AsyncTaskManager:
                     await self._save(info)
                 _logger.info("Task %s cancelled", task_id)
                 return
-
-            except Exception as exc:
-                if retry_policy is not None and info.retry_count < max_retries:
-                    if await self._store_reached_terminal(task_id):
-                        return
-                    info.retry_count += 1
-                    delay = retry_policy.delay_for(info.retry_count)
-                    # D-12: backoff state is PENDING (was RETRYING) — matches
-                    # TypeScript and Rust SDKs.
-                    info.status = TaskStatus.PENDING
-                    await self._save(info)
-                    _logger.info(
-                        "Task %s failed (attempt %d/%d), retrying in %.3fs",
-                        task_id,
-                        info.retry_count,
-                        max_retries,
-                        delay,
-                    )
-                    try:
-                        await asyncio.sleep(delay)
-                    except asyncio.CancelledError:
-                        if not await self._store_reached_terminal(task_id):
-                            info.status = TaskStatus.CANCELLED
-                            info.completed_at = time.time()
-                            await self._save(info)
-                        _logger.info("Task %s cancelled during backoff", task_id)
-                        return
-                else:
-                    if await self._store_reached_terminal(task_id):
-                        return
-                    info.status = TaskStatus.FAILED
-                    info.completed_at = time.time()
-                    info.error = str(exc)
-                    await self._save(info)
-                    _logger.error("Task %s failed: %s", task_id, exc, exc_info=True)
-                    return

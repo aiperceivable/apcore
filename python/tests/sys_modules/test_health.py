@@ -24,6 +24,9 @@ from apcore.sys_modules.health import (
 
 
 class _DummyModule:
+
+    input_schema = {"type": "object"}
+    output_schema = {"type": "object"}
     description = "dummy"
 
     def execute(self, inputs: dict[str, Any], context: Any) -> dict[str, Any]:

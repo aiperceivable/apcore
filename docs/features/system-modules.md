@@ -225,6 +225,8 @@ Full manifest for a single registered module.
 }
 ```
 
+Manifest dependencies are objects with `module_id` and optional `version` and `optional` fields. A missing, empty, or null version means the dependency is unconstrained. An omitted `optional` flag means the dependency is required.
+
 ## Contract: system.manifest.module
 
 ### Inputs
@@ -475,33 +477,37 @@ Update a runtime configuration value by dot-path key.
 }
 ```
 
-- `sys_modules.enabled` cannot be changed (the only restricted key).
-- A key is **sensitive** when any dot-separated segment (lowercased) equals, starts with `<s>_`, or ends with `_<s>`, for `<s>` in `token`, `secret`, `key`, `password`, `auth`, `credential`. Its old and new values are replaced with `***REDACTED***` in the response, the event and the audit entry (the overrides store receives the real value).
+- Configuration updates reject the startup-only `sys_modules.enabled` path, including writes to its ancestor and descendant paths. The `toggle.` prefix is reserved for module toggle state.
+- An explicit update of an empty filesystem path raises `CONFIG_INVALID`. The existing path, persisted overrides, and audit records are preserved, and no update event is emitted.
+- A first write to an ordinary key returns `old_value: null` and includes the same field in the update event.
+- The executor masks the submitted `value` in its input capture. The control module applies configuration-path rules separately to values in its response and audit records.
+- The module applies [`obs.redaction.sensitive_keys`](redaction.md#matching-sensitive_keys) to the configuration path and to each nested field's full path. Each dot-separated segment is also checked independently. A segment also matches when it equals, starts with `<s>_`, or ends with `_<s>` for `token`, `secret`, `key`, `password`, `auth`, or `credential`, ignoring case. Matching values become `***REDACTED***` in the response, event, log and audit entry. The overrides store receives the effective configuration value without display redaction.
 - The change is in memory; it is persisted only when an overrides store is configured (see [Persistent overrides](#persistent-overrides-pluggable-overridesstore)).
+- A change to `executor.default_timeout` applies to subsequent module executions that use the executor default. A module's `resources.timeout` still takes precedence, subject to the global deadline.
+- `success` describes the update to the bound configuration. Services that consume a key only during startup use its new value when they are constructed again. For a prebuilt Python or TypeScript Executor, live updates reach the Executor when it shares the client configuration instance.
 - Emits `apcore.config.updated`.
 
 ## Contract: system.control.update_config
 
 ### Inputs
 - `key`: string, required, non-empty — else `InvalidInputError`
-- `value`: any JSON value, required — constraint checking happens after the set
+- `value`: any JSON value, required
 - `reason`: string, required, non-empty — else `InvalidInputError`
 
 ### Preconditions
-- `key` is not restricted (`sys_modules.enabled`) — else `CONFIG_KEY_RESTRICTED`
-- If `key` has a value constraint (see [Config Bus § Value constraints](./config-bus.md#value-constraints)), `value` satisfies it — else the config is rolled back to `old_value` and `ConfigError` (`CONFIG_INVALID`) is raised
+- `key` must avoid the startup-only configuration path and the reserved toggle namespace. A restricted update raises `CONFIG_KEY_RESTRICTED` before changing configuration or persistence.
+- If `key` has a value constraint (see [Config Bus § Value constraints](./config-bus.md#value-constraints)), `value` must satisfy it. A rejected update raises `ConfigError` (`CONFIG_INVALID`) and leaves the effective value unchanged.
 
 ### Side Effects (ordered)
 1. Read the current value of `key` (`old_value`)
-2. Set `key` to `value` in `Config`
-3. Check the key's constraint; on failure roll back and raise
-4. Persist to the overrides store, if one is configured (best effort: a write failure is logged, not raised)
-5. Emit `apcore.config.updated` (values masked for sensitive keys)
-6. Record an audit entry, if an `AuditStore` is configured
-7. Log the change at INFO (values masked for sensitive keys)
+2. Validate the value against the key's constraint, update `Config`, and read back the effective value (`new_value`)
+3. Persist to the overrides store, if one is configured (best effort: a write failure is logged, not raised)
+4. Emit `apcore.config.updated` (values masked for sensitive keys)
+5. Record an audit entry, if an `AuditStore` is configured
+6. Log the change at INFO (values masked for sensitive keys)
 
 ### Postconditions
-- On success: `config.get(key)` returns `value`
+- On success, the effective setting agrees with `new_value` before display redaction. Known framework keys with an `apcore.` prefix target the same setting as the unqualified key.
 - On `CONFIG_INVALID`: `config.get(key)` returns `old_value`
 
 ### Errors
@@ -535,7 +541,9 @@ Hot-reload one module from disk — or every module matching a pattern — witho
 | `path_filter` | string | one of `module_id` / `path_filter` | Pattern (Algorithm A25: `*` and `?` only) matched against registered module IDs, for a bulk reload |
 | `reason` | string | *(required)* | Audit reason |
 
-`module_id` and `path_filter` are mutually exclusive (`MODULE_RELOAD_CONFLICT`); omitting both is `GENERAL_INVALID_INPUT`. A `path_filter` matching nothing is a no-op with an empty `reloaded_modules`. Bulk reloads run in dependency order, leaves first. `reload_dependents` is deprecated and ignored (it warns once); to reload dependents, use a `path_filter` that covers them (D-121). Rust additionally accepts `reload_config: true`, which re-reads the configuration file when the module was constructed with a bound `Config`.
+`module_id` and `path_filter` are mutually exclusive (`MODULE_RELOAD_CONFLICT`). Supply one for a module reload. A `path_filter` matching nothing is a no-op with an empty `reloaded_modules`. Bulk reloads run in dependency order, leaves first. `reload_dependents` is deprecated and ignored (it warns once). To reload dependents, use a `path_filter` that covers them (D-121).
+
+Rust accepts `reload_config: true` with a `reason` and optionally a module target. A refresh re-reads each bound file-backed configuration from its own source and reapplies persisted overrides. When a supplied Executor uses in-memory configuration, its startup settings are the base for persisted overrides. Without an override store, that Executor keeps its current settings. The refreshed snapshots become visible before `apcore.config.reloaded` is emitted. If refresh fails, the current snapshots remain active and `config_reloaded` is `false`. A requested module reload can continue and reports its own success separately.
 
 **Output (single module):**
 
@@ -582,7 +590,7 @@ Emits `apcore.module.reloaded` for each reloaded module.
 If step 4 or 5 fails, see [Reload failure semantics](#reload-failure-semantics).
 
 ### Errors
-- `InvalidInputError` (`GENERAL_INVALID_INPUT`) — `reason` missing, or neither `module_id` nor `path_filter`
+- `InvalidInputError` (`GENERAL_INVALID_INPUT`) — `reason` missing, or a module reload without either `module_id` or `path_filter`
 - `ModuleReloadConflictError` (`MODULE_RELOAD_CONFLICT`) — both `module_id` and `path_filter`
 - `ModuleNotFoundError` (`MODULE_NOT_FOUND`) — `module_id` is not registered
 - `ReloadFailedError` (`RELOAD_FAILED`) — discovery failed or the module was missing afterwards
@@ -590,7 +598,7 @@ If step 4 or 5 fails, see [Reload failure semantics](#reload-failure-semantics).
 ### Returns
 - Single: `{success, module_id, previous_version, new_version, reload_duration_ms}`
 - Bulk: `{success, module_id: null, reloaded_modules, reload_duration_ms}`
-- Rust adds `config_reloaded` to both.
+- Rust adds `config_reloaded` to both module reload results. A Rust configuration-only call returns `{success, module_id: null, config_reloaded}`, with `success` equal to `config_reloaded`.
 
 ### Properties
 - idempotent: false — each call unregisters and re-registers
@@ -878,7 +886,9 @@ sys_modules:
 
 Changes made by `update_config` and `toggle_feature` are in memory unless an overrides store is configured. With one, every change is written to it, and at startup its contents are applied **after** the base configuration, so a runtime override survives a restart and a manual edit of the base file.
 
-- `sys_modules.control.overrides_path` configures a `FileOverridesStore` (YAML). Under `APCore` this is the only way to configure one. In Python and TypeScript it is loaded at startup and written on every change; in Rust it is loaded at startup, but the control modules registered by `APCore` do not write back to it.
+On Unix, the file-backed override store creates replacement files with owner-only permissions.
+
+- `sys_modules.control.overrides_path` configures a `FileOverridesStore` (YAML) under `APCore`. Each SDK loads the file at startup and writes changes through the control modules. Rust also reads it during an explicit configuration reload.
 - `register_sys_modules` also accepts an `overrides_store` of any implementation (`FileOverridesStore`, `InMemoryOverridesStore`, or your own); it takes precedence over `overrides_path`.
 - With neither, overrides are in memory only.
 

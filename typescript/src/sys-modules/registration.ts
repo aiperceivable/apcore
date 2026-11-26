@@ -9,6 +9,7 @@ import type { MetricsCollector } from '../observability/metrics.js';
 import type { AuditStore } from './audit.js';
 import type { OverridesStore } from './overrides.js';
 import { FileOverridesStore } from './overrides.js';
+import { TOGGLE_OVERRIDE_PREFIX } from './override-update.js';
 import { SysModuleRegistrationError } from '../errors.js';
 import { ErrorHistory } from '../observability/error-history.js';
 import { ErrorHistoryMiddleware } from '../middleware/error-history.js';
@@ -301,12 +302,6 @@ export interface RegisterSysModulesOptions {
  * `node:fs` does not enter the browser dependency graph.
  */
 type OverridesLoader = (path: string) => Record<string, unknown> | null;
-/**
- * Prefix under which `system.control.toggle_feature` persists its decisions.
- * Must match the toggle module, which writes
- * `toggle.${moduleId}`.
- */
-const TOGGLE_OVERRIDE_PREFIX = 'toggle.';
 
 /**
  * Apply a loaded overrides map.
