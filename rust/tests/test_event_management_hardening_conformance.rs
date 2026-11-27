@@ -14,10 +14,6 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-// parking_lot::Mutex is preferred over std::sync::Mutex in async tests because
-// it sidesteps clippy's `await_holding_lock` warning while still being safe to
-// hold during await points (we only need the lock for registry hygiene, never
-// for cross-await coordination).
 use parking_lot::Mutex;
 use regex::Regex;
 use serde_json::{json, Value};
@@ -25,9 +21,7 @@ use serde_json::{json, Value};
 use apcore::errors::{ErrorCode, ModuleError};
 use apcore::events::circuit_breaker::{CircuitBreakerWrapper, CircuitEventSink, CircuitState};
 use apcore::events::emitter::ApCoreEvent;
-use apcore::events::subscribers::{
-    create_subscriber, register_subscriber_type, reset_subscriber_registry, EventSubscriber,
-};
+use apcore::events::subscribers::{create_subscriber, EventSubscriber, SubscriberRegistry};
 
 // ---------------------------------------------------------------------------
 // Fixture loading (mirrors other conformance tests)
@@ -67,14 +61,6 @@ fn parse_event(value: &Value) -> ApCoreEvent {
 // ---------------------------------------------------------------------------
 // Test helpers — recording subscriber and circuit-event sink
 // ---------------------------------------------------------------------------
-
-/// Tests that mutate the global subscriber-factory registry hold this lock to
-/// avoid cross-test races. Mirrors the convention used in
-/// `src/events/subscribers.rs`.
-fn registry_lock() -> &'static Mutex<()> {
-    static LOCK: Mutex<()> = Mutex::new(());
-    &LOCK
-}
 
 #[derive(Debug, Default)]
 struct CallRecord {
@@ -210,9 +196,6 @@ impl EventSubscriber for AlwaysOk {
 
 #[test]
 fn conformance_subscriber_factory_registered_type() {
-    let _guard = registry_lock().lock();
-    reset_subscriber_registry();
-
     let fixture = load_fixture();
     let case = fixture_case(&fixture, "subscriber_factory_registered_type");
     let subscriber_config = &case["input"]["subscriber_config"];
@@ -224,27 +207,25 @@ fn conformance_subscriber_factory_registered_type() {
         .collect();
     assert_eq!(registered_types, vec!["slack".to_string()]);
 
-    register_subscriber_type(
-        "slack",
-        Box::new(|config| {
-            let webhook_url = config
-                .get("webhook_url")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            let id = format!("slack-{webhook_url}");
-            Ok(Box::new(RecordingSubscriber {
-                id,
-                record: Arc::new(CallRecord::default()),
-            }) as Box<dyn EventSubscriber>)
-        }),
-    );
+    let mut registry = SubscriberRegistry::new();
+    registry.register("slack", |config| {
+        let webhook_url = config
+            .get("webhook_url")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let id = format!("slack-{webhook_url}");
+        Ok(Box::new(RecordingSubscriber {
+            id,
+            record: Arc::new(CallRecord::default()),
+        }) as Box<dyn EventSubscriber>)
+    });
 
-    let sub = create_subscriber(subscriber_config).expect("slack subscriber must be created");
+    let sub = registry
+        .create(subscriber_config)
+        .expect("slack subscriber must be created");
     assert!(sub.subscriber_id().starts_with("slack-"));
     assert_eq!(case["expected"]["subscriber_created"].as_bool(), Some(true));
     assert_eq!(case["expected"]["subscriber_type"].as_str(), Some("slack"));
-
-    reset_subscriber_registry();
 }
 
 // ---------------------------------------------------------------------------
@@ -253,9 +234,6 @@ fn conformance_subscriber_factory_registered_type() {
 
 #[test]
 fn conformance_builtin_stdout_type() {
-    let _guard = registry_lock().lock();
-    reset_subscriber_registry();
-
     let fixture = load_fixture();
     let case = fixture_case(&fixture, "builtin_stdout_type");
     let subscriber_config = &case["input"]["subscriber_config"];
@@ -276,9 +254,6 @@ fn conformance_builtin_stdout_type() {
 
 #[test]
 fn conformance_builtin_file_type() {
-    let _guard = registry_lock().lock();
-    reset_subscriber_registry();
-
     let fixture = load_fixture();
     let case = fixture_case(&fixture, "builtin_file_type");
     let subscriber_config = &case["input"]["subscriber_config"];
@@ -300,38 +275,29 @@ fn conformance_builtin_file_type() {
 /// delegate so we can observe whether the event reached the inner sink.
 /// The fixture references `delegate_type: "webhook"`, but we register a stub
 /// under that name during the test to avoid real HTTP traffic.
-fn install_recording_webhook(record: Arc<CallRecord>) {
-    register_subscriber_type(
-        "webhook",
-        Box::new(move |_config| {
-            let id = format!("webhook-{}", uuid::Uuid::new_v4());
-            Ok(Box::new(RecordingSubscriber {
-                id,
-                record: record.clone(),
-            }) as Box<dyn EventSubscriber>)
-        }),
-    );
+fn recording_webhook_registry(record: Arc<CallRecord>) -> SubscriberRegistry {
+    let mut registry = SubscriberRegistry::new();
+    registry.register("webhook", move |_config| {
+        let id = format!("webhook-{}", uuid::Uuid::new_v4());
+        Ok(Box::new(RecordingSubscriber {
+            id,
+            record: Arc::clone(&record),
+        }) as Box<dyn EventSubscriber>)
+    });
+    registry
 }
 
 #[tokio::test]
 async fn conformance_builtin_filter_passes_matching() {
-    // Lock is held only while we mutate the global registry and create the
-    // subscriber instance. Once `sub` owns its (already-built) delegate, the
-    // registry can be safely reset and the lock dropped before we await.
     let record = Arc::new(CallRecord::default());
     let fixture = load_fixture();
     let case = fixture_case(&fixture, "builtin_filter_passes_matching");
     let subscriber_config = case["input"]["subscriber_config"].clone();
     let event = parse_event(&case["input"]["event"]);
 
-    let sub = {
-        let _guard = registry_lock().lock();
-        reset_subscriber_registry();
-        install_recording_webhook(record.clone());
-        let s = create_subscriber(&subscriber_config).expect("filter built-in must be available");
-        reset_subscriber_registry();
-        s
-    };
+    let sub = recording_webhook_registry(Arc::clone(&record))
+        .create(&subscriber_config)
+        .expect("filter built-in must be available");
 
     sub.on_event(&event).await.unwrap();
 
@@ -356,14 +322,9 @@ async fn conformance_builtin_filter_discards_nonmatching() {
     let subscriber_config = case["input"]["subscriber_config"].clone();
     let event = parse_event(&case["input"]["event"]);
 
-    let sub = {
-        let _guard = registry_lock().lock();
-        reset_subscriber_registry();
-        install_recording_webhook(record.clone());
-        let s = create_subscriber(&subscriber_config).expect("filter built-in must be available");
-        reset_subscriber_registry();
-        s
-    };
+    let sub = recording_webhook_registry(Arc::clone(&record))
+        .create(&subscriber_config)
+        .expect("filter built-in must be available");
 
     sub.on_event(&event).await.unwrap();
 
@@ -452,14 +413,9 @@ async fn drive_filter_case(id: &str) {
     let subscriber_config = case["input"]["subscriber_config"].clone();
     let event = parse_event(&case["input"]["event"]);
 
-    let sub = {
-        let _guard = registry_lock().lock();
-        reset_subscriber_registry();
-        install_recording_webhook(record.clone());
-        let s = create_subscriber(&subscriber_config).expect("filter built-in must be available");
-        reset_subscriber_registry();
-        s
-    };
+    let sub = recording_webhook_registry(Arc::clone(&record))
+        .create(&subscriber_config)
+        .expect("filter built-in must be available");
 
     sub.on_event(&event).await.unwrap();
 

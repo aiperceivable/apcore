@@ -7,7 +7,7 @@
  */
 import { describe, expect, it } from 'vitest';
 
-import { ACL, APCore, ExecutionPolicy, Executor } from '../src/index.js';
+import { ACL, APCore, ExecutionPolicy, Executor } from '../src/full.js';
 import { Config } from '../src/config.js';
 import { ExecutionStrategy } from '../src/pipeline.js';
 import type { Step, StepResult, PipelineContext } from '../src/pipeline.js';
@@ -53,7 +53,11 @@ describe('governanceState — registration observations', () => {
   });
 
   it('control modules with no gates is the condition the flag exists for', () => {
-    const state = client(SYS_ON).executor.governanceState();
+    const c = client(SYS_ON);
+    const strategy = new ExecutionStrategy('explicitly-gateless', []);
+    const state = new Executor({ registry: c.registry, strategy }).governanceState();
+    expect(state.builtinApprovalGateWired).toBe(false);
+    expect(state.policyStrict).toBe(false);
     expect(state.controlModulesRegistered).toBe(true);
     expect(state.unprotectedControlSurface).toBe(true);
   });

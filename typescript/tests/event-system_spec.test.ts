@@ -33,7 +33,6 @@ import { describe, it, expect, vi } from 'vitest';
 import {
   EventEmitter,
   WebhookSubscriber,
-  A2ASubscriber,
 } from '../src/events/index.js';
 import { CircuitBreakerWrapper, CircuitState } from '../src/events/circuit-breaker.js';
 import type { ApCoreEvent, EventSubscriber } from '../src/events/index.js';
@@ -577,128 +576,6 @@ describe('EventEmitter.flush', () => {
       expect([countAfterFirst, countAfterSecond]).toEqual([1, 1]);
     } finally {
       await emitter.shutdown(1000);
-    }
-  });
-});
-
-// ===========================================================================
-// Contract: A2ASubscriber.deliver
-// ===========================================================================
-
-describe('A2ASubscriber.deliver', () => {
-  it('event_system.deliver.input.event.required_a2a: A2A delivery POSTs a {skillId, event} wrapper', async () => {
-    const fetchMock = stubFetch(200);
-    try {
-      const sub = new A2ASubscriber('https://platform.example.com');
-      const event = makeEvent({ eventType: 'apcore.health.recovered' });
-      await sub.onEvent(event);
-      expect(fetchMock).toHaveBeenCalledTimes(1);
-      const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
-      const body = JSON.parse(init.body as string);
-      expect(body.skillId).toBe('apevo.event_receiver');
-      expect(body.event.event_type).toBe('apcore.health.recovered');
-    } finally {
-      vi.unstubAllGlobals();
-    }
-  });
-
-  it.skip('event_system.deliver.error.ImportError_a2a: missing symbol — TS uses global fetch, no ImportError without aiohttp (contract gap)', async () => {
-    // Python raises ImportError synchronously if aiohttp is not installed. The
-    // TS SDK uses the global `fetch`; there is no optional HTTP-client import
-    // and thus no ImportError analogue. Recorded as a missing-symbol skip.
-  });
-
-  it('event_system.deliver.property.async_a2a: A2A delivery returns a Promise that resolves to undefined', async () => {
-    const fetchMock = stubFetch(200);
-    try {
-      const sub = new A2ASubscriber('https://platform.example.com');
-      const result = sub.onEvent(makeEvent());
-      expect(result).toBeInstanceOf(Promise);
-      await expect(result).resolves.toBeUndefined();
-      expect(fetchMock).toHaveBeenCalled();
-    } finally {
-      vi.unstubAllGlobals();
-    }
-  });
-
-  it('event_system.deliver.property.thread_safe_a2a: >=8 concurrent A2A deliveries each issue their own POST', async () => {
-    const fetchMock = stubFetch(200);
-    try {
-      const sub = new A2ASubscriber('https://platform.example.com');
-      await Promise.all(
-        Array.from({ length: 8 }, (_, i) => sub.onEvent(makeEvent({ data: { i } }))),
-      );
-      expect(fetchMock).toHaveBeenCalledTimes(8);
-    } finally {
-      vi.unstubAllGlobals();
-    }
-  });
-
-  it('event_system.deliver.property.pure_a2a: delivery is NOT pure — it POSTs to the platform URL', async () => {
-    const fetchMock = stubFetch(200);
-    try {
-      const sub = new A2ASubscriber('https://platform.example.com');
-      await sub.onEvent(makeEvent());
-      expect(fetchMock.mock.calls[0][0]).toBe('https://platform.example.com');
-    } finally {
-      vi.unstubAllGlobals();
-    }
-  });
-
-  it('event_system.deliver.side_effect.1.auth_modes_a2a: str->Bearer; dict->merged headers; None->no Authorization', async () => {
-    // str auth -> Bearer
-    let fetchMock = stubFetch(200);
-    try {
-      const subStr = new A2ASubscriber('https://p.example.com', 'tok123');
-      await subStr.onEvent(makeEvent());
-      const headersStr = (fetchMock.mock.calls[0][1] as RequestInit).headers as Record<string, string>;
-      expect(headersStr['Authorization']).toBe('Bearer tok123');
-    } finally {
-      vi.unstubAllGlobals();
-    }
-
-    // dict auth -> merged
-    fetchMock = stubFetch(200);
-    try {
-      const subDict = new A2ASubscriber('https://p.example.com', { 'X-Api-Key': 'k' });
-      await subDict.onEvent(makeEvent());
-      const headersDict = (fetchMock.mock.calls[0][1] as RequestInit).headers as Record<string, string>;
-      expect(headersDict['X-Api-Key']).toBe('k');
-    } finally {
-      vi.unstubAllGlobals();
-    }
-
-    // None auth -> no Authorization
-    fetchMock = stubFetch(200);
-    try {
-      const subNone = new A2ASubscriber('https://p.example.com', undefined);
-      await subNone.onEvent(makeEvent());
-      const headersNone = (fetchMock.mock.calls[0][1] as RequestInit).headers as Record<string, string>;
-      expect('Authorization' in headersNone).toBe(false);
-    } finally {
-      vi.unstubAllGlobals();
-    }
-  });
-
-  it('event_system.deliver.side_effect.2.retry_on_5xx_a2a: 5xx rethrows (emitter retries); 4xx does not throw (no retry)', async () => {
-    vi.spyOn(console, 'warn').mockImplementation(() => {});
-    // 5xx -> throws
-    let fetchMock = stubFetch(502);
-    try {
-      const sub5xx = new A2ASubscriber('https://p.example.com');
-      await expect(sub5xx.onEvent(makeEvent())).rejects.toThrow();
-    } finally {
-      vi.unstubAllGlobals();
-    }
-    // 4xx -> not thrown
-    fetchMock = stubFetch(403);
-    try {
-      const sub4xx = new A2ASubscriber('https://p.example.com');
-      await expect(sub4xx.onEvent(makeEvent())).resolves.toBeUndefined();
-      expect(fetchMock).toHaveBeenCalledTimes(1);
-    } finally {
-      vi.unstubAllGlobals();
-      vi.restoreAllMocks();
     }
   });
 });

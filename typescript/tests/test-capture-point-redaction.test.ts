@@ -20,7 +20,7 @@
 import { Type } from '@sinclair/typebox';
 import { describe, it, expect } from 'vitest';
 
-import { APCore } from '../src/client.js';
+import { APCore } from '../src/full.js';
 import { Config } from '../src/config.js';
 import { Middleware } from '../src/middleware/base.js';
 

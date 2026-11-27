@@ -30,8 +30,10 @@
  */
 
 import { Type } from '@sinclair/typebox';
-import { APCore, Config } from 'apcore-js';
-import type { ApCoreEvent, EventSubscriber } from 'apcore-js';
+import { AutoApproveHandler } from 'apcore-js';
+import { Config } from 'apcore-js/config';
+import type { ApCoreEvent, EventSubscriber } from 'apcore-js/events';
+import { APCore } from 'apcore-js/full';
 
 // ---------------------------------------------------------------------------
 // 1. Build an APCore with the event bus enabled. The bus is off by default;
@@ -42,6 +44,7 @@ const config = new Config({
   sys_modules: { enabled: true, events: { enabled: true } },
 });
 const client = new APCore({ config });
+client.executor.setApprovalHandler(new AutoApproveHandler());
 
 // ---------------------------------------------------------------------------
 // 2. Subscribe to canonical lifecycle events; every delivery is collected.

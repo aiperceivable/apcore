@@ -91,6 +91,16 @@ def python_surface(sdk: Path) -> dict[str, set[str]]:
         if all_m:
             names |= set(re.findall(r'"(\w+)"', all_m.group(1)))
         surface[dotted] = names
+
+    # The root's __getattr__ preserves explicit imports of extension symbols.
+    # Resolve those routes against their destinations as well as the root.
+    root = pkg / "__init__.py"
+    if root.is_file():
+        extensions = re.search(r"^_EXTENSION_EXPORTS\s*=\s*\{(.*?)^\}", root.read_text(), re.M | re.S)
+        if extensions:
+            for name, module in re.findall(r'"(\w+)":\s*"([\w.]+)"', extensions.group(1)):
+                if name in surface.get(module, ()):
+                    surface["apcore"].add(name)
     return surface
 
 
@@ -119,8 +129,15 @@ def typescript_surface(sdk: Path) -> dict[str, set[str]]:
     }
 
 
-def _typescript_file_exports(source: Path) -> set[str]:
-    """Collect top-level declarations and explicit re-exports from source."""
+def _typescript_file_exports(source: Path, visited: set[Path] | None = None) -> set[str]:
+    """Collect top-level declarations and follow relative barrel re-exports."""
+    source = source.resolve()
+    if visited is None:
+        visited = set()
+    if source in visited:
+        return set()
+    visited.add(source)
+
     src = source.read_text()
     declaration = (r"export\s+(?:declare\s+)?(?:abstract\s+)?(?:async\s+)?"
                    r"(?:class|function|const|let|var|interface|type|enum)\s+([\w$]+)")
@@ -135,10 +152,10 @@ def _typescript_file_exports(source: Path) -> set[str]:
             )
             if m:
                 names.add(m.group(1))
-    for star in re.findall(r"export\s+\*\s+from\s+['\"]\./([^'\"]+)['\"]", src):
-        p = source.parent / star.replace(".js", ".ts")
-        if p.is_file():
-            names.update(re.findall(declaration, p.read_text()))
+    for target in re.findall(r"export\s+\*\s+from\s+['\"](\.{1,2}/[^'\"]+)['\"]", src):
+        reexport = source.parent / (target.removesuffix(".js") + ".ts")
+        if reexport.is_file():
+            names.update(_typescript_file_exports(reexport, visited))
     return names
 
 

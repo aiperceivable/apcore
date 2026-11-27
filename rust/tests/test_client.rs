@@ -67,6 +67,38 @@ async fn test_apcore_register_and_call_round_trip() {
     assert_eq!(result["echoed"]["hello"], "world");
 }
 
+#[test]
+fn test_system_startup_uses_its_own_subscriber_registry_in_nested_filters() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use apcore::{EventSubscriber, StdoutSubscriber, SubscriberRegistry};
+
+    let calls = Arc::new(AtomicUsize::new(0));
+    let mut subscribers = SubscriberRegistry::new();
+    let registered_calls = Arc::clone(&calls);
+    subscribers.register("fixture", move |_| {
+        registered_calls.fetch_add(1, Ordering::Relaxed);
+        Ok(Box::new(StdoutSubscriber::new()) as Box<dyn EventSubscriber>)
+    });
+    let filter = json!({"type": "filter", "delegate_type": "fixture"});
+    assert!(SubscriberRegistry::new().create(&filter).is_err());
+
+    let mut config = Config::default();
+    config.set("sys_modules.enabled", json!(true));
+    config.set("sys_modules.events.enabled", json!(true));
+    config.set("sys_modules.events.subscribers", json!([filter]));
+    let client = APCore::try_start_with_subscribers(
+        APCoreOptions {
+            config: Some(config),
+            ..Default::default()
+        },
+        &subscribers,
+    )
+    .unwrap();
+    assert!(client.sys_modules_errors().is_empty());
+    assert_eq!(calls.load(Ordering::Relaxed), 1);
+}
+
 #[tokio::test]
 async fn test_supplied_executor_keeps_its_toggle_state() {
     let state = Arc::new(apcore::sys_modules::ToggleState::new());
@@ -224,7 +256,12 @@ async fn test_apcore_disable_enable_signature_takes_reason() {
     let mut config = Config::default();
     config.set("sys_modules.enabled", json!(true));
     config.set("sys_modules.events.enabled", json!(true));
-    let apcore = APCore::with_config(config);
+    let apcore = APCore::try_start(apcore::APCoreOptions {
+        config: Some(config),
+        approval_handler: Some(Box::new(apcore::AutoApproveHandler)),
+        ..Default::default()
+    })
+    .unwrap();
 
     // Unique id: the disabled-set is a process-global ToggleState (A-D-12).
     let module_id = "demo.toggle.signature_test";
@@ -565,10 +602,11 @@ async fn test_managed_shutdown_rejects_wait_from_its_unload_hook() {
 async fn test_shutdown_flush_budget_is_local_and_subscribers_cannot_wait_on_it() {
     use apcore::events::subscribers::EventSubscriber;
     use futures_util::FutureExt;
+    use tokio::sync::watch;
 
     #[derive(Debug)]
     struct HoldingSubscriber {
-        operation: Arc<Mutex<Option<apcore::LifecycleOperation>>>,
+        operation: watch::Receiver<Option<apcore::LifecycleOperation>>,
         observed: Arc<tokio::sync::Notify>,
         release: Arc<tokio::sync::Notify>,
     }
@@ -579,7 +617,14 @@ async fn test_shutdown_flush_budget_is_local_and_subscribers_cannot_wait_on_it()
             if event.module_id.as_deref() != Some("demo.echo") {
                 return Ok(());
             }
-            let operation = self.operation.lock().unwrap().clone().unwrap();
+            // Shutdown can emit the event before the caller receives its operation.
+            let mut operation = self.operation.clone();
+            let operation = operation
+                .wait_for(Option::is_some)
+                .await
+                .unwrap()
+                .clone()
+                .unwrap();
             let result = operation.wait(None).now_or_never().unwrap();
             assert_eq!(result.unwrap_err().code, ErrorCode::GeneralInvalidInput);
             self.observed.notify_one();
@@ -595,14 +640,14 @@ async fn test_shutdown_flush_budget_is_local_and_subscribers_cannot_wait_on_it()
         None,
         None,
     );
-    let operation_slot = Arc::new(Mutex::new(None));
+    let (operation_sender, operation_receiver) = watch::channel(None);
     let observed = Arc::new(tokio::sync::Notify::new());
     let release = Arc::new(tokio::sync::Notify::new());
     client
         .on_subscriber(
             "apcore.registry.module_unregistered",
             Box::new(HoldingSubscriber {
-                operation: Arc::clone(&operation_slot),
+                operation: operation_receiver,
                 observed: Arc::clone(&observed),
                 release: Arc::clone(&release),
             }),
@@ -615,7 +660,7 @@ async fn test_shutdown_flush_budget_is_local_and_subscribers_cannot_wait_on_it()
             ..Default::default()
         }))
         .unwrap();
-    *operation_slot.lock().unwrap() = Some(operation.clone());
+    operation_sender.send(Some(operation.clone())).unwrap();
     let peer = peer
         .start_shutdown(Some(apcore::ShutdownOptions {
             event_flush_timeout_ms: Some(0),

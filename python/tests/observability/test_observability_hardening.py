@@ -634,13 +634,12 @@ class TestPrometheusFormatIncludesRequiredMetrics:
         assert "# TYPE apcore_module_calls_total counter" in output
 
     def test_prometheus_exporter_export_method(self) -> None:
-        """PrometheusExporter.export() delegates to MetricsCollector.export_prometheus()."""
-        from apcore.observability.prometheus_exporter import PrometheusExporter
+        """The renderer delegates to MetricsCollector.export_prometheus()."""
+        from apcore.observability.prometheus_exporter import render_prometheus_metrics
 
         collector = MetricsCollector()
         collector.increment_calls("mod.a", "success")
-        exporter = PrometheusExporter(collector=collector)
-        output = exporter.export()
+        output = render_prometheus_metrics(collector)
         assert "apcore_module_calls_total" in output
 
 

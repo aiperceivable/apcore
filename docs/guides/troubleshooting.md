@@ -101,7 +101,7 @@ Common codes. For the full list see [features/error-system.md](../features/error
 | `BINDING_SCHEMA_INFERENCE_FAILED` | A binding with `auto_schema` targets a callable without enough type information | Add type hints to the callable, or give `input_schema` / `output_schema` / `schema_ref` explicitly |
 | `ACL_DENIED` | No `allow` rule matched and the ACL file's `default_effect` is `deny`, or a `deny` rule matched | Add an `allow` rule — see §1.2 |
 | `ACL_RULE_ERROR` | The ACL file is invalid: missing `callers`/`targets`/`effect`, unknown rule key, bad `effect` value or pattern array | Compare with [ACL Configuration Guide § Configuration Format](./acl-configuration.md#3-configuration-format) |
-| `APPROVAL_DENIED` | The handler returned `rejected`, or no handler is attached under `ExecutionPolicy(strict=True)` | Inspect the handler; attach one if strict mode is on |
+| `APPROVAL_DENIED` | The handler rejected the call, or the call requires approval and the strict gate has no handler | Inspect the decision or attach an approval handler |
 | `APPROVAL_TIMEOUT` | The handler returned `timeout` | Back off before retrying; the same handler answers again |
 | `APPROVAL_PENDING` | Phase B: the handler returned `pending` | Keep `approval_id`; call again later with `_approval_token` in the inputs ([Cookbook — Approval-Gated Modules](./cookbook-approval-flow.md)) |
 | `CALL_DEPTH_EXCEEDED` | The call chain is deeper than `executor.max_call_depth` (default 32) | Flatten the call graph, or raise the limit if the depth is intended |
@@ -137,7 +137,7 @@ Enumerate registered modules:
 === "TypeScript"
 
     ```typescript
-    import { APCore, Config } from 'apcore-js';
+    import { APCore, Config } from 'apcore-js/full';
 
     const client = new APCore({ config: Config.load('apcore.yaml') });
     console.log(await client.discover(), 'modules discovered');
@@ -176,7 +176,7 @@ Load `apcore.yaml` and print the effective configuration (loading validates it a
 === "TypeScript"
 
     ```typescript
-    import { Config } from 'apcore-js';
+    import { Config } from 'apcore-js/config';
 
     const config = Config.load('apcore.yaml');
     console.log(config.data);

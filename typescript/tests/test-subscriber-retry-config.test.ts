@@ -11,17 +11,14 @@
  * (maxAttempts=3, initialBackoffMs=100, maxBackoffMs=30000, backoffMultiplier=2.0)
  * — otherwise the test would pass whether or not the config was ever read.
  */
-import { afterEach, describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import {
   createSubscriberFromConfig,
-  registerSubscriberType,
-  resetSubscriberRegistry,
 } from '../src/sys-modules/registration.js';
 import {
   WebhookSubscriber,
-  A2ASubscriber,
   FileSubscriber,
   StdoutSubscriber,
   FilterSubscriber,
@@ -63,10 +60,6 @@ function makeEvent(): ApCoreEvent {
   };
 }
 
-afterEach(() => {
-  resetSubscriberRegistry();
-});
-
 describe('nested retry: block — one case per built-in subscriber type', () => {
   it('webhook reads the nested retry block', () => {
     const sub = createSubscriberFromConfig({
@@ -78,15 +71,6 @@ describe('nested retry: block — one case per built-in subscriber type', () => 
     expectNonDefaultPolicy(sub.retry);
   });
 
-  it('a2a reads the nested retry block', () => {
-    const sub = createSubscriberFromConfig({
-      type: 'a2a',
-      platform_url: 'https://platform.example.com',
-      retry: NON_DEFAULT_RETRY,
-    });
-    expect(sub).toBeInstanceOf(A2ASubscriber);
-    expectNonDefaultPolicy(sub.retry);
-  });
 
   it('file reads the nested retry block', () => {
     const sub = createSubscriberFromConfig({
@@ -234,7 +218,7 @@ describe('the declared policy actually governs delivery', () => {
       constructor(readonly retry?: RetryConfig) {}
       async onEvent(_event: ApCoreEvent): Promise<void> {}
     }
-    registerSubscriberType('custom_sink', (config) => {
+    const factory = (config: Record<string, unknown>) => {
       const raw = config['retry'] as Record<string, number>;
       return new CustomSink({
         maxAttempts: raw['max_attempts'],
@@ -242,8 +226,11 @@ describe('the declared policy actually governs delivery', () => {
         maxBackoffMs: raw['max_backoff_ms'],
         backoffMultiplier: raw['backoff_multiplier'],
       });
-    });
-    const sub = createSubscriberFromConfig({ type: 'custom_sink', retry: NON_DEFAULT_RETRY });
+    };
+    const sub = createSubscriberFromConfig(
+      { type: 'custom_sink', retry: NON_DEFAULT_RETRY },
+      { custom_sink: factory },
+    );
     expectNonDefaultPolicy(sub.retry);
   });
 });

@@ -65,9 +65,10 @@ pub use async_task::{
     AsyncTaskManager, InMemoryTaskStore, ReaperConfig, ReaperHandle,
     RetryConfig as AsyncRetryConfig, TaskInfo, TaskStatus, TaskStore,
 };
+#[cfg(feature = "config")]
+pub use bindings::BindingLoader;
 pub use bindings::{
-    typed_handler, AutoSchemaValue, BindingEntry, BindingHandler, BindingLoader, BindingsFile,
-    TypedBindingHandler,
+    typed_handler, AutoSchemaValue, BindingEntry, BindingHandler, BindingsFile, TypedBindingHandler,
 };
 pub use builtin_steps::{
     build_internal_strategy, build_minimal_strategy, build_performance_strategy,
@@ -100,10 +101,11 @@ pub use events::circuit_breaker::{
 };
 pub use events::emitter::{ApCoreEvent, EventEmitter};
 pub use events::retry::EventRetryConfig;
+#[cfg(feature = "events-file")]
+pub use events::subscribers::FileSubscriber;
 pub use events::subscribers::{
-    create_subscriber, register_subscriber_type, reset_subscriber_registry,
-    unregister_subscriber_type, A2ASubscriber, EventSubscriber, FileSubscriber, FilterSubscriber,
-    OutputFormat, StdoutSubscriber, WebhookSubscriber,
+    create_subscriber, EventSubscriber, FilterSubscriber, OutputFormat, StdoutSubscriber,
+    SubscriberRegistry, WebhookSubscriber,
 };
 pub use executor::{
     list_strategies, redact_sensitive, register_strategy, Executor, GovernanceState, REDACTED_VALUE,
@@ -144,7 +146,6 @@ pub use observability::processor::{
     BatchSpanProcessor, BatchSpanProcessorBuilder, BatchSpanProcessorConfig, SimpleSpanProcessor,
     SpanProcessor,
 };
-pub use observability::prometheus_exporter::PrometheusExporter;
 pub use observability::redaction::{RedactionConfig, RedactionConfigBuilder, RedactionConfigError};
 pub use observability::render_prometheus_metrics;
 pub use observability::span::{Span, SpanExporter};
@@ -171,27 +172,35 @@ pub use registry::registry::{
 };
 pub use registry::{
     class_name_to_segment, compute_base_id, derive_module_ids, detect_id_conflicts, ConflictResult,
-    ConflictSeverity, ConflictType, DefaultDiscoverer, DiscoveredClass, DiscoveryConfig,
-    ModuleFactory, MultiClassEntry, MAX_MODULE_ID_LEN,
+    ConflictSeverity, ConflictType, DiscoveredClass, DiscoveryConfig, MultiClassEntry,
+    MAX_MODULE_ID_LEN,
 };
+#[cfg(feature = "discovery")]
+pub use registry::{DefaultDiscoverer, ModuleFactory};
 pub use schema::{
-    assert_openai_strict_compatible, detect_openai_strict_incompatibilities, to_strict_schema,
-    ExportProfile, RefResolver, SchemaDefinition, SchemaExporter, SchemaLoader, SchemaStrategy,
-    SchemaValidator,
+    assert_openai_strict_compatible, detect_openai_strict_incompatibilities, export_generic,
+    to_strict_schema, SchemaDefinition, SchemaValidator,
 };
+#[cfg(feature = "config")]
+pub use schema::{RefResolver, SchemaLoader, SchemaStrategy};
 pub use stream_completion::{
     StreamChunks, StreamCompletion, StreamCompletionHandle, StreamEndReason,
     StreamFailureDisposition, StreamSkipReason, StreamStepOutcome,
 };
+#[cfg(feature = "sys-modules")]
 pub use sys_modules::control::UpdateConfigModule;
+#[cfg(feature = "sys-modules")]
 pub use sys_modules::overrides::{
     FileOverridesStore, InMemoryOverridesStore, OverridesError, OverridesStore,
 };
 pub use sys_modules::{
-    check_module_disabled, is_module_disabled, register_sys_modules,
-    register_sys_modules_with_options, HealthModule, HealthSummaryModule, ManifestFullModule,
-    ManifestModule, ReloadModule, SysModuleError, SysModulesContext, SysModulesOptions,
-    ToggleFeatureModule, ToggleState, UsageModule, UsageSummaryModule,
+    check_module_disabled, is_module_disabled, SysModuleError, SysModulesContext, ToggleState,
+};
+#[cfg(feature = "sys-modules")]
+pub use sys_modules::{
+    register_sys_modules, register_sys_modules_with_options, HealthModule, HealthSummaryModule,
+    ManifestFullModule, ManifestModule, ReloadModule, SysModulesOptions, ToggleFeatureModule,
+    UsageModule, UsageSummaryModule,
 };
 pub use trace_context::{TraceContext, TraceParent};
 pub use utils::{

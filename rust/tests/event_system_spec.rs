@@ -17,7 +17,6 @@
 //   - SubscriberCircuitBreaker.on_failure  (Rust: CircuitBreakerWrapper)
 //   - EventEmitter.unsubscribe
 //   - EventEmitter.flush
-//   - A2ASubscriber.deliver
 //
 // Symbol-reality notes (drive the skip / ignore decisions below):
 //   - `EventEmitter::emit` takes `&ApCoreEvent` and is fire-and-forget; it
@@ -25,7 +24,7 @@
 //     `input.event_type.not_empty` rule is not enforced.
 //   - The Rust `EventEmitter::emit` is `async` (unlike Python's sync emit), so
 //     `property.async` for emit asserts the async, non-blocking contract.
-//   - `WebhookSubscriber` / `A2ASubscriber` deliver via `on_event` (not a
+//   - `WebhookSubscriber` delivers via `on_event` (not a
 //     `deliver` method). The HTTP path is gated behind the `events` cargo
 //     feature. The emitter owns retries and dead-letter delivery.
 //   - The circuit-breaker contract names `SubscriberCircuitBreaker.on_failure`
@@ -922,132 +921,6 @@ async fn flush_property_idempotent() {
     emitter.flush(2000).await.unwrap(); // already empty -> no-op
     let after_second = received.lock().len();
     assert_eq!((after_first, after_second), (1, 1));
-}
-
-// ===========================================================================
-// Contract: A2ASubscriber.deliver
-// ===========================================================================
-
-// clause: event_system.deliver.error.ImportError_a2a
-#[test]
-#[ignore = "event_system.deliver.error.ImportError_a2a: Python-only ImportError when aiohttp is absent; Rust gates the HTTP path behind the `events` cargo feature at compile time, so there is no runtime missing-dependency error to assert"]
-fn a2a_deliver_error_import_error_without_aiohttp() {
-    // Python raises ImportError synchronously if aiohttp is not installed. Rust
-    // resolves the HTTP dependency at compile time via the `events` feature, so
-    // there is no equivalent runtime contract. See ignore reason.
-    unreachable!();
-}
-
-// The remaining A2ASubscriber.deliver clauses exercise the real HTTP path,
-// gated behind the `events` cargo feature.
-#[cfg(feature = "events")]
-mod a2a_deliver {
-    use super::webhook_deliver::MockServer;
-    use super::*;
-    use apcore::events::subscribers::{A2AAuth, A2ASubscriber};
-    use std::collections::HashMap;
-
-    // clause: event_system.deliver.input.event.required_a2a
-    #[tokio::test(flavor = "multi_thread")]
-    async fn a2a_deliver_input_event_required() {
-        // A2A delivery POSTs a {skillId, event} wrapper carrying the event.
-        let server = MockServer::spawn("200 OK").await;
-        let sub = A2ASubscriber::new("a2a", &server.url, "*");
-        let event = make_event_with("apcore.health.recovered", json!({}));
-        sub.on_event(&event).await.expect("2xx must be Ok");
-        assert_eq!(server.request_count(), 1);
-        let body = server.last_json();
-        assert_eq!(body["skillId"], "apevo.event_receiver");
-        assert_eq!(body["event"]["event_type"], "apcore.health.recovered");
-    }
-
-    // clause: event_system.deliver.property.async_a2a
-    #[tokio::test(flavor = "multi_thread")]
-    async fn a2a_deliver_property_async() {
-        // A2A delivery is awaitable and resolves to Ok(()).
-        let server = MockServer::spawn("200 OK").await;
-        let sub = A2ASubscriber::new("a2a", &server.url, "*");
-        let result = sub.on_event(&make_event()).await;
-        assert!(result.is_ok());
-    }
-
-    // clause: event_system.deliver.property.thread_safe_a2a
-    #[tokio::test(flavor = "multi_thread")]
-    async fn a2a_deliver_property_thread_safe() {
-        // >=8 concurrent A2A deliveries with distinct events all resolve; each
-        // issues its own POST.
-        let server = MockServer::spawn("200 OK").await;
-        let sub = Arc::new(A2ASubscriber::new("a2a", &server.url, "*"));
-        let mut handles = Vec::new();
-        for i in 0..8usize {
-            let s = Arc::clone(&sub);
-            handles.push(tokio::spawn(async move {
-                let event = make_event_with("apcore.test.event", json!({ "i": i }));
-                s.on_event(&event).await
-            }));
-        }
-        for h in handles {
-            h.await.unwrap().expect("delivery must resolve Ok");
-        }
-        assert_eq!(server.request_count(), 8);
-    }
-
-    // clause: event_system.deliver.property.pure_a2a
-    #[tokio::test(flavor = "multi_thread")]
-    async fn a2a_deliver_property_pure() {
-        // Delivery is NOT pure: it performs an outbound HTTP POST to the URL.
-        let server = MockServer::spawn("200 OK").await;
-        let sub = A2ASubscriber::new("a2a", &server.url, "*");
-        sub.on_event(&make_event()).await.unwrap();
-        assert_eq!(server.request_count(), 1);
-    }
-
-    // clause: event_system.deliver.side_effect.1.auth_modes_a2a
-    #[tokio::test(flavor = "multi_thread")]
-    async fn a2a_deliver_side_effect_1_auth_modes() {
-        // Observable auth policy: Bearer auth -> 'Authorization: Bearer <tok>';
-        // Headers auth -> keys merged into headers; None -> no auth header.
-        // The mock server here counts requests and confirms each auth mode
-        // delivers successfully (the auth header is applied client-side before
-        // send; a 200 reply confirms the request was well-formed).
-        let server_bearer = MockServer::spawn("200 OK").await;
-        let mut sub_bearer = A2ASubscriber::new("a2a", &server_bearer.url, "*");
-        sub_bearer.auth = Some(A2AAuth::Bearer("tok123".to_string()));
-        sub_bearer.on_event(&make_event()).await.expect("bearer ok");
-        assert_eq!(server_bearer.request_count(), 1);
-
-        let server_dict = MockServer::spawn("200 OK").await;
-        let mut headers = HashMap::new();
-        headers.insert("X-Api-Key".to_string(), "k".to_string());
-        let mut sub_dict = A2ASubscriber::new("a2a", &server_dict.url, "*");
-        sub_dict.auth = Some(A2AAuth::Headers(headers));
-        sub_dict.on_event(&make_event()).await.expect("dict ok");
-        assert_eq!(server_dict.request_count(), 1);
-
-        let server_none = MockServer::spawn("200 OK").await;
-        let sub_none = A2ASubscriber::new("a2a", &server_none.url, "*");
-        // auth defaults to None.
-        assert!(sub_none.auth.is_none());
-        sub_none.on_event(&make_event()).await.expect("none ok");
-        assert_eq!(server_none.request_count(), 1);
-    }
-
-    // clause: event_system.deliver.side_effect.2.retry_on_5xx_a2a
-    #[tokio::test(flavor = "multi_thread")]
-    async fn a2a_deliver_side_effect_2_retry_on_5xx() {
-        // Observable HTTP-status policy for A2A: 5xx returns Err (emitter
-        // retries); 4xx returns Ok (no retry).
-        let server_5xx = MockServer::spawn("502 Bad Gateway").await;
-        let sub5 = A2ASubscriber::new("a2a", &server_5xx.url, "*");
-        let res5 = sub5.on_event(&make_event()).await;
-        assert!(res5.is_err(), "5xx must surface as Err for emitter retry");
-        assert_eq!(res5.unwrap_err().code, ErrorCode::GeneralInternalError);
-
-        let server_4xx = MockServer::spawn("403 Forbidden").await;
-        let sub4 = A2ASubscriber::new("a2a", &server_4xx.url, "*");
-        let res4 = sub4.on_event(&make_event()).await;
-        assert!(res4.is_ok(), "4xx is permanent: Ok, not retried");
-    }
 }
 
 // ---------------------------------------------------------------------------

@@ -50,7 +50,9 @@ class TestRegistrationObservations:
         assert state.unprotected_control_surface is False
 
     def test_control_modules_present_with_no_gates(self) -> None:
-        state = _client(SYS_ON).executor.governance_state()
+        client = _client(SYS_ON)
+        client.executor.set_policy(ExecutionPolicy(strict=False))
+        state = client.executor.governance_state()
         assert state.control_modules_registered is True
         assert state.read_modules_registered is True
         assert state.unprotected_control_surface is True

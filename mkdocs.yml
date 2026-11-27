@@ -87,6 +87,7 @@ nav:
           - ACL Configuration: guides/acl-configuration.md
           - Writing Middleware: guides/middleware.md
       - Integration:
+          - Runtime Profiles: guides/runtime-profiles.md
           - Multi-Language Development: guides/multi-language.md
           - Adapter Development: guides/adapter-development.md
           - Integrating Existing Projects: guides/integrating-existing-projects.md

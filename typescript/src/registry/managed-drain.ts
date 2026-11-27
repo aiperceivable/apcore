@@ -1,7 +1,7 @@
 import {
   type DrainAbortReason,
   type DrainContext,
-  lifecycleCallback,
+  type LifecycleCallbacks,
   LifecycleCompletion,
   lifecycleError,
   type LifecycleProgress,
@@ -44,7 +44,7 @@ export async function runManagedDrain(options: DrainOptions): Promise<{ forced: 
     remainingMs: () => Math.max(0, Math.floor(deadline - performance.now())),
   };
   void idle.then(wakeIfReady);
-  const hook = invokeDrainHook(module, context, progress, [callbackOwner, owner], wakeIfReady);
+  const hook = invokeDrainHook(module, context, progress, owner.callbacks, [callbackOwner, owner], wakeIfReady);
   wakeIfReady();
   await decision.wait(Math.max(0, Math.ceil(deadline - performance.now())));
 
@@ -74,6 +74,7 @@ function invokeDrainHook(
   module: Module,
   context: DrainContext,
   progress: ModuleLifecycleProgress,
+  callbacks: LifecycleCallbacks,
   owners: readonly object[],
   onSettle: () => void,
 ): void | Promise<void> {
@@ -86,7 +87,7 @@ function invokeDrainHook(
     const hook = module.onDrain;
     if (typeof hook !== 'function') return;
     progress.activeHook = 'on_drain';
-    const work = lifecycleCallback(owners, () => hook.call(module, context));
+    const work = callbacks.run(owners, () => hook.call(module, context));
     if (work !== undefined) return Promise.resolve(work).then(finish, fail);
     finish();
   } catch (error) {

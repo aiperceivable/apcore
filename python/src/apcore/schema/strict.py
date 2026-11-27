@@ -7,7 +7,7 @@ from typing import Any
 
 
 def to_strict_schema(schema: dict[str, Any]) -> dict[str, Any]:
-    """Convert a JSON Schema to OpenAI/Anthropic Strict Mode format.
+    """Convert a JSON Schema to strict mode.
 
     Deep-copies the input, strips extensions and defaults, then enforces
     strict mode rules (additionalProperties: false, all properties required,
@@ -17,36 +17,6 @@ def to_strict_schema(schema: dict[str, Any]) -> dict[str, Any]:
     _strip_extensions(result)
     _convert_to_strict(result)
     return result
-
-
-def _apply_llm_descriptions(node: Any) -> None:
-    """Replace description with x-llm-description where present.
-
-    Mutates the node in place. Called by exporters before to_strict_schema().
-    """
-    if not isinstance(node, dict):
-        return
-
-    if "x-llm-description" in node and "description" in node:
-        node["description"] = node["x-llm-description"]
-
-    # Recurse into nested structures
-    if "properties" in node and isinstance(node["properties"], dict):
-        for prop in node["properties"].values():
-            _apply_llm_descriptions(prop)
-    if "items" in node and isinstance(node["items"], dict):
-        _apply_llm_descriptions(node["items"])
-    if "prefixItems" in node and isinstance(node["prefixItems"], list):
-        for item in node["prefixItems"]:
-            _apply_llm_descriptions(item)
-    for keyword in ("oneOf", "anyOf", "allOf"):
-        if keyword in node and isinstance(node[keyword], list):
-            for sub in node[keyword]:
-                _apply_llm_descriptions(sub)
-    for defs_key in ("definitions", "$defs"):
-        if defs_key in node and isinstance(node[defs_key], dict):
-            for defn in node[defs_key].values():
-                _apply_llm_descriptions(defn)
 
 
 def _strip_extensions(node: Any, *, strip_defaults: bool = True, _names: bool = False) -> None:

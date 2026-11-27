@@ -9,13 +9,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Provide explicit configuration, discovery, and full runtime assemblies. The default profile supports in-memory execution from installed Python, TypeScript, and Rust packages.
+- Add the pure TypeScript Prometheus text renderer and host-owned subscriber factories for configured event delivery.
+
+### Changed
+
+- **Protocol 2.0.0 draft for SDK 1.0.0.** The default Core Profile supports in-memory execution, with file-backed capabilities and host integrations supplied by explicit extension profiles. The built-in approval gate rejects calls that require approval when no handler is configured and requires approval for destructive modules by default. An explicit policy with `strict = false` and `gate_destructive = false` retains the earlier behavior during migration.
+- Report the configured project version in the health summary and use the configured usage retention period.
+
+### Fixed
+
+- Reuse one Python synchronous event loop per calling thread. Bound nested workers and retain in-flight execution until its worker completes after timeouts.
+
+### Removed
+
+- Move Prometheus HTTP listening, A2A delivery, and provider-specific tool projections to Surfaces. Core retains text rendering, generic schema export, and strict schema conversion.
+- Remove the deprecated `reload_dependents` input. Use `path_filter` to select dependent modules.
+
 ## [1.0.0-alpha.1]
 
 This prerelease delivers the cross-repository governance and streaming fixes ahead of the microkernel package split. SDK installations use `1.0.0a1` for Python and `1.0.0-alpha.1` for TypeScript and Rust. The full package and configuration entry points remain available for adapter migration.
 
 ### Added
 
-- **Protocol 2.1.0 draft, §6.7, §9.16.2, and §12.7.9.** Add managed drain and recovery hooks, async lifecycle adapters, host-directed cancellation before forced removal, opt-in reload reports, and lifecycle events across the three SDKs.
+- **Managed lifecycle, §6.7, §9.16.2, and §12.7.9.** Add managed drain and recovery hooks, async lifecycle adapters, host-directed cancellation before forced removal, opt-in reload reports, and lifecycle events across the three SDKs.
 - Add owned shutdown and ordered removal handles with independent wait budgets and lifecycle reports in Python, TypeScript, and Rust.
 - Expose Prometheus text rendering without starting an HTTP listener in Python and Rust. TypeScript uses the existing exporter render method.
 - Expose a single-invocation stream completion handle in Python, TypeScript, and Rust. The handle reports the output-validation snapshot, post-processing outcomes, and a distinct terminal reason.

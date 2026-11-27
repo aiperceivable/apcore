@@ -13,7 +13,6 @@ from apcore.errors import SchemaValidationError
 
 __all__ = [
     "SchemaStrategy",
-    "ExportProfile",
     "SchemaDefinition",
     "ResolvedSchema",
     "SchemaValidationErrorDetail",
@@ -41,15 +40,6 @@ class SchemaStrategy(str, Enum):
     YAML_FIRST = "yaml_first"
     NATIVE_FIRST = "native_first"
     YAML_ONLY = "yaml_only"
-
-
-class ExportProfile(str, Enum):
-    """Determines which export format to use."""
-
-    MCP = "mcp"
-    OPENAI = "openai"
-    ANTHROPIC = "anthropic"
-    GENERIC = "generic"
 
 
 @dataclass

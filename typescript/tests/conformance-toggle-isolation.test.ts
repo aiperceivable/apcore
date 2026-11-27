@@ -1,3 +1,4 @@
+import { AutoApproveHandler } from '../src/approval.js';
 /**
  * Cross-language conformance driver for toggle_state_isolation.json (Issue #71).
  *
@@ -24,7 +25,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { Type } from '@sinclair/typebox';
-import { APCore } from '../src/client.js';
+import { APCore } from '../src/full.js';
 import { Config } from '../src/config.js';
 import { ModuleDisabledError } from '../src/errors.js';
 import { DEFAULT_TOGGLE_STATE } from '../src/sys-modules/toggle.js';
@@ -60,7 +61,9 @@ function newInstance(): APCore {
   const config = new Config({
     sys_modules: { enabled: true, events: { enabled: true } },
   });
-  return new APCore({ config });
+  const client = new APCore({ config });
+  client.executor.setApprovalHandler(new AutoApproveHandler());
+  return client;
 }
 
 /**

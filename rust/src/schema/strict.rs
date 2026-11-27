@@ -17,26 +17,8 @@ use serde_json::{Map, Value};
 #[must_use]
 pub fn to_strict_schema(schema: &Value) -> Value {
     let mut result = schema.clone();
-    strip_extensions(&mut result, false, true);
+    strip_extensions(&mut result, false);
     convert_to_strict(&mut result);
-    result
-}
-
-/// Replace `description` with `x-llm-description` (when present) at every
-/// node in the schema tree. Returns a deep clone with the substitution
-/// applied; the original schema is unmodified.
-///
-/// Sync finding A-D-030: spec §schema-system says adapters SHOULD prefer
-/// `x-llm-description` over `description` when exporting. apcore-python's
-/// `_apply_llm_descriptions` and apcore-typescript's `applyLlmDescriptions`
-/// both run this substitution before `to_strict_schema` / `strip_extensions`
-/// in the OpenAI/Anthropic export paths so the LLM-tuned description
-/// survives the strip. Rust previously had no equivalent step — the x-*
-/// keys were silently dropped without copy-down.
-#[must_use]
-pub fn apply_llm_descriptions(schema: &Value) -> Value {
-    let mut result = schema.clone();
-    apply_llm_descriptions_in_place(&mut result, false);
     result
 }
 
@@ -47,45 +29,15 @@ fn schema_name_map(key: &str) -> bool {
     )
 }
 
-fn apply_llm_descriptions_in_place(node: &mut Value, names: bool) {
-    if let Some(obj) = node.as_object_mut() {
-        // Both keys present: substitute description with x-llm-description.
-        // (Apcore-python parity — Python requires both to be present;
-        // apcore-typescript injects description even if absent. We follow
-        // Python's stricter rule to avoid silently fabricating descriptions
-        // that the spec did not declare.)
-        if !names && obj.contains_key("description") && obj.contains_key("x-llm-description") {
-            if let Some(llm_desc) = obj.get("x-llm-description").cloned() {
-                obj.insert("description".to_string(), llm_desc);
-            }
-        }
-        // Recurse into all nested values.
-        for (key, v) in obj.iter_mut() {
-            apply_llm_descriptions_in_place(v, !names && schema_name_map(key));
-        }
-    } else if let Some(arr) = node.as_array_mut() {
-        for v in arr.iter_mut() {
-            apply_llm_descriptions_in_place(v, false);
-        }
-    }
-}
-
-/// Strip extension keywords without deleting property or definition names.
-pub(crate) fn strip_extension_keywords(schema: &Value) -> Value {
-    let mut result = schema.clone();
-    strip_extensions(&mut result, false, false);
-    result
-}
-
 /// Named schema maps contain identifiers, not schema keywords.
-fn strip_extensions(node: &mut Value, names: bool, remove_defaults: bool) {
+fn strip_extensions(node: &mut Value, names: bool) {
     let Some(obj) = node.as_object_mut() else {
         return;
     };
 
     let keys_to_remove: Vec<String> = obj
         .keys()
-        .filter(|k| !names && (k.starts_with("x-") || (remove_defaults && *k == "default")))
+        .filter(|k| !names && (k.starts_with("x-") || *k == "default"))
         .cloned()
         .collect();
 
@@ -99,12 +51,12 @@ fn strip_extensions(node: &mut Value, names: bool, remove_defaults: bool) {
         if let Some(val) = obj.get_mut(&key) {
             match val {
                 Value::Object(_) => {
-                    strip_extensions(val, !names && schema_name_map(&key), remove_defaults);
+                    strip_extensions(val, !names && schema_name_map(&key));
                 }
                 Value::Array(arr) => {
                     for item in arr.iter_mut() {
                         if item.is_object() {
-                            strip_extensions(item, false, remove_defaults);
+                            strip_extensions(item, false);
                         }
                     }
                 }

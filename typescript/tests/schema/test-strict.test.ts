@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { toStrictSchema, applyLlmDescriptions, stripExtensions } from '../../src/schema/strict.js';
+import { toStrictSchema, stripExtensions } from '../../src/schema/strict.js';
 
 describe('toStrictSchema', () => {
   it('preserves boolean schemas for optional properties and sorts property names by code point', () => {
@@ -86,54 +86,6 @@ describe('toStrictSchema', () => {
     const strict = toStrictSchema(schema);
     const props = strict['properties'] as Record<string, Record<string, unknown>>;
     expect(props['name']['default']).toBeUndefined();
-  });
-});
-
-describe('applyLlmDescriptions', () => {
-  it('replaces description with x-llm-description', () => {
-    const schema = {
-      description: 'Original',
-      'x-llm-description': 'LLM version',
-      properties: {
-        name: {
-          type: 'string',
-          description: 'Name',
-          'x-llm-description': 'User name for LLM',
-        },
-      },
-    };
-    applyLlmDescriptions(schema);
-    expect(schema['description']).toBe('LLM version');
-    expect((schema['properties'] as Record<string, Record<string, unknown>>)['name']['description']).toBe('User name for LLM');
-  });
-
-  it('does not modify without x-llm-description', () => {
-    const schema = { description: 'Original' };
-    applyLlmDescriptions(schema);
-    expect(schema['description']).toBe('Original');
-  });
-
-  it('does not inject a description when only x-llm-description is present', () => {
-    const schema: Record<string, unknown> = {
-      type: 'string',
-      'x-llm-description': 'LLM only',
-    };
-    applyLlmDescriptions(schema);
-    expect('description' in schema).toBe(false);
-  });
-
-  it('does not gain a description after strict export when only x-llm-description present', () => {
-    const schema = {
-      type: 'object',
-      properties: {
-        name: { type: 'string', 'x-llm-description': 'Name for LLM' },
-      },
-      required: ['name'],
-    };
-    applyLlmDescriptions(schema);
-    const result = toStrictSchema(schema);
-    const props = result['properties'] as Record<string, Record<string, unknown>>;
-    expect('description' in props['name']).toBe(false);
   });
 });
 
@@ -376,61 +328,6 @@ describe('toStrictSchema - definitions and combinators', () => {
     const strict = toStrictSchema(schema);
     const props = strict['properties'] as Record<string, Record<string, unknown>>;
     expect(props['value']['type']).toEqual(['string', 'null']);
-  });
-});
-
-describe('applyLlmDescriptions - definitions and combinators', () => {
-  it('recurses into definitions block', () => {
-    const schema: Record<string, unknown> = {
-      definitions: {
-        Foo: { description: 'old', 'x-llm-description': 'new' },
-      },
-    };
-    applyLlmDescriptions(schema);
-    const defs = schema['definitions'] as Record<string, Record<string, unknown>>;
-    expect(defs['Foo']['description']).toBe('new');
-  });
-
-  it('recurses into $defs block', () => {
-    const schema: Record<string, unknown> = {
-      $defs: {
-        Bar: { description: 'old', 'x-llm-description': 'updated' },
-      },
-    };
-    applyLlmDescriptions(schema);
-    const defs = schema['$defs'] as Record<string, Record<string, unknown>>;
-    expect(defs['Bar']['description']).toBe('updated');
-  });
-
-  it('recurses into items', () => {
-    const schema: Record<string, unknown> = {
-      type: 'array',
-      items: { description: 'orig', 'x-llm-description': 'item desc' },
-    };
-    applyLlmDescriptions(schema);
-    const items = schema['items'] as Record<string, unknown>;
-    expect(items['description']).toBe('item desc');
-  });
-
-  it('recurses into oneOf/anyOf/allOf', () => {
-    const schema: Record<string, unknown> = {
-      oneOf: [
-        { description: 'a', 'x-llm-description': 'variant A' },
-        { description: 'b', 'x-llm-description': 'variant B' },
-      ],
-    };
-    applyLlmDescriptions(schema);
-    const oneOf = schema['oneOf'] as Record<string, unknown>[];
-    expect(oneOf[0]['description']).toBe('variant A');
-    expect(oneOf[1]['description']).toBe('variant B');
-  });
-
-  it('does not set a description when no prior description exists', () => {
-    const schema: Record<string, unknown> = {
-      'x-llm-description': 'brand new',
-    };
-    applyLlmDescriptions(schema);
-    expect('description' in schema).toBe(false);
   });
 });
 

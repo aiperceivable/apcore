@@ -896,7 +896,12 @@ async fn disable_error_sys_modules_disabled() {
 // clause: apcore_client.disable.input.reason.default
 #[tokio::test]
 async fn disable_input_reason_default() {
-    let client = APCore::with_config(sys_config());
+    let client = APCore::try_start(apcore::APCoreOptions {
+        config: Some(sys_config()),
+        approval_handler: Some(Box::new(apcore::AutoApproveHandler)),
+        ..Default::default()
+    })
+    .unwrap();
     client
         .register("risky.module", Box::new(EchoModule))
         .expect("register risky.module");
@@ -912,7 +917,12 @@ async fn disable_input_reason_default() {
 // clause: apcore_client.disable.property.idempotent_true
 #[tokio::test]
 async fn disable_property_idempotent_true() {
-    let client = APCore::with_config(sys_config());
+    let client = APCore::try_start(apcore::APCoreOptions {
+        config: Some(sys_config()),
+        approval_handler: Some(Box::new(apcore::AutoApproveHandler)),
+        ..Default::default()
+    })
+    .unwrap();
     client
         .register("risky.dup", Box::new(EchoModule))
         .expect("register risky.dup");
@@ -955,7 +965,12 @@ async fn enable_error_sys_modules_disabled() {
 // clause: apcore_client.enable.input.reason.default
 #[tokio::test]
 async fn enable_input_reason_default() {
-    let client = APCore::with_config(sys_config());
+    let client = APCore::try_start(apcore::APCoreOptions {
+        config: Some(sys_config()),
+        approval_handler: Some(Box::new(apcore::AutoApproveHandler)),
+        ..Default::default()
+    })
+    .unwrap();
     client
         .register("risky.enable", Box::new(EchoModule))
         .expect("register risky.enable");
@@ -975,7 +990,12 @@ async fn enable_input_reason_default() {
 // clause: apcore_client.enable.property.idempotent_true
 #[tokio::test]
 async fn enable_property_idempotent_true() {
-    let client = APCore::with_config(sys_config());
+    let client = APCore::try_start(apcore::APCoreOptions {
+        config: Some(sys_config()),
+        approval_handler: Some(Box::new(apcore::AutoApproveHandler)),
+        ..Default::default()
+    })
+    .unwrap();
     client
         .register("risky.reenable", Box::new(EchoModule))
         .expect("register risky.reenable");

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { Registry } from '../../src/registry/registry.js';
+import { Registry } from '../../src/full.js';
 import { EventEmitter } from '../../src/events/emitter.js';
 import { DuplicateModuleIdError, InvalidInputError } from '../../src/errors.js';
 

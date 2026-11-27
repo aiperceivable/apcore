@@ -18,7 +18,7 @@ import { describe, it, expect, vi } from 'vitest';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { Type } from '@sinclair/typebox';
-import { APCore } from '../src/index.js';
+import { APCore } from '../src/full.js';
 import { jsonSchemaToTypeBox } from '../src/schema/loader-pure.js';
 import { SchemaValidator } from '../src/schema/validator.js';
 import { findFixturesRoot } from './spec-repo.js';

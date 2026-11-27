@@ -2,7 +2,7 @@
  * Execution context, identity, and context creation.
  */
 
-import { v4 as uuidv4 } from 'uuid';
+import { uuidV4 as uuidv4 } from './utils/uuid.js';
 import type { CancelToken } from './cancel.js';
 import { ContextBindingError } from './errors.js';
 import { copyObservationState, inheritObservationParent, setRemoteSpanParent } from './execution-lifetime.js';

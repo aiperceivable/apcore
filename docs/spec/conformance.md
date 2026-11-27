@@ -20,6 +20,11 @@ apcore is implemented in several languages, and every implementation has to beha
 | **Level 1** | Standard | Production-ready implementation | Most production environments |
 | **Level 2** | Full | Full-featured implementation | Enterprise-grade, large-scale distributed scenarios |
 
+The levels below enumerate capabilities available from a complete SDK
+installation. The active runtime profiles determine which capabilities an
+application installs and composes. The default Core Profile is governed by
+[protocol-spec §1.8](./protocol-spec.md#18-runtime-profiles).
+
 ### 1.3 Terminology and Keywords
 
 The keywords used in this document follow [RFC 2119](https://www.rfc-editor.org/rfc/rfc2119), consistent with [protocol-spec §1.5](./protocol-spec.md#15-specification-keywords).
@@ -35,6 +40,9 @@ Pipeline steps are referred to by name and number from the standard execution st
 Level 0 defines the minimal viable implementation of apcore. SDKs reaching this level can complete module definition, registration, discovery, and basic execution, but do not include access control, approval, middleware, or observability.
 
 ### 2.2 Must Implement (MUST)
+
+Configuration and Discovery requirements in this table apply when the
+corresponding extension profile is selected.
 
 | Component | Responsibility | Reference Section |
 |------|------|---------|
@@ -102,7 +110,7 @@ Level 1 adds the governance pipeline steps (call-chain guard, ACL, approval), mi
 | **ACL engine** | Permission rule loading, pattern matching (`match_pattern()`), rule evaluation (`evaluate_acl()`) | protocol-spec §6.2, §6.3 |
 | **ACL default policy** | `default_effect: deny \| allow` in the ACL file; a missing ACL file attaches no ACL | protocol-spec §6.1, §6.6.3.1 |
 | **ACL edge cases** | When caller_id is null, treat as `@external`, empty rules use default policy | protocol-spec §6.5 |
-| **Approval gate (Phase A)** | `ApprovalHandler` protocol; the gate fires on the union of every governance source and is skipped with a warning when no handler is configured | protocol-spec §7.2, §7.4, §7.8 |
+| **Approval gate (Phase A)** | `ApprovalHandler` protocol. The default gate denies approval-required calls that lack a handler and requires approval for destructive modules. | protocol-spec §7.2, §7.4, §7.8, §7.9 |
 | **Middleware framework** | `middleware_before` (6) and `middleware_after` (10) run an onion-model chain with `before`, `after` and `on_error` hooks | protocol-spec §11.1, §11.5 |
 | **Middleware priority** | Higher numbers execute first | protocol-spec §11.2 |
 | **Trace ID** | `trace_id` generation (32-char lowercase hex, W3C Trace Context), propagation (child calls inherit) | protocol-spec §10.5 |
@@ -318,7 +326,7 @@ The following requirements are not met by the SDK implementations in this reposi
 
 ## 8. Conformance Test Fixtures
 
-The repository ships **98 cross-language fixture files** under `conformance/fixtures/` covering **1225 test cases**. `conformance-integrity` checks these two numbers, §8.1's per-fixture counts and its Total row against the fixtures themselves. Each fixture is consumed by all three SDK test runners (§5.2). An SDK declaring a conformance level **MUST** pass every fixture whose tested feature is required at that level (§5.3).
+The repository ships **98 cross-language fixture files** under `conformance/fixtures/` covering **1229 test cases**. `conformance-integrity` checks these two numbers, §8.1's per-fixture counts and its Total row against the fixtures themselves. Each fixture is consumed by all three SDK test runners (§5.2). An SDK declaring a conformance level **MUST** pass every fixture whose tested feature is required at that level (§5.3).
 
 ### 8.1 Fixture Inventory
 
@@ -338,7 +346,7 @@ The repository ships **98 cross-language fixture files** under `conformance/fixt
 | [`annotations_extra_round_trip`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/annotations_extra_round_trip.json) | 12 | `ModuleAnnotations.extra` wire-format round-trip (spec §4.4.1) |
 | [`approval_gate`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/approval_gate.json) | 11 | Approval gate enforcement at Executor Step 5 (spec §7.4) |
 | [`approval_request_fields`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/approval_request_fields.json) | 2 | `ApprovalRequest` carries `caller_id` (read straight off `Context.caller_id` — null on a top-level call, never the `@external` ACL sentinel) and `action` (= `module_id`), populated by the approval gate at Executor Step 5 (spec §7.3.1, D-03) |
-| [`approval_startup_report`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/approval_startup_report.json) | 5 | Startup reporting for modules that declare approval requirements |
+| [`approval_startup_report`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/approval_startup_report.json) | 6 | Startup reporting for modules that declare approval requirements |
 | [`async_task_cancellation`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/async_task_cancellation.json) | 2 | `AsyncTaskManager.cancel()` real abort via CancelToken (D-18) |
 | [`async_task_evolution`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/async_task_evolution.json) | 10 | Pluggable `TaskStore`, retry with backoff |
 | [`bindings_dir_resolution`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/bindings_dir_resolution.json) | 13 | Binding-directory resolution: a loader invoked without an explicit directory resolves `bindings.dir` / `bindings.pattern` under §9.2 precedence, an explicit argument wins, and no scan happens at client initialisation (spec §5.12.6) |
@@ -360,6 +368,7 @@ The repository ships **98 cross-language fixture files** under `conformance/fixt
 | [`document_version_negotiation`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/document_version_negotiation.json) | 9 | Configuration and module-schema file compatibility (A14, spec §13.3) |
 | [`error_codes`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/error_codes.json) | 19 | Error code collision detection (Algorithm A17, spec §8.4) |
 | [`error_details_shape`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/error_details_shape.json) | 5 | `SCHEMA_VALIDATION_ERROR` details items are `{path, keyword, message}` with a JSON Pointer path; `details` keys are snake_case (spec §8.1, D-149) |
+| [`core_profile_governance`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/core_profile_governance.json) | 8 | Core Profile governance defaults and explicit overrides through public preflight and execution, including an injected Executor (spec §7.4 and §7.9) |
 | [`ephemeral_modules`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/ephemeral_modules.json) | 7 | `ephemeral.*`: one audit event per register / unregister under the standard bootstrap, the bare ID `ephemeral`, `INVALID_MODULE_ID` rejections (spec §2.5.1, D-148) |
 | [`error_fingerprinting`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/error_fingerprinting.json) | 6 | Error fingerprint = SHA-256 of `code:module_id:normalized_message` for ErrorHistory dedup |
 | [`error_recovery_metadata`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/error_recovery_metadata.json) | 22 | `retryable` / `ai_guidance` / `user_fixable` / `suggestion` recovery metadata (spec §8) |
@@ -386,7 +395,6 @@ The repository ships **98 cross-language fixture files** under `conformance/fixt
 | [`overrides_store`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/overrides_store.json) | 5 | OverridesStore pluggable persistence |
 | [`pattern_matching`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/pattern_matching.json) | 12 | ACL / `match_modules` module-ID pattern matching (Algorithm A08) |
 | [`extension_point_lookup`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/extension_point_lookup.json) | 12 | An unknown extension point is an error, an empty one is not (D-108) |
-| [`export_profiles`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/export_profiles.json) | 5 | Export profiles: `anthropic` strips every `x-*` keyword and keeps properties named `x-…`; `mcp` carries `requiresApproval` / `streaming` in `_meta`, never in `annotations` (spec §4.17, Appendix D.1, D-140) |
 | [`glob_matching`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/glob_matching.json) | 32 | Portable glob matching for pattern-valued values (Algorithm A25, §9.2.3) |
 | [`pipeline_failfast_config`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/pipeline_failfast_config.json) | 7 | Pipeline configuration fail-fast (spec §5.16) |
 | [`pipeline_hardening`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/pipeline_hardening.json) | 7 | Pipeline execution hardening: fail-fast, replace-step, run_until, a step timeout raises `MODULE_TIMEOUT` (spec §5.16, D-142) |
@@ -422,7 +430,7 @@ The repository ships **98 cross-language fixture files** under `conformance/fixt
 | [`usage_contract`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/usage_contract.json) | 11 | `system.usage.*` value semantics no schema can assert (spec §6.7.1) |
 | [`usage_exporter`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/usage_exporter.json) | 3 | `UsageExporter` push interface (D-55) |
 | [`version_negotiation`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/version_negotiation.json) | 12 | Version negotiation (Algorithm A14) |
-| **Total** | **1225** | **98 fixtures** |
+| **Total** | **1229** | **98 fixtures** |
 
 ### 8.2 Loading Fixtures from a Test Runner
 

@@ -1,0 +1,46 @@
+{
+  "description": "In-memory client execution and preflight use the same approval requirement. With no approval handler, the default gate keeps every approval-required call out of the module.",
+  "profile": "core",
+  "test_cases": [
+    {
+      "id": "ordinary_module",
+      "input": {"approval_source": "none", "client": "default"},
+      "expected": {"requires_approval": false, "error_code": null, "executions": 1}
+    },
+    {
+      "id": "module_approval",
+      "input": {"approval_source": "annotation", "client": "default"},
+      "expected": {"requires_approval": true, "error_code": "APPROVAL_DENIED", "executions": 0}
+    },
+    {
+      "id": "acl_approval",
+      "input": {"approval_source": "acl", "client": "default"},
+      "expected": {"requires_approval": true, "error_code": "APPROVAL_DENIED", "executions": 0}
+    },
+    {
+      "id": "explicit_policy_rule_approval",
+      "input": {"approval_source": "policy_rule", "client": "default"},
+      "expected": {"requires_approval": true, "error_code": "APPROVAL_DENIED", "executions": 0}
+    },
+    {
+      "id": "destructive_default",
+      "input": {"approval_source": "destructive", "client": "default"},
+      "expected": {"requires_approval": true, "error_code": "APPROVAL_DENIED", "executions": 0}
+    },
+    {
+      "id": "destructive_opt_out",
+      "input": {"approval_source": "destructive", "client": "default", "execution_policy": {"gate_destructive": false}},
+      "expected": {"requires_approval": false, "error_code": null, "executions": 1}
+    },
+    {
+      "id": "explicit_warn_and_continue",
+      "input": {"approval_source": "annotation", "client": "default", "execution_policy": {"strict": false}},
+      "expected": {"requires_approval": true, "error_code": null, "executions": 1}
+    },
+    {
+      "id": "injected_executor_uses_default_gate",
+      "input": {"approval_source": "annotation", "client": "injected_executor"},
+      "expected": {"requires_approval": true, "error_code": "APPROVAL_DENIED", "executions": 0}
+    }
+  ]
+}

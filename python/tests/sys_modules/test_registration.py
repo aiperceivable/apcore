@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
 
 from apcore.config import Config
+from apcore.errors import ConfigError
 from apcore.events.emitter import EventEmitter
 from apcore.executor import Executor
 from apcore.middleware.error_history_middleware import ErrorHistoryMiddleware
@@ -17,13 +19,8 @@ from apcore.observability.error_history import ErrorHistory
 from apcore.observability.metrics import MetricsCollector
 from apcore.registry.registry import Registry
 from apcore.events.emitter import ApCoreEvent
-from apcore.sys_modules.registration import (
-    _subscriber_factories,
-    register_subscriber_type,
-    register_sys_modules,
-    reset_subscriber_registry,
-    unregister_subscriber_type,
-)
+from apcore.events import SubscriberRegistry, create_subscriber_from_config
+from apcore.sys_modules.registration import register_sys_modules
 
 
 def _make_config(overrides: dict[str, Any] | None = None) -> Config:
@@ -370,6 +367,7 @@ class TestReturnContext:
         )
 
         assert "error_history" in result
+
         assert "error_history_middleware" in result
         assert "event_emitter" in result
         assert "platform_notify_middleware" in result
@@ -391,56 +389,8 @@ class TestAPCoreClientIntegration:
         assert isinstance(client._sys_modules_context, dict)
 
 
-class TestA2ASubscriber:
-    def test_register_sys_modules_a2a_subscriber(self) -> None:
-        """A2A subscriber created from config."""
-        config = _make_config(
-            {
-                "sys_modules": {
-                    "events": {
-                        "enabled": True,
-                        "subscribers": [
-                            {
-                                "type": "a2a",
-                                "platform_url": "https://platform.example.com/a2a",
-                                "auth": "my-token",
-                            },
-                        ],
-                    },
-                },
-            }
-        )
-        registry, executor, metrics = _make_deps()
-
-        result = register_sys_modules(
-            registry=registry,
-            executor=executor,
-            config=config,
-            metrics_collector=metrics,
-        )
-
-        emitter = result["event_emitter"]
-        assert len(emitter._subscribers) == 1
-        from apcore.events.circuit_breaker import CircuitBreakerWrapper
-
-        wrapper = emitter._subscribers[0]
-        assert isinstance(wrapper, CircuitBreakerWrapper)
-        from apcore.events.subscribers import A2ASubscriber
-
-        sub = wrapper._subscriber
-        assert isinstance(sub, A2ASubscriber)
-        assert sub._platform_url == "https://platform.example.com/a2a"
-        assert sub._auth == "my-token"
-
-
 class TestCustomSubscriberRegistry:
     """Tests for the extensible subscriber type registry."""
-
-    @pytest.fixture(autouse=True)
-    def _isolate_subscriber_registry(self) -> Any:
-        """Reset subscriber registry to built-in defaults after each test."""
-        yield
-        reset_subscriber_registry()
 
     def test_register_custom_subscriber_type(self) -> None:
         """Register a custom subscriber type and use it from config."""
@@ -452,7 +402,8 @@ class TestCustomSubscriberRegistry:
             async def on_event(self, event: ApCoreEvent) -> None:
                 pass
 
-        register_subscriber_type("slack", lambda cfg: SlackSubscriber(channel=cfg["channel"]))
+        subscribers = SubscriberRegistry()
+        subscribers.register("slack", lambda cfg: SlackSubscriber(channel=cfg["channel"]))
         config = _make_config(
             {
                 "sys_modules": {
@@ -472,6 +423,7 @@ class TestCustomSubscriberRegistry:
             executor=executor,
             config=config,
             metrics_collector=metrics,
+            subscriber_registry=subscribers,
         )
 
         emitter = result["event_emitter"]
@@ -484,17 +436,6 @@ class TestCustomSubscriberRegistry:
         assert isinstance(sub, SlackSubscriber)
         assert sub.channel == "#alerts"
 
-    def test_unregister_subscriber_type(self) -> None:
-        """Unregister a subscriber type; verify it is no longer available."""
-        register_subscriber_type("temp", lambda cfg: MagicMock())
-        unregister_subscriber_type("temp")
-        assert "temp" not in _subscriber_factories
-
-    def test_unregister_nonexistent_type_raises(self) -> None:
-        """Unregistering a non-existent type raises KeyError."""
-        with pytest.raises(KeyError):
-            unregister_subscriber_type("nonexistent_type_xyz")
-
     def test_override_builtin_subscriber_type(self) -> None:
         """Override the built-in 'webhook' type with a custom factory."""
 
@@ -506,7 +447,8 @@ class TestCustomSubscriberRegistry:
             async def on_event(self, event: ApCoreEvent) -> None:
                 pass
 
-        register_subscriber_type("webhook", lambda cfg: CustomWebhook(url=cfg["url"]))
+        subscribers = SubscriberRegistry()
+        subscribers.register("webhook", lambda cfg: CustomWebhook(url=cfg["url"]))
         config = _make_config(
             {
                 "sys_modules": {
@@ -526,6 +468,7 @@ class TestCustomSubscriberRegistry:
             executor=executor,
             config=config,
             metrics_collector=metrics,
+            subscriber_registry=subscribers,
         )
 
         from apcore.events.circuit_breaker import CircuitBreakerWrapper
@@ -563,20 +506,10 @@ class TestCustomSubscriberRegistry:
         assert any("Failed to instantiate subscriber" in msg for msg in caplog.messages)
 
     def test_builtin_types_registered_by_default(self) -> None:
-        """Verify 'webhook' and 'a2a' are registered by default."""
-        assert "webhook" in _subscriber_factories
-        assert "a2a" in _subscriber_factories
-
-    def test_reset_subscriber_registry(self) -> None:
-        """reset_subscriber_registry restores only built-in types."""
-        register_subscriber_type("custom", lambda cfg: MagicMock())
-        assert "custom" in _subscriber_factories
-
-        reset_subscriber_registry()
-
-        assert "custom" not in _subscriber_factories
-        assert "webhook" in _subscriber_factories
-        assert "a2a" in _subscriber_factories
+        """Verify the neutral webhook built-in and explicit A2A ownership."""
+        assert create_subscriber_from_config({"type": "webhook", "url": "https://example.com"}) is not None
+        with pytest.raises(ValueError, match="Unknown subscriber type"):
+            create_subscriber_from_config({"type": "a2a"})
 
 
 class TestMetricsCollectorNone:
@@ -592,3 +525,29 @@ class TestMetricsCollectorNone:
         assert registry.has("system.health.module")
         assert registry.has("system.manifest.module")
         assert "error_history" in result
+
+
+def test_configured_project_version_and_usage_retention_are_observable() -> None:
+    config = Config(
+        {
+            "project": {"name": "demo", "version": "2.1.0"},
+            "sys_modules": {"enabled": True, "usage": {"retention_hours": 2, "bucketing_strategy": "hourly"}},
+        }
+    )
+    registry, executor, metrics = _make_deps()
+    with executor:
+        context = register_sys_modules(registry, executor, config, metrics_collector=metrics)
+        usage = context["usage_collector"]
+        now = datetime.now(timezone.utc)
+        usage.record("demo.module", "caller", 1.0, True, (now - timedelta(hours=5)).isoformat())
+        usage.record("demo.module", "caller", 1.0, True, now.isoformat())
+        assert executor.call("system.usage.summary")["total_calls"] == 1
+        assert executor.call("system.health.summary")["project"] == {"name": "demo", "version": "2.1.0"}
+
+
+def test_unsupported_bucketing_configuration_fails_before_registering_system_modules() -> None:
+    config = Config({"sys_modules": {"enabled": True, "usage": {"bucketing_strategy": "daily"}}})
+    registry, executor, metrics = _make_deps()
+    with pytest.raises(ConfigError, match="sys_modules.usage.bucketing_strategy"):
+        register_sys_modules(registry, executor, config, metrics_collector=metrics)
+    assert registry.list() == []

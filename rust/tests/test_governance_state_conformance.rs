@@ -162,8 +162,8 @@ fn build(setup: &Value) -> Executor {
     {
         executor.set_approval_handler(Box::new(NeverCalledHandler));
     }
-    if setup["policy_strict"].as_bool().unwrap_or(false) {
-        executor.set_policy(Some(ExecutionPolicy::new(vec![]).with_strict(true)));
+    if let Some(strict) = setup["policy_strict"].as_bool() {
+        executor.set_policy(Some(ExecutionPolicy::new(vec![]).with_strict(strict)));
     }
     executor
 }

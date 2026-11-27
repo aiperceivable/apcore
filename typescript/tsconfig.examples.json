@@ -8,7 +8,11 @@
     "baseUrl": ".",
     "paths": {
       "apcore-js": ["./src/index.ts"],
-      "apcore-js/context-keys": ["./src/context-keys.ts"]
+      "apcore-js/context-keys": ["./src/context-keys.ts"],
+      "apcore-js/config": ["./src/config-entry.ts"],
+      "apcore-js/events": ["./src/events/entry.ts"],
+      "apcore-js/full": ["./src/full.ts"],
+      "apcore-js/observability": ["./src/observability/portable.ts"]
     }
   },
   "include": ["examples/**/*.ts"],

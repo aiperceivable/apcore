@@ -4,7 +4,7 @@ Re-exports all public classes, functions, and types from schema submodules.
 
 Example usage::
 
-    from apcore.schema import SchemaLoader, SchemaValidator, ExportProfile
+    from apcore.schema import SchemaLoader, SchemaValidator, SchemaExporter
     from apcore.schema import to_strict_schema, merge_annotations
 """
 
@@ -25,7 +25,6 @@ from apcore.schema.openai_strict import (
 from apcore.schema.ref_resolver import RefResolver
 from apcore.schema.strict import to_strict_schema
 from apcore.schema.types import (
-    ExportProfile,
     LLMExtensions,
     ResolvedSchema,
     SchemaDefinition,
@@ -37,7 +36,6 @@ from apcore.schema.validator import SchemaValidator
 
 __all__ = [
     "SchemaStrategy",
-    "ExportProfile",
     "SchemaDefinition",
     "ResolvedSchema",
     "SchemaValidationResult",

@@ -47,6 +47,7 @@ impl Drop for ReloadSlot<'_> {
 }
 
 impl Registry {
+    #[cfg(feature = "sys-modules")]
     pub(crate) fn start_managed_reload(
         self: &Arc<Self>,
         ids: Vec<String>,

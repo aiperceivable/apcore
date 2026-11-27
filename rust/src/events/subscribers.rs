@@ -1,14 +1,15 @@
 // APCore Protocol — Event subscribers
-// Spec reference: Event subscription, webhook delivery, A2A delivery
+// Spec reference: Event subscription and Webhook delivery
 
-use parking_lot::RwLock;
 use std::collections::HashMap;
+#[cfg(feature = "events-file")]
 use std::path::PathBuf;
+use std::sync::Arc;
+#[cfg(feature = "events")]
 use std::sync::OnceLock;
 
 use async_trait::async_trait;
-#[cfg(feature = "events")]
-use serde_json::json;
+#[cfg(feature = "events-file")]
 use tokio::io::AsyncWriteExt;
 
 use super::emitter::ApCoreEvent;
@@ -31,7 +32,7 @@ fn next_subscriber_id(type_name: &str) -> String {
     format!("{type_name}-{current}")
 }
 
-/// Process-wide shared `reqwest::Client` for webhook / A2A delivery.
+/// Process-wide shared `reqwest::Client` for Webhook delivery.
 ///
 /// Constructing a `reqwest::Client` is expensive and, on macOS, can perform a
 /// blocking SystemConfiguration proxy lookup (`SCDynamicStoreCopyProxies`).
@@ -306,166 +307,6 @@ impl EventSubscriber for WebhookSubscriber {
 }
 
 // ---------------------------------------------------------------------------
-// A2ASubscriber
-// ---------------------------------------------------------------------------
-
-/// Authentication for A2A subscriber.
-#[derive(Debug, Clone)]
-pub enum A2AAuth {
-    /// Bearer token → `Authorization: Bearer <token>`.
-    Bearer(String),
-    /// Dict of headers to merge into the request.
-    Headers(HashMap<String, String>),
-}
-
-/// Delivers events via the A2A protocol to the platform.
-///
-/// Payload: `{ "skillId": "<skill_id>", "event": <serialized> }`.
-/// The `skill_id` field defaults to `"apevo.event_receiver"` and can be
-/// overridden per-subscriber.
-///
-/// Delivery contract (spec docs/features/event-system.md §Event Delivery
-/// Semantics, Issue #61): `on_event` performs a **single** HTTP attempt and
-/// returns `Err(ModuleError)` on 5xx or network errors so that the
-/// surrounding [`EventEmitter`](super::EventEmitter) retry+DLQ policy
-/// (configured via `retry`) applies uniformly across subscriber types.
-/// 4xx responses are non-retryable client errors — they are logged at WARN
-/// and reported as `Ok` to suppress the spec retry loop.
-#[derive(Debug, Clone)]
-pub struct A2ASubscriber {
-    pub id: String,
-    pub platform_url: String,
-    pub auth: Option<A2AAuth>,
-    pub event_pattern: String,
-    pub timeout_ms: u64,
-    /// The A2A skill ID included in the outgoing payload.
-    /// Default: `"apevo.event_receiver"` (per apcore A2A spec).
-    pub skill_id: String,
-    /// Retry policy applied by [`EventEmitter`](super::EventEmitter) — see
-    /// event-system.md §Delivery Semantics.
-    pub retry: crate::events::retry::EventRetryConfig,
-}
-
-impl A2ASubscriber {
-    pub fn new(
-        id: impl Into<String>,
-        platform_url: impl Into<String>,
-        event_pattern: impl Into<String>,
-    ) -> Self {
-        Self {
-            id: id.into(),
-            platform_url: platform_url.into(),
-            auth: None,
-            event_pattern: event_pattern.into(),
-            timeout_ms: 5000,
-            skill_id: "apevo.event_receiver".to_string(),
-            retry: crate::events::retry::EventRetryConfig::default(),
-        }
-    }
-
-    /// Override the A2A skill ID used in the outgoing payload.
-    #[must_use]
-    pub fn with_skill_id(mut self, skill_id: impl Into<String>) -> Self {
-        self.skill_id = skill_id.into();
-        self
-    }
-
-    /// Override the retry policy applied by [`EventEmitter`](super::EventEmitter).
-    #[must_use]
-    pub fn with_retry(mut self, retry: crate::events::retry::EventRetryConfig) -> Self {
-        self.retry = retry;
-        self
-    }
-}
-
-#[async_trait]
-impl EventSubscriber for A2ASubscriber {
-    fn subscriber_id(&self) -> &str {
-        &self.id
-    }
-
-    #[allow(clippy::unnecessary_literal_bound)] // Keep the EventSubscriber borrowed-string signature.
-    fn subscriber_type(&self) -> &str {
-        "a2a"
-    }
-
-    fn event_pattern(&self) -> &str {
-        &self.event_pattern
-    }
-
-    fn retry(&self) -> crate::events::retry::EventRetryConfig {
-        self.retry
-    }
-
-    #[cfg(feature = "events")]
-    async fn on_event(&self, event: &ApCoreEvent) -> Result<(), ModuleError> {
-        let payload = json!({
-            "skillId": self.skill_id,
-            "event": {
-                "event_type": event.event_type,
-                "module_id": event.module_id,
-                "timestamp": event.timestamp,
-                "severity": event.severity,
-                "data": event.data,
-            }
-        });
-
-        let client = shared_http_client()?;
-
-        let mut req = client
-            .post(&self.platform_url)
-            .timeout(std::time::Duration::from_millis(self.timeout_ms))
-            .json(&payload);
-        req = req.header("Content-Type", "application/json");
-        match &self.auth {
-            Some(A2AAuth::Bearer(token)) => {
-                req = req.header("Authorization", format!("Bearer {token}"));
-            }
-            Some(A2AAuth::Headers(headers)) => {
-                for (k, v) in headers {
-                    req = req.header(k.as_str(), v.as_str());
-                }
-            }
-            None => {}
-        }
-
-        match req.send().await {
-            Ok(resp) => {
-                let status = resp.status().as_u16();
-                if (200..300).contains(&status) {
-                    return Ok(());
-                }
-                if status < 500 {
-                    // 4xx is a non-retryable client error per the spec retry
-                    // table — log and report success so EventEmitter does not
-                    // retry. (A-D-EVT-001.)
-                    tracing::warn!(status, url = %self.platform_url, "A2ASubscriber: non-retryable 4xx");
-                    return Ok(());
-                }
-                // 5xx — bubble up so EventEmitter::deliver_with_dlq applies
-                // the per-subscriber retry policy + DLQ on exhaustion.
-                Err(ModuleError::new(
-                    ErrorCode::GeneralInternalError,
-                    format!("A2ASubscriber: HTTP {status} from {}", self.platform_url),
-                ))
-            }
-            Err(e) => Err(ModuleError::new(
-                ErrorCode::GeneralInternalError,
-                format!("A2ASubscriber: network error to {}: {e}", self.platform_url),
-            )),
-        }
-    }
-
-    #[cfg(not(feature = "events"))]
-    async fn on_event(&self, _event: &ApCoreEvent) -> Result<(), ModuleError> {
-        Err(ModuleError::new(
-            ErrorCode::GeneralInternalError,
-            "A2ASubscriber requires the 'events' feature",
-        ))
-    }
-}
-
-// ---------------------------------------------------------------------------
 // FileSubscriber — built-in `file` type
 // ---------------------------------------------------------------------------
 
@@ -493,6 +334,7 @@ impl OutputFormat {
 /// limit at write time, the current file is renamed to `<path>.1` before the
 /// next write — matching the Python `FileSubscriber` behaviour.
 #[derive(Debug, Clone)]
+#[cfg(feature = "events-file")]
 pub struct FileSubscriber {
     pub id: String,
     pub path: PathBuf,
@@ -505,6 +347,7 @@ pub struct FileSubscriber {
     pub retry: crate::events::retry::EventRetryConfig,
 }
 
+#[cfg(feature = "events-file")]
 impl FileSubscriber {
     #[must_use]
     pub fn new(path: impl Into<PathBuf>) -> Self {
@@ -571,6 +414,7 @@ impl FileSubscriber {
     }
 }
 
+#[cfg(feature = "events-file")]
 #[async_trait]
 impl EventSubscriber for FileSubscriber {
     fn subscriber_id(&self) -> &str {
@@ -882,9 +726,6 @@ impl EventSubscriber for FilterSubscriber {
 // Subscriber factory — config-driven instantiation
 // ---------------------------------------------------------------------------
 
-type SubscriberFactory =
-    Box<dyn Fn(&serde_json::Value) -> Result<Box<dyn EventSubscriber>, ModuleError> + Send + Sync>;
-
 /// Parse a subscriber's nested `retry:` block into an [`EventRetryConfig`].
 ///
 /// Implements the per-subscriber retry policy documented in
@@ -971,44 +812,7 @@ fn build_webhook_subscriber(
 }
 
 #[allow(clippy::result_large_err)] // The subscriber factory returns the protocol ModuleError.
-fn build_a2a_subscriber(
-    config: &serde_json::Value,
-) -> Result<Box<dyn EventSubscriber>, ModuleError> {
-    let platform_url = config
-        .get("platform_url")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| {
-            ModuleError::new(ErrorCode::ConfigInvalid, "a2a: 'platform_url' is required")
-        })?
-        .to_string();
-    let timeout_ms = config
-        .get("timeout_ms")
-        .and_then(serde_json::Value::as_u64)
-        .unwrap_or(5000);
-    let auth = match config.get("auth") {
-        Some(serde_json::Value::String(s)) => Some(A2AAuth::Bearer(s.clone())),
-        Some(serde_json::Value::Object(m)) => {
-            let mut headers = HashMap::new();
-            for (k, v) in m {
-                if let Some(vs) = v.as_str() {
-                    headers.insert(k.clone(), vs.to_string());
-                }
-            }
-            Some(A2AAuth::Headers(headers))
-        }
-        _ => None,
-    };
-    let id = next_subscriber_id("a2a");
-    let mut sub = A2ASubscriber::new(id, platform_url, "*");
-    sub.auth = auth;
-    sub.timeout_ms = timeout_ms;
-    if let Some(retry) = parse_retry_config(config) {
-        sub.retry = retry;
-    }
-    Ok(Box::new(sub) as Box<dyn EventSubscriber>)
-}
-
-#[allow(clippy::result_large_err)] // The subscriber factory returns the protocol ModuleError.
+#[cfg(feature = "events-file")]
 fn build_file_subscriber(
     config: &serde_json::Value,
 ) -> Result<Box<dyn EventSubscriber>, ModuleError> {
@@ -1059,6 +863,7 @@ fn build_stdout_subscriber(
 
 #[allow(clippy::result_large_err)] // The subscriber factory returns the protocol ModuleError.
 fn build_filter_subscriber(
+    registry: &SubscriberRegistry,
     config: &serde_json::Value,
 ) -> Result<Box<dyn EventSubscriber>, ModuleError> {
     let delegate_type = config
@@ -1086,7 +891,7 @@ fn build_filter_subscriber(
             "filter: 'delegate_config' must be an object",
         ));
     }
-    let delegate = create_subscriber(&delegate_config)?;
+    let delegate = registry.create(&delegate_config)?;
 
     let include = config
         .get("include_events")
@@ -1118,80 +923,93 @@ fn build_filter_subscriber(
     Ok(Box::new(sub) as Box<dyn EventSubscriber>)
 }
 
-/// Register the built-in subscriber type factories
-/// (`webhook`, `a2a`, `file`, `stdout`, `filter`).
-fn register_builtin_factories(map: &mut HashMap<String, SubscriberFactory>) {
-    map.insert("webhook".to_string(), Box::new(build_webhook_subscriber));
-    map.insert("a2a".to_string(), Box::new(build_a2a_subscriber));
-    map.insert("file".to_string(), Box::new(build_file_subscriber));
-    map.insert("stdout".to_string(), Box::new(build_stdout_subscriber));
-    map.insert("filter".to_string(), Box::new(build_filter_subscriber));
+type RegistryFactory = Arc<
+    dyn Fn(&SubscriberRegistry, &serde_json::Value) -> Result<Box<dyn EventSubscriber>, ModuleError>
+        + Send
+        + Sync,
+>;
+
+/// Subscriber factories selected by a single host assembly.
+#[derive(Clone)]
+pub struct SubscriberRegistry {
+    factories: HashMap<String, RegistryFactory>,
 }
 
-fn global_subscriber_factories() -> &'static RwLock<HashMap<String, SubscriberFactory>> {
-    static FACTORIES: OnceLock<RwLock<HashMap<String, SubscriberFactory>>> = OnceLock::new();
-    FACTORIES.get_or_init(|| {
-        let mut map: HashMap<String, SubscriberFactory> = HashMap::new();
-        register_builtin_factories(&mut map);
-        RwLock::new(map)
-    })
-}
-
-/// Register a custom subscriber type factory.
-pub fn register_subscriber_type(type_name: &str, factory: SubscriberFactory) {
-    let mut map = global_subscriber_factories().write();
-    map.insert(type_name.to_string(), factory);
-}
-
-/// Unregister a subscriber type.
-pub fn unregister_subscriber_type(type_name: &str) -> Result<(), ModuleError> {
-    let mut map = global_subscriber_factories().write();
-    if map.remove(type_name).is_none() {
-        return Err(ModuleError::new(
-            ErrorCode::GeneralInternalError,
-            format!("Subscriber type '{type_name}' is not registered"),
-        ));
+impl SubscriberRegistry {
+    /// Construct a registry with the protocol-neutral subscriber factories.
+    #[must_use]
+    pub fn new() -> Self {
+        let mut registry = Self {
+            factories: HashMap::new(),
+        };
+        registry.register("webhook", build_webhook_subscriber);
+        #[cfg(feature = "events-file")]
+        registry.register("file", build_file_subscriber);
+        registry.register("stdout", build_stdout_subscriber);
+        registry
+            .factories
+            .insert("filter".to_string(), Arc::new(build_filter_subscriber));
+        registry
     }
-    Ok(())
+
+    /// Add or replace the named factory for this registry.
+    pub fn register<F>(&mut self, type_name: &str, factory: F)
+    where
+        F: Fn(&serde_json::Value) -> Result<Box<dyn EventSubscriber>, ModuleError>
+            + Send
+            + Sync
+            + 'static,
+    {
+        self.factories.insert(
+            type_name.to_string(),
+            Arc::new(move |_, config| factory(config)),
+        );
+    }
+
+    /// Remove the named factory from this registry.
+    #[must_use]
+    pub fn unregister(&mut self, type_name: &str) -> bool {
+        self.factories.remove(type_name).is_some()
+    }
+
+    /// Create a subscriber and resolve any nested delegates from this registry.
+    pub fn create(
+        &self,
+        config: &serde_json::Value,
+    ) -> Result<Box<dyn EventSubscriber>, ModuleError> {
+        let type_name = config.get("type").and_then(|v| v.as_str()).ok_or_else(|| {
+            ModuleError::new(
+                ErrorCode::ConfigInvalid,
+                "subscriber config missing 'type' field",
+            )
+        })?;
+        let factory = self.factories.get(type_name).ok_or_else(|| {
+            ModuleError::new(
+                ErrorCode::ConfigInvalid,
+                format!("Unknown subscriber type '{type_name}'"),
+            )
+        })?;
+        factory(self, config)
+    }
 }
 
-/// Reset the subscriber factory registry to built-in types only.
-pub fn reset_subscriber_registry() {
-    let mut map = global_subscriber_factories().write();
-    map.clear();
-    register_builtin_factories(&mut map);
+impl Default for SubscriberRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
-/// Create a subscriber from config using the factory registry.
+/// Create a subscriber from the protocol-neutral built-ins.
 pub fn create_subscriber(
     config: &serde_json::Value,
 ) -> Result<Box<dyn EventSubscriber>, ModuleError> {
-    let type_name = config.get("type").and_then(|v| v.as_str()).ok_or_else(|| {
-        ModuleError::new(
-            ErrorCode::ConfigInvalid,
-            "subscriber config missing 'type' field",
-        )
-    })?;
-
-    let map = global_subscriber_factories().read();
-    let factory = map.get(type_name).ok_or_else(|| {
-        ModuleError::new(
-            ErrorCode::ConfigInvalid,
-            format!("Unknown subscriber type '{type_name}'"),
-        )
-    })?;
-    factory(config)
+    SubscriberRegistry::new().create(config)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
-    use std::sync::Mutex;
-
-    /// Tests that call `reset_subscriber_registry` or mutate the global
-    /// subscriber registry must hold this lock to avoid cross-test races.
-    static REGISTRY_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn test_webhook_subscriber_new() {
@@ -1211,59 +1029,11 @@ mod tests {
         assert_eq!(sub.event_pattern(), "*");
     }
 
-    #[test]
-    fn test_a2a_subscriber_new() {
-        let sub = A2ASubscriber::new("a2a1", "https://platform.example.com", "module.*");
-        assert_eq!(sub.id, "a2a1");
-        assert_eq!(sub.platform_url, "https://platform.example.com");
-        assert_eq!(sub.event_pattern, "module.*");
-        assert!(sub.auth.is_none());
-        assert_eq!(sub.timeout_ms, 5000);
-    }
-
-    #[test]
-    fn test_a2a_subscriber_trait_methods() {
-        let sub = A2ASubscriber::new("a2a1", "https://p.com", "ev.*");
-        assert_eq!(sub.subscriber_id(), "a2a1");
-        assert_eq!(sub.event_pattern(), "ev.*");
-    }
-
-    #[test]
-    fn test_a2a_auth_bearer() {
-        let auth = A2AAuth::Bearer("my_token".to_string());
-        match auth {
-            A2AAuth::Bearer(t) => assert_eq!(t, "my_token"),
-            A2AAuth::Headers(_) => panic!("expected Bearer"),
-        }
-    }
-
-    #[test]
-    fn test_a2a_auth_headers() {
-        let mut headers = HashMap::new();
-        headers.insert("X-Custom".to_string(), "value".to_string());
-        let auth = A2AAuth::Headers(headers);
-        match auth {
-            A2AAuth::Headers(h) => assert_eq!(h.get("X-Custom").unwrap(), "value"),
-            A2AAuth::Bearer(_) => panic!("expected Headers"),
-        }
-    }
-
     #[cfg(not(feature = "events"))]
     #[tokio::test]
     async fn test_webhook_on_event_requires_events_feature() {
         use super::super::emitter::ApCoreEvent;
         let sub = WebhookSubscriber::new("wh1", "https://example.com", "*");
-        let event = ApCoreEvent::new("test", json!({}));
-        let result = sub.on_event(&event).await;
-        assert!(result.is_err());
-        assert_eq!(result.unwrap_err().code, ErrorCode::GeneralInternalError);
-    }
-
-    #[cfg(not(feature = "events"))]
-    #[tokio::test]
-    async fn test_a2a_on_event_requires_events_feature() {
-        use super::super::emitter::ApCoreEvent;
-        let sub = A2ASubscriber::new("a1", "https://p.com", "*");
         let event = ApCoreEvent::new("test", json!({}));
         let result = sub.on_event(&event).await;
         assert!(result.is_err());
@@ -1282,8 +1052,6 @@ mod tests {
 
     #[test]
     fn test_create_subscriber_unknown_type() {
-        let _lock = REGISTRY_LOCK.lock().unwrap();
-        reset_subscriber_registry();
         let config = json!({"type": "nonexistent"});
         let result = create_subscriber(&config);
         assert!(result.is_err());
@@ -1292,8 +1060,6 @@ mod tests {
 
     #[test]
     fn test_create_webhook_subscriber_via_factory() {
-        let _lock = REGISTRY_LOCK.lock().unwrap();
-        reset_subscriber_registry();
         let config = json!({
             "type": "webhook",
             "url": "https://example.com/hook",
@@ -1308,37 +1074,10 @@ mod tests {
 
     #[test]
     fn test_create_webhook_subscriber_missing_url() {
-        let _lock = REGISTRY_LOCK.lock().unwrap();
-        reset_subscriber_registry();
         let config = json!({"type": "webhook"});
         let result = create_subscriber(&config);
         assert!(result.is_err());
         assert!(result.unwrap_err().message.contains("url"));
-    }
-
-    #[test]
-    fn test_create_a2a_subscriber_via_factory() {
-        let _lock = REGISTRY_LOCK.lock().unwrap();
-        reset_subscriber_registry();
-        let config = json!({
-            "type": "a2a",
-            "platform_url": "https://platform.example.com",
-            "timeout_ms": 2000,
-            "auth": "my_bearer_token"
-        });
-        let sub = create_subscriber(&config).unwrap();
-        assert!(sub.subscriber_id().starts_with("a2a-"));
-        assert_eq!(sub.event_pattern(), "*");
-    }
-
-    #[test]
-    fn test_create_a2a_subscriber_missing_platform_url() {
-        let _lock = REGISTRY_LOCK.lock().unwrap();
-        reset_subscriber_registry();
-        let config = json!({"type": "a2a"});
-        let result = create_subscriber(&config);
-        assert!(result.is_err());
-        assert!(result.unwrap_err().message.contains("platform_url"));
     }
 
     #[test]
@@ -1362,39 +1101,20 @@ mod tests {
             }
         }
 
-        let _lock = REGISTRY_LOCK.lock().unwrap();
         let type_name = "custom_unique_test_type";
 
-        register_subscriber_type(
-            type_name,
-            Box::new(|_config| Ok(Box::new(CustomSub) as Box<dyn EventSubscriber>)),
-        );
+        let mut registry = SubscriberRegistry::new();
+        registry.register(type_name, |_| {
+            Ok(Box::new(CustomSub) as Box<dyn EventSubscriber>)
+        });
 
         let config = json!({"type": type_name});
-        let sub = create_subscriber(&config).unwrap();
+        assert!(SubscriberRegistry::new().create(&config).is_err());
+        let sub = registry.create(&config).unwrap();
         assert_eq!(sub.subscriber_id(), "custom-1");
 
-        unregister_subscriber_type(type_name).unwrap();
-        let result = create_subscriber(&config);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_unregister_nonexistent_type_returns_error() {
-        let _lock = REGISTRY_LOCK.lock().unwrap();
-        reset_subscriber_registry();
-        let result = unregister_subscriber_type("does_not_exist");
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_reset_subscriber_registry_restores_builtins() {
-        let _lock = REGISTRY_LOCK.lock().unwrap();
-        reset_subscriber_registry();
-        let wh_config = json!({"type": "webhook", "url": "https://example.com"});
-        assert!(create_subscriber(&wh_config).is_ok());
-
-        let a2a_config = json!({"type": "a2a", "platform_url": "https://p.com"});
-        assert!(create_subscriber(&a2a_config).is_ok());
+        assert!(registry.unregister(type_name));
+        assert!(!registry.unregister(type_name));
+        assert!(registry.create(&config).is_err());
     }
 }

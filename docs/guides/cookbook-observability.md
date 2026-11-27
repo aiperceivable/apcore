@@ -15,7 +15,7 @@ End-to-end recipe: turn on tracing from `apcore.yaml`, log every module call as 
 
 ## When NOT to use this pattern
 
-- Metrics (call counts, latency histograms) use `MetricsCollector` + `MetricsMiddleware`, with `PrometheusExporter` to serve them — see [Metrics and Usage](../features/metrics-and-usage.md). The `observability.metrics.*` config keys do nothing; wire metrics in code.
+- Collect call counts and latency histograms with `MetricsCollector` and `MetricsMiddleware`. Pass the text renderer to the Toolkit listener for scraping. See [Metrics and Usage](../features/metrics-and-usage.md).
 - Per-module usage statistics come from `UsageCollector` and the `system.usage.*` modules ([Metrics and Usage § Usage collector](../features/metrics-and-usage.md#usage-collector)).
 
 ---
@@ -122,7 +122,7 @@ Full key reference: [PROTOCOL_SPEC §10.1.1](../spec/protocol-spec.md#1011-traci
 === "TypeScript"
     ```typescript
     import { Type } from '@sinclair/typebox';
-    import { APCore, Config, ContextLogger, ObsLoggingMiddleware, RedactionConfig } from 'apcore-js';
+    import { APCore, Config, ContextLogger, ObsLoggingMiddleware, RedactionConfig } from 'apcore-js/full';
 
     const config = Config.load('apcore.yaml');
     const client = new APCore({ config }); // installs TracingMiddleware from observability.tracing.*

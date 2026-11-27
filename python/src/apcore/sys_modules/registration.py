@@ -9,16 +9,12 @@ from typing import Any, Callable, TypedDict
 
 
 from apcore.config import Config
-from apcore.errors import SysModuleRegistrationError
+from apcore.errors import ConfigError, SysModuleRegistrationError
 from apcore.events.circuit_breaker import CircuitBreakerWrapper
-from apcore.events.emitter import ApCoreEvent, EventEmitter, EventSubscriber
-from apcore.events.retry import EventRetryConfig
-from apcore.events.subscribers import (
-    A2ASubscriber,
-    FileSubscriber,
-    FilterSubscriber,
-    StdoutSubscriber,
-    WebhookSubscriber,
+from apcore.events.emitter import ApCoreEvent, EventEmitter
+from apcore.events.factory import (
+    SubscriberRegistry,
+    create_subscriber_from_config,
 )
 from apcore.executor import Executor
 from apcore.middleware.error_history_middleware import ErrorHistoryMiddleware
@@ -44,10 +40,6 @@ logger = logging.getLogger(__name__)
 
 __all__ = [
     "register_sys_modules",
-    "register_subscriber_type",
-    "unregister_subscriber_type",
-    "reset_subscriber_registry",
-    "register_subscriber_factory",
     "create_subscriber_from_config",
     "SysModulesContext",
 ]
@@ -68,169 +60,6 @@ class SysModulesContext(TypedDict, total=False):
     metrics_collector: Any
     usage_collector: Any
     audit_store: Any
-
-
-# ---------------------------------------------------------------------------
-# Subscriber type registry — extensible factory for EventSubscriber types
-# ---------------------------------------------------------------------------
-
-#: Maps subscriber type name → factory function(config_dict) → EventSubscriber
-_subscriber_factories: dict[str, Callable[[dict[str, Any]], EventSubscriber]] = {}
-
-
-def _parse_retry_config(cfg: dict[str, Any]) -> EventRetryConfig | None:
-    """Build an :class:`EventRetryConfig` from a subscriber's nested ``retry:`` block.
-
-    Implements the per-subscriber retry policy documented in
-    ``docs/features/event-system.md`` §"Per-Subscriber Retry Policy" (apcore#85).
-    The block is optional and may be partial — omitted keys fall back to the
-    spec defaults (``max_attempts=3``, ``initial_backoff_ms=100``,
-    ``max_backoff_ms=30000``, ``backoff_multiplier=2.0``).
-
-    Args:
-        cfg: Raw subscriber config dict from ``sys_modules.events.subscribers``.
-
-    Returns:
-        The parsed policy, or ``None`` when no ``retry:`` block is present, so
-        the subscriber falls back to its own default.
-    """
-    nested = cfg.get("retry")
-    if not isinstance(nested, dict):
-        return None
-    default = EventRetryConfig()
-    return EventRetryConfig(
-        max_attempts=int(nested.get("max_attempts", default.max_attempts)),
-        initial_backoff_ms=int(nested.get("initial_backoff_ms", default.initial_backoff_ms)),
-        max_backoff_ms=int(nested.get("max_backoff_ms", default.max_backoff_ms)),
-        backoff_multiplier=float(nested.get("backoff_multiplier", default.backoff_multiplier)),
-    )
-
-
-def _default_webhook_factory(cfg: dict[str, Any]) -> EventSubscriber:
-    retry_cfg = _parse_retry_config(cfg)
-    # Deprecated: flat retry_count is the legacy webhook-only shorthand. It maps
-    # to EventRetryConfig.max_attempts + 1 (retry_count counted retries *after*
-    # the first attempt; max_attempts counts total attempts). The nested retry:
-    # block wins when both are present (apcore#85).
-    if retry_cfg is None and "retry_count" in cfg:
-        retry_cfg = EventRetryConfig(max_attempts=int(cfg["retry_count"]) + 1)
-    return WebhookSubscriber(
-        url=cfg["url"],
-        headers=cfg.get("headers"),
-        timeout_ms=cfg.get("timeout_ms", 5000),
-        retry=retry_cfg,
-    )
-
-
-def _default_a2a_factory(cfg: dict[str, Any]) -> EventSubscriber:
-    return A2ASubscriber(
-        platform_url=cfg["platform_url"],
-        auth=cfg.get("auth"),
-        timeout_ms=cfg.get("timeout_ms", 5000),
-        retry=_parse_retry_config(cfg),
-    )
-
-
-def _default_file_factory(cfg: dict[str, Any]) -> EventSubscriber:
-    return FileSubscriber(
-        path=cfg["path"],
-        append=cfg.get("append", True),
-        output_format=cfg.get("format", "json"),
-        rotate_bytes=cfg.get("rotate_bytes"),
-        retry=_parse_retry_config(cfg),
-    )
-
-
-def _default_stdout_factory(cfg: dict[str, Any]) -> EventSubscriber:
-    return StdoutSubscriber(
-        output_format=cfg.get("format", "text"),
-        level_filter=cfg.get("level_filter"),
-        retry=_parse_retry_config(cfg),
-    )
-
-
-def _default_filter_factory(cfg: dict[str, Any]) -> EventSubscriber:
-    delegate_cfg = {**cfg.get("delegate_config", {}), "type": cfg["delegate_type"]}
-    delegate = _create_subscriber(delegate_cfg)
-    return FilterSubscriber(
-        delegate=delegate,
-        include_events=cfg.get("include_events"),
-        exclude_events=cfg.get("exclude_events"),
-        retry=_parse_retry_config(cfg),
-    )
-
-
-# Built-in subscriber type registry
-_BUILTIN_FACTORIES: dict[str, Callable[[dict[str, Any]], EventSubscriber]] = {
-    "webhook": _default_webhook_factory,
-    "a2a": _default_a2a_factory,
-    "file": _default_file_factory,
-    "stdout": _default_stdout_factory,
-    "filter": _default_filter_factory,
-}
-
-# Register built-in types
-_subscriber_factories.update(_BUILTIN_FACTORIES)
-
-
-def register_subscriber_type(
-    type_name: str,
-    factory: Callable[[dict[str, Any]], EventSubscriber],
-) -> None:
-    """Register a custom subscriber type factory."""
-    _subscriber_factories[type_name] = factory
-
-
-def unregister_subscriber_type(type_name: str) -> None:
-    """Remove a previously registered subscriber type."""
-    del _subscriber_factories[type_name]
-
-
-def reset_subscriber_registry() -> None:
-    """Reset the subscriber registry to built-in types only."""
-    _subscriber_factories.clear()
-    _subscriber_factories.update(_BUILTIN_FACTORIES)
-
-
-# ---------------------------------------------------------------------------
-# Public SubscriberFactory API — parity with apcore-typescript
-# (``createSubscriberFromConfig`` / ``registerSubscriberType``) and apcore-rust
-# (``create_subscriber`` / ``register_subscriber_type``). Issue #36.
-# ---------------------------------------------------------------------------
-
-
-def register_subscriber_factory(
-    type_name: str,
-    factory: Callable[[dict[str, Any]], EventSubscriber],
-) -> None:
-    """Register a custom subscriber-type factory.
-
-    Public, cross-language counterpart to TypeScript's
-    ``registerSubscriberType`` / Rust's ``register_subscriber_type`` — the
-    normative name in event-system.md, which all three SDKs export.
-
-    Args:
-        type_name: The ``type`` string used in subscriber config dicts.
-        factory: Callable that takes the config dict and returns an
-            :class:`EventSubscriber` instance.
-    """
-    register_subscriber_type(type_name, factory)
-
-
-def create_subscriber_from_config(config: dict[str, Any]) -> EventSubscriber:
-    """Instantiate an :class:`EventSubscriber` from a config dict.
-
-    Public, cross-language counterpart to TypeScript's
-    ``createSubscriberFromConfig`` / Rust's ``create_subscriber``.
-
-    Looks up the factory registered for ``config['type']`` and invokes it
-    with the full config. Built-in types (``webhook``, ``a2a``, ``file``,
-    ``stdout``, ``filter``) are auto-registered on import.
-
-    Raises:
-        ValueError: If ``config['type']`` is not in the factory registry.
-    """
-    return _create_subscriber(config)
 
 
 # ---------------------------------------------------------------------------
@@ -341,6 +170,7 @@ def register_sys_modules(
     toggle_state: ToggleState | None = None,
     *,
     on_registration_error: Callable[[SysModuleRegistrationError], None] | None = None,
+    subscriber_registry: SubscriberRegistry | None = None,
 ) -> dict[str, Any]:
     """Auto-register all sys.* modules and middleware based on config.
 
@@ -354,6 +184,8 @@ def register_sys_modules(
             failures are logged at ERROR level and execution continues.
         on_registration_error: Called for each module registration failure
             recovered in lenient mode.
+        subscriber_registry: Optional factories for this host. Omitting this
+            argument uses the built-in factories.
         audit_store: Optional audit store for control module audit trails.
         toggle_state: Optional per-instance :class:`ToggleState` (#71). When
             provided, ``ToggleFeatureModule`` writes to this instance (the
@@ -403,6 +235,12 @@ def register_sys_modules(
         # namespace() returns a snapshot. Apply the effective settings at registration.
         sys_cfg = _resolve_sys_cfg(config)
 
+    retention_hours = _cfg_get(sys_cfg, config, "usage.retention_hours", 168)
+    if type(retention_hours) is not int or retention_hours < 1:
+        raise ConfigError(message="sys_modules.usage.retention_hours must be a positive integer")
+    if _cfg_get(sys_cfg, config, "usage.bucketing_strategy", "hourly") != "hourly":
+        raise ConfigError(message="sys_modules.usage.bucketing_strategy must be 'hourly'")
+
     error_history = _create_error_history(config, sys_cfg)
     result["error_history"] = error_history
 
@@ -411,7 +249,7 @@ def register_sys_modules(
     result["error_history_middleware"] = eh_middleware
 
     # Usage tracking
-    usage_collector = UsageCollector()
+    usage_collector = UsageCollector(retention_hours=retention_hours)
     result["usage_collector"] = usage_collector
     usage_middleware = UsageMiddleware(usage_collector)
     executor.use(usage_middleware)
@@ -444,6 +282,7 @@ def register_sys_modules(
                 audit_store=audit_store,
                 register_module=register_module,
                 toggle_state=toggle_state,
+                subscriber_registry=subscriber_registry,
             )
         except BaseException:
             emitter = result.get("event_emitter")
@@ -567,6 +406,7 @@ def _setup_events(
     overrides_store: OverridesStore | None = None,
     audit_store: AuditStore | None = None,
     toggle_state: ToggleState | None = None,
+    subscriber_registry: SubscriberRegistry | None = None,
 ) -> None:
     """Set up event emitter, subscribers, PlatformNotifyMiddleware, control modules, and registry bridge."""
     event_emitter = EventEmitter()
@@ -613,7 +453,7 @@ def _setup_events(
     if overrides_store is not None:
         _load_overrides_from_store(config, overrides_store, toggle_state=effective_toggle_state)
 
-    _instantiate_subscribers(config, sys_cfg, event_emitter)
+    _instantiate_subscribers(config, sys_cfg, event_emitter, subscriber_registry)
     registry.set_event_emitter(event_emitter)
     _bridge_registry_events(registry, event_emitter)
 
@@ -680,12 +520,18 @@ def _register_control_modules(
     return effective_toggle_state
 
 
-def _instantiate_subscribers(config: Config, sys_cfg: dict[str, Any] | None, event_emitter: EventEmitter) -> None:
+def _instantiate_subscribers(
+    config: Config,
+    sys_cfg: dict[str, Any] | None,
+    event_emitter: EventEmitter,
+    subscriber_registry: SubscriberRegistry | None,
+) -> None:
     """Create and subscribe EventSubscribers from config, each wrapped in a circuit breaker."""
     subscribers_config = _cfg_get(sys_cfg, config, "events.subscribers", [])
+    subscribers = subscriber_registry if subscriber_registry is not None else SubscriberRegistry()
     for sub_cfg in subscribers_config:
         try:
-            subscriber = _create_subscriber(sub_cfg)
+            subscriber = subscribers.create(sub_cfg)
             cb_cfg: dict[str, Any] = sub_cfg.get("circuit_breaker") or {}
             wrapped = CircuitBreakerWrapper(
                 subscriber=subscriber,
@@ -701,20 +547,6 @@ def _instantiate_subscribers(config: Config, sys_cfg: dict[str, Any] | None, eve
                 sub_cfg,
                 exc_info=True,
             )
-
-
-def _create_subscriber(sub_cfg: dict[str, Any]) -> EventSubscriber:
-    """Factory for EventSubscriber from a config dict."""
-    sub_type = sub_cfg.get("type", "")
-    factory = _subscriber_factories.get(sub_type)
-    if factory is None:
-        registered = ", ".join(sorted(_subscriber_factories.keys()))
-        raise ValueError(
-            f"Unknown subscriber type: {sub_type!r}. "
-            f"Registered types: [{registered}]. "
-            f"Use register_subscriber_type() to add custom types."
-        )
-    return factory(sub_cfg)
 
 
 def _bridge_registry_events(registry: Registry, emitter: EventEmitter) -> None:

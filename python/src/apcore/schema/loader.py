@@ -10,7 +10,6 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Annotated, Any, ClassVar, Literal, Union, cast
 
-import yaml
 from jsonschema import Draft202012Validator
 from jsonschema.exceptions import SchemaError as JsonSchemaError
 from pydantic import BaseModel, ConfigDict, Field, create_model, model_validator
@@ -556,6 +555,8 @@ class SchemaLoader:
         file_path = self._resolver._module_file(module_id)
         if not file_path.exists():
             raise SchemaNotFoundError(schema_id=module_id)
+
+        import yaml
 
         try:
             data = yaml.safe_load(file_path.read_text())

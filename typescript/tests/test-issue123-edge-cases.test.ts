@@ -1,17 +1,17 @@
 /** Issue #123 regression guards beyond the shared fixture cases. */
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { Type } from '@sinclair/typebox';
-import { APCore } from '../src/client.js';
+import { APCore } from '../src/full.js';
 import { Config } from '../src/config.js';
 import { Context } from '../src/context.js';
 import { Executor } from '../src/executor.js';
 import { CancelToken, ExecutionCancelledError } from '../src/cancel.js';
-import { Registry } from '../src/registry/registry.js';
+import { Registry } from '../src/full.js';
 import { createEvent, type ApCoreEvent } from '../src/events/emitter.js';
-import { registerSubscriberType, resetSubscriberRegistry } from '../src/sys-modules/registration.js';
+import { createSysModulesPlugin } from '../src/sys-modules/entry.js';
 import { SchemaValidator } from '../src/schema/validator.js';
 import yaml from 'js-yaml';
 import { ExecutionStrategy, PipelineEngine, type PipelineContext, type Step } from '../src/pipeline.js';
@@ -55,7 +55,7 @@ describe('D-151 conformance declaration', () => {
     const project = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as { version: string };
     expect(declaration.implementation).toMatchObject({ name: 'apcore-typescript', version: project.version, spec_version: '1.65.0' });
     expect(declaration.conformance.level).toBe(0);
-    expect(declaration.conformance.fixture_results).toMatchObject({ fixtures: 9, cases: 79, passed: 79, failed: 0, skipped: 0 });
+    expect(declaration.conformance.fixture_results).toMatchObject({ fixtures: 8, cases: 74, passed: 74, failed: 0, skipped: 0 });
     expect(declaration.conformance.known_deviations).toContainEqual(expect.objectContaining({ feature: 'Full fixture verification', severity: 'major' }));
   });
 });
@@ -164,14 +164,28 @@ describe('D-133 timeout owns an abort-listener race', () => {
 });
 
 describe('configured subscriber circuit breaker standard bootstrap', () => {
-  afterEach(() => resetSubscriberRegistry());
   it('honors circuit_breaker thresholds and suppresses delivery after opening', async () => {
     let attempts = 0;
-    registerSubscriberType('issue123-failing', () => ({
+    const failingSubscriber = () => ({
       subscriberId: 'fixture-failing-subscriber', subscriberType: 'fixture', eventPattern: 'fixture.delivery',
       onEvent() { attempts += 1; throw new Error('Fixture delivery failure'); },
-    }));
-    const client = new APCore({ config: new Config({ sys_modules: { enabled: true, events: { enabled: true, subscribers: [{ type: 'issue123-failing', circuit_breaker: { timeout_ms: 50, open_threshold: 2, recovery_window_ms: 60000 } }] } } }) });
+    });
+    const config = new Config({
+      sys_modules: {
+        enabled: true,
+        events: {
+          enabled: true,
+          subscribers: [{
+            type: 'issue123-failing',
+            circuit_breaker: { timeout_ms: 50, open_threshold: 2, recovery_window_ms: 60000 },
+          }],
+        },
+      },
+    });
+    const client = new APCore({
+      config,
+      plugins: [createSysModulesPlugin({ subscriberFactories: { 'issue123-failing': failingSubscriber } })],
+    });
     const observed: ApCoreEvent[] = [];
     client.events!.subscribe({ eventPattern: 'apcore.subscriber.circuit_opened', onEvent(event) { observed.push(event); } });
     for (let index = 0; index < 3; index += 1) {

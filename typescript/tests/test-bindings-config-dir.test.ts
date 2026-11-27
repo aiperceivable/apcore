@@ -16,7 +16,7 @@ import { join } from 'node:path';
 import { BindingLoader } from '../src/bindings.js';
 import { Config } from '../src/config.js';
 import { BindingFileInvalidError } from '../src/errors.js';
-import { Registry } from '../src/registry/registry.js';
+import { Registry } from '../src/full.js';
 
 let tmpDir: string;
 let originalCwd: string;

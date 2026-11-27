@@ -1,4 +1,4 @@
-"""Event subscribers for webhook, A2A, file, stdout, and filter delivery (PRD F9, Issue #36)."""
+"""Event subscribers for webhook, file, stdout, and filter delivery (PRD F9, Issue #36)."""
 
 from __future__ import annotations
 
@@ -7,11 +7,7 @@ import logging
 import os
 import sys
 from dataclasses import asdict
-
-try:
-    import aiohttp  # type: ignore[import-not-found]
-except ImportError:
-    aiohttp = None  # type: ignore[assignment]
+from types import ModuleType
 
 from apcore.events.emitter import ApCoreEvent, EventSubscriber
 from apcore.events.retry import EventRetryConfig
@@ -19,7 +15,6 @@ from apcore.utils.pattern import match_glob
 
 __all__ = [
     "WebhookSubscriber",
-    "A2ASubscriber",
     "FileSubscriber",
     "StdoutSubscriber",
     "FilterSubscriber",
@@ -28,6 +23,14 @@ __all__ = [
 _SEVERITY_ORDER: dict[str, int] = {"info": 0, "warn": 1, "error": 2, "fatal": 3}
 
 logger = logging.getLogger(__name__)
+
+
+def _load_aiohttp() -> ModuleType | None:
+    try:
+        import aiohttp  # type: ignore[import-not-found]
+    except ImportError:
+        return None
+    return aiohttp
 
 
 class WebhookSubscriber:
@@ -67,6 +70,7 @@ class WebhookSubscriber:
         can act. 4xx responses are logged as warnings and treated as permanent
         failures (no retry).
         """
+        aiohttp = _load_aiohttp()
         if aiohttp is None:
             raise ImportError("aiohttp is required for WebhookSubscriber. Install with: pip install apcore[events]")
 
@@ -218,63 +222,3 @@ class FilterSubscriber:
         if self._exclude_events is not None:
             return not any(match_glob(pattern, event_type) for pattern in self._exclude_events)
         return True
-
-
-class A2ASubscriber:
-    """Delivers events via the A2A protocol to the platform."""
-
-    subscriber_type = "a2a"
-
-    def __init__(
-        self,
-        platform_url: str,
-        auth: str | dict[str, str] | None = None,
-        timeout_ms: int = 5000,
-        skill_id: str = "apevo.event_receiver",
-        *,
-        id: str | None = None,  # noqa: A002
-        retry: EventRetryConfig | None = None,
-        event_pattern: str = "*",
-    ) -> None:
-        from apcore.events.emitter import _next_subscriber_id
-
-        self._platform_url = platform_url
-        self._auth = auth
-        self._timeout_ms = timeout_ms
-        self._skill_id = skill_id
-        self.subscriber_id: str = id if id is not None else _next_subscriber_id("a2a")
-        self.retry: EventRetryConfig = retry if retry is not None else EventRetryConfig()
-        self.event_pattern: str = event_pattern
-
-    async def on_event(self, event: ApCoreEvent) -> None:
-        """Send the event to the A2A platform endpoint.
-
-        Raises on 5xx responses and network errors so the emitter's retry loop
-        can act. 4xx responses are logged as warnings and treated as permanent
-        failures (no retry).
-        """
-        payload = {
-            "skillId": self._skill_id,
-            "event": asdict(event),
-        }
-        headers: dict[str, str] = {"Content-Type": "application/json"}
-        if isinstance(self._auth, str):
-            headers["Authorization"] = f"Bearer {self._auth}"
-        elif isinstance(self._auth, dict):
-            headers.update(self._auth)
-
-        if aiohttp is None:
-            raise ImportError("aiohttp is required for A2ASubscriber. Install with: pip install apcore[events]")
-
-        timeout = aiohttp.ClientTimeout(total=self._timeout_ms / 1000.0)
-        async with aiohttp.ClientSession(timeout=timeout) as session:
-            async with session.post(self._platform_url, json=payload, headers=headers) as response:
-                if response.status >= 500:
-                    raise RuntimeError(f"A2A delivery to {self._platform_url} failed with status {response.status}")
-                if response.status >= 400:
-                    logger.warning(
-                        "A2A delivery to %s returned %d for event %s (permanent failure — no retry)",
-                        self._platform_url,
-                        response.status,
-                        event.event_type,
-                    )

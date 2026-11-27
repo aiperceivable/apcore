@@ -193,11 +193,8 @@ class TestHealthEventCanonicalization:
 
 
 class TestPublicSubscriberFactoryAPI:
-    def test_register_subscriber_factory_and_create_from_config(self) -> None:
-        from apcore.events import (
-            create_subscriber_from_config,
-            register_subscriber_factory,
-        )
+    def test_instance_factory_registers_and_creates_from_config(self) -> None:
+        from apcore.events import SubscriberRegistry
 
         class CustomSub:
             def __init__(self, value: str) -> None:
@@ -209,16 +206,11 @@ class TestPublicSubscriberFactoryAPI:
         def factory(cfg: dict) -> EventSubscriber:
             return CustomSub(value=cfg["value"])
 
-        register_subscriber_factory("__test_custom__", factory)
-        try:
-            sub = create_subscriber_from_config({"type": "__test_custom__", "value": "hello"})
-            assert isinstance(sub, CustomSub)
-            assert sub.value == "hello"
-        finally:
-            # Clean up the custom factory so other tests are not affected
-            from apcore.sys_modules.registration import unregister_subscriber_type
-
-            unregister_subscriber_type("__test_custom__")
+        registry = SubscriberRegistry()
+        registry.register("__test_custom__", factory)
+        sub = registry.create({"type": "__test_custom__", "value": "hello"})
+        assert isinstance(sub, CustomSub)
+        assert sub.value == "hello"
 
     def test_create_subscriber_from_config_supports_builtin_types(self) -> None:
         from apcore.events import create_subscriber_from_config
@@ -236,7 +228,7 @@ class TestPublicSubscriberFactoryAPI:
     def test_public_factory_api_exported_from_apcore_events(self) -> None:
         import apcore.events as events_pkg
 
-        assert hasattr(events_pkg, "register_subscriber_factory")
+        assert hasattr(events_pkg, "SubscriberRegistry")
         assert hasattr(events_pkg, "create_subscriber_from_config")
 
 

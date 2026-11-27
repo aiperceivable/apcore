@@ -11,21 +11,18 @@
 import { Type } from '@sinclair/typebox';
 import {
   APCore,
-  Config,
   Context,
   ContextKey,
-  type EventSubscriber,
-  type ApCoreEvent,
-  EventEmitter,
   FunctionModule,
   isStreamingModule,
   MiddlewareManager,
   Middleware,
   Registry,
-  RESERVED_NAMESPACES,
   STREAMING_MARKER,
   type StreamingModule,
 } from 'apcore-js';
+import { Config, RESERVED_NAMESPACES } from 'apcore-js/config';
+import { EventEmitter, type ApCoreEvent, type EventSubscriber } from 'apcore-js/events';
 
 // ---------------------------------------------------------------------------
 // 1. ContextKey<T> typed context state (#63)

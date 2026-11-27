@@ -475,36 +475,11 @@ The Rust tab replaces the Phase A `main` and `build_client`; the Python and Type
 
 ## 4. What happens when no handler is attached
 
-With no `ApprovalHandler`, the gate is **skipped** with a warning and the module runs unapproved. To fail closed instead, attach an `ExecutionPolicy` with `strict` enabled — gated calls are then denied with `APPROVAL_DENIED` until a handler is attached:
-
-=== "Python"
-    ```python
-    from apcore import APCore, ExecutionPolicy
-
-    client = APCore(policy=ExecutionPolicy(strict=True))
-    ```
-
-=== "TypeScript"
-    ```typescript
-    import { APCore, ExecutionPolicy } from 'apcore-js';
-
-    // ExecutionPolicy(rules, options)
-const client = new APCore({ policy: new ExecutionPolicy(null, { strict: true }) });
-    ```
-
-=== "Rust"
-    ```rust
-    use apcore::{Config, Executor, ExecutionPolicy, Registry};
-    use std::sync::Arc;
-
-    fn strict_executor() -> Executor {
-        let mut executor = Executor::new(Arc::new(Registry::new()), Arc::new(Config::default()));
-        executor.set_policy(Some(ExecutionPolicy::default().with_strict(true)));
-        executor // hand to APCore::with_options(None, Some(executor), None, None)
-    }
-    ```
-
-The approval handler is always attached in code; there is no `apcore.yaml` key for it.
+The default approval gate returns `APPROVAL_DENIED` before running a module
+that requires approval when the host has no `ApprovalHandler`. Destructive
+modules also require approval by default. Attach the handler in code to
+process those requests. Review the running gate and the modules it covers
+with the Executor's governance report.
 
 ### Deploying a scoped approval handler
 

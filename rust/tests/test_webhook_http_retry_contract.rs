@@ -24,7 +24,7 @@
 use apcore::errors::ModuleError;
 use apcore::events::emitter::{ApCoreEvent, EventEmitter};
 use apcore::events::retry::EventRetryConfig;
-use apcore::events::subscribers::{A2ASubscriber, EventSubscriber, WebhookSubscriber};
+use apcore::events::subscribers::{EventSubscriber, WebhookSubscriber};
 use async_trait::async_trait;
 use parking_lot::Mutex;
 use serde_json::json;
@@ -257,91 +257,6 @@ async fn test_webhook_5xx_is_retried_to_exhaustion_then_dlq() {
             .and_then(serde_json::Value::as_str),
         Some("webhook"),
         "DLQ payload must identify the webhook subscriber type"
-    );
-    assert_eq!(
-        dlq_event
-            .data
-            .get("attempt_count")
-            .and_then(serde_json::Value::as_u64),
-        Some(3),
-        "DLQ payload must report 3 exhausted attempts"
-    );
-}
-
-// ---------------------------------------------------------------------------
-// A2ASubscriber — same 4xx/5xx contract (apcore issue #69)
-// ---------------------------------------------------------------------------
-
-/// A2A 4xx (400) with max_attempts=3: the endpoint must receive EXACTLY 1
-/// request. A 4xx is a permanent client error and must NOT be retried, mirroring
-/// WebhookSubscriber. No DLQ event is emitted.
-#[tokio::test]
-async fn test_a2a_4xx_is_not_retried_single_request() {
-    let server = MockServer::spawn("400 Bad Request").await;
-
-    let a2a = A2ASubscriber::new("a2a-4xx", &server.url, "*").with_retry(fast_retry(3));
-
-    let (dlq, dlq_events) = DlqSubscriber::new("dlq-a2a-4xx");
-
-    let emitter = EventEmitter::new();
-    emitter.subscribe(Box::new(a2a));
-    emitter.subscribe(Box::new(dlq));
-
-    let event = ApCoreEvent::new("test.event", json!({"hello": "world"}));
-    emitter.emit_delivery_semantics(event);
-    emitter.flush(5000).await.unwrap();
-
-    assert_eq!(
-        server.request_count(),
-        1,
-        "A2A 4xx must NOT be retried: endpoint should receive exactly 1 request"
-    );
-    assert!(
-        dlq_events.lock().is_empty(),
-        "A2A 4xx is a non-retryable client error reported as success: no DLQ event expected"
-    );
-}
-
-/// A2A 5xx (503) with max_attempts=3: the endpoint must receive EXACTLY 3
-/// requests (retried to exhaustion), and a single `apcore.event.delivery_failed`
-/// DLQ event must be emitted with `subscriber_type == "a2a"`.
-#[tokio::test]
-async fn test_a2a_5xx_is_retried_to_exhaustion_then_dlq() {
-    let server = MockServer::spawn("503 Service Unavailable").await;
-
-    let a2a = A2ASubscriber::new("a2a-5xx", &server.url, "*").with_retry(fast_retry(3));
-
-    let (dlq, dlq_events) = DlqSubscriber::new("dlq-a2a-5xx");
-
-    let emitter = EventEmitter::new();
-    emitter.subscribe(Box::new(a2a));
-    emitter.subscribe(Box::new(dlq));
-
-    let event = ApCoreEvent::new("test.event", json!({"hello": "world"}));
-    emitter.emit_delivery_semantics(event);
-    emitter.flush(5000).await.unwrap();
-
-    assert_eq!(
-        server.request_count(),
-        3,
-        "A2A 5xx must be retried per max_attempts=3: endpoint should receive 3 requests"
-    );
-
-    let events = dlq_events.lock();
-    assert_eq!(
-        events.len(),
-        1,
-        "exactly one apcore.event.delivery_failed DLQ event expected on exhaustion"
-    );
-    let dlq_event = &events[0];
-    assert_eq!(dlq_event.event_type, "apcore.event.delivery_failed");
-    assert_eq!(
-        dlq_event
-            .data
-            .get("subscriber_type")
-            .and_then(serde_json::Value::as_str),
-        Some("a2a"),
-        "DLQ payload must identify the a2a subscriber type"
     );
     assert_eq!(
         dlq_event

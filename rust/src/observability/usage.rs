@@ -46,7 +46,7 @@ pub struct UsageStats {
 
 /// Maximum records per hourly bucket before oldest are evicted.
 const MAX_RECORDS_PER_BUCKET: usize = 10_000;
-/// Maximum hourly buckets retained per module (168 = 7 days).
+/// Maximum occupied buckets per module when a retention window is unset.
 const MAX_BUCKETS_PER_MODULE: usize = 168;
 
 /// Internal module data for aggregation.
@@ -76,12 +76,26 @@ impl ModuleData {
             .flatten()
             .collect()
     }
+
+    fn expire_before(&mut self, cutoff_bucket: &str) -> Vec<UsageRecord> {
+        let mut expired = Vec::new();
+        self.records.retain(|bucket, records| {
+            if bucket.as_str() < cutoff_bucket {
+                expired.append(records);
+                false
+            } else {
+                true
+            }
+        });
+        expired
+    }
 }
 
 /// Collects usage statistics across module executions.
 #[derive(Debug, Clone)]
 pub struct UsageCollector {
     data: Arc<Mutex<HashMap<String, ModuleData>>>,
+    retention: Option<Duration>,
     /// Issue #43 §1: optional `StorageBackend` for persistence beyond process
     /// lifetime. Each `record()` writes a serialized `UsageRecord` to the
     /// backend under namespace `"usage"`; the in-memory aggregation still
@@ -121,8 +135,17 @@ impl UsageCollector {
             .then(|| Arc::new(InMemoryStorageBackend::new()));
         Self {
             data: Arc::new(Mutex::new(HashMap::new())),
+            retention: None,
             storage_backend,
             default_storage,
+        }
+    }
+
+    #[cfg(feature = "sys-modules")]
+    pub(crate) fn with_retention(retention: Duration) -> Self {
+        Self {
+            retention: Some(retention),
+            ..Self::new()
         }
     }
 
@@ -174,7 +197,16 @@ impl UsageCollector {
             for expired in bucket_records.drain(..excess) {
                 self.remove_default_record(&expired);
             }
-            for expired in module.evict_old_buckets() {
+            let expired = if let Some(retention) = self.retention {
+                Utc::now()
+                    .checked_sub_signed(retention)
+                    .map_or_else(Vec::new, |cutoff| {
+                        module.expire_before(&Self::bucket_key(cutoff))
+                    })
+            } else {
+                module.evict_old_buckets()
+            };
+            for expired in expired {
                 self.remove_default_record(&expired);
             }
             if let Some(storage) = &self.default_storage {
@@ -386,6 +418,7 @@ impl UsageCollector {
     /// A record with no caller identity is attributed to the literal
     /// `"unknown"` (6.7.1.4).
     #[must_use]
+    #[cfg(feature = "sys-modules")]
     pub(crate) fn get_caller_breakdown_for_period(
         &self,
         module_id: &str,
@@ -439,6 +472,7 @@ impl UsageCollector {
     /// `period` filters the counts inside each bucket; the 24-entry span the
     /// sys-module pads to is fixed and is not widened by it (6.7.1.2).
     #[must_use]
+    #[cfg(feature = "sys-modules")]
     pub(crate) fn get_hourly_distribution_for_period(
         &self,
         module_id: &str,
@@ -657,6 +691,7 @@ fn escape_label_value(v: &str) -> String {
 
 /// Per-caller usage statistics.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg(feature = "sys-modules")]
 pub(crate) struct CallerStats {
     pub caller_id: String,
     pub call_count: u64,
@@ -666,6 +701,7 @@ pub(crate) struct CallerStats {
 
 /// Hourly usage bucket.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg(feature = "sys-modules")]
 pub(crate) struct HourlyBucket {
     pub hour: String,
     pub call_count: u64,

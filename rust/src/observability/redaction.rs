@@ -662,7 +662,7 @@ mod tests {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         LEGACY_REDACTION_KEY_WARNING_EMITTED.store(false, Ordering::Relaxed);
 
-        let mut config = Config::from_defaults();
+        let mut config = Config::in_memory();
         config.set(LEGACY_SENSITIVE_KEYS, json!(["legacy_key"]));
 
         let logs = capture_logs(|| {
@@ -700,7 +700,7 @@ mod tests {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         LEGACY_REDACTION_KEY_WARNING_EMITTED.store(false, Ordering::Relaxed);
 
-        let mut config = Config::from_defaults();
+        let mut config = Config::in_memory();
         config.set(CANONICAL_SENSITIVE_KEYS, json!(["canonical_key"]));
 
         let logs = capture_logs(|| {

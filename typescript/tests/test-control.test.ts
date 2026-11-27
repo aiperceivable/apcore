@@ -1,3 +1,4 @@
+import { AutoApproveHandler } from '../src/approval.js';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Type } from '@sinclair/typebox';
 import { UpdateConfigModule, ReloadModule } from '../src/sys-modules/control.js';
@@ -40,7 +41,7 @@ describe('UpdateConfigModule store-XOR-path precedence', () => {
     const registry = new Registry();
     await registry.registerInternal('system.control.update_config', new UpdateConfigModule(new Config({}), new EventEmitter()));
     let captured: unknown;
-    const executor = new Executor({ registry, middlewares: [new class extends Middleware {
+    const executor = new Executor({ registry, approvalHandler: new AutoApproveHandler(), middlewares: [new class extends Middleware {
       override before(_id: string, _input: Record<string, unknown>, context: Context) {
         captured = context.redactedInputs?.['value'];
         return null;

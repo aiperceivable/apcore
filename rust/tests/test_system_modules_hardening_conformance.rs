@@ -1961,3 +1961,90 @@ async fn health_status_for(case: &Value) -> String {
         .expect("status")
         .to_string()
 }
+
+#[tokio::test]
+async fn configured_health_summary_reports_optional_project_version() {
+    let mut config = Config::in_memory();
+    config.set("sys_modules.enabled", json!(true));
+    config.set("project.name", json!("metrics-test"));
+    for version in [None, Some("1.2.3")] {
+        if let Some(version) = version {
+            config.set("project.version", json!(version));
+        }
+        let client = APCore::try_start(APCoreOptions {
+            config: Some(config.clone()),
+            fail_on_error: true,
+            ..Default::default()
+        })
+        .unwrap();
+        let result = client
+            .call("system.health.summary", json!({}), None, None)
+            .await
+            .unwrap();
+        assert_eq!(result["project"]["name"], "metrics-test");
+        assert_eq!(
+            result["project"].get("version").cloned(),
+            version.map(|version| json!(version))
+        );
+        assert_wire_response("sys-health-summary", &result);
+    }
+}
+
+#[test]
+fn explicit_usage_retention_expires_older_hourly_buckets() {
+    use chrono::{Duration, Utc};
+
+    let now = Utc::now();
+    let mut config = Config::in_memory();
+    config.set("sys_modules.enabled", json!(true));
+    config.set("sys_modules.usage.bucketing_strategy", json!("hourly"));
+
+    for (hours, expected) in [(None, 2), (Some(2), 1)] {
+        if let Some(hours) = hours {
+            config.set("sys_modules.usage.retention_hours", json!(hours));
+        }
+        let registry = Arc::new(Registry::new());
+        let executor = Executor::new(Arc::clone(&registry), config.clone());
+        let context = register_sys_modules(registry, &executor, &config, None).unwrap();
+        let collector = context.usage_collector;
+        collector.record_at("demo.metrics", None, 10.0, true, now - Duration::hours(4));
+        collector.record_at("demo.metrics", None, 20.0, true, now);
+        assert_eq!(
+            collector
+                .get_module_summary("demo.metrics")
+                .unwrap()
+                .call_count,
+            expected
+        );
+    }
+}
+
+#[test]
+fn invalid_usage_configuration_fails_strict_system_startup() {
+    use apcore::APCoreStartupError;
+
+    for (key, invalid) in [
+        ("sys_modules.usage.bucketing_strategy", json!("daily")),
+        ("sys_modules.usage.retention_hours", json!(0)),
+    ] {
+        let mut config = Config::in_memory();
+        config.set("sys_modules.enabled", json!(true));
+        config.set(key, invalid);
+        let error = APCore::try_start(APCoreOptions {
+            config: Some(config),
+            fail_on_error: true,
+            ..Default::default()
+        })
+        .unwrap_err();
+        let APCoreStartupError::SystemModule(SysModuleError::RegistrationFailed {
+            module_id,
+            source,
+        }) = error
+        else {
+            panic!("expected usage configuration registration error for {key}");
+        };
+        assert_eq!(module_id, "system.usage.summary");
+        assert_eq!(source.code, ErrorCode::ConfigInvalid);
+        assert!(source.message.contains(key));
+    }
+}

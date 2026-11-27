@@ -212,11 +212,11 @@ class TestDiscoverableAnnotation:
         assert "v.visible" in ids
         assert "h.hidden" not in ids
 
-    def test_list_include_hidden_returns_all(self) -> None:
+    def test_list_explicit_visibility_returns_all(self) -> None:
         registry = Registry()
         registry.register("v.visible", _DiscoverableVisible())
         registry.register("h.hidden", _DiscoverableHidden())
-        ids = registry.list(include_hidden=True)
+        ids = registry.list(visibility=["public", "hidden"])
         assert "v.visible" in ids
         assert "h.hidden" in ids
 
@@ -268,7 +268,7 @@ class TestDiscoverableAnnotation:
             metadata={"annotations": {"discoverable": False}},
         )
         assert "v.optedout" not in registry.list()
-        assert "v.optedout" in registry.list(include_hidden=True)
+        assert "v.optedout" in registry.list(visibility=["public", "hidden"])
 
 
 # ===========================================================================

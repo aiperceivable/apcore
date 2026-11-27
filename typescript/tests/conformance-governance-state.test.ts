@@ -15,7 +15,7 @@ import { describe, expect, it } from 'vitest';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
-import { ACL, ExecutionPolicy, Executor, Registry } from '../src/index.js';
+import { ACL, ExecutionPolicy, Executor, Registry } from '../src/full.js';
 import { Config } from '../src/config.js';
 import { ExecutionStrategy } from '../src/pipeline.js';
 import type { PipelineContext, Step, StepResult } from '../src/pipeline.js';
@@ -122,7 +122,7 @@ function build(setup: Setup): Executor {
 
   if (setup.acl_attached) executor.setAcl(new ACL([], 'deny'));
   if (setup.approval_handler_attached) executor.setApprovalHandler(neverCalledHandler);
-  if (setup.policy_strict) executor.setPolicy(new ExecutionPolicy([], { strict: true }));
+  executor.setPolicy(new ExecutionPolicy([], { strict: setup.policy_strict }));
   return executor;
 }
 

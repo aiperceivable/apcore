@@ -137,8 +137,8 @@ def _require_bool(value: Any, key: str) -> bool:
     accident. §7.9.4 already makes ``from_dict`` fail loud on unknown keys; this
     extends the same discipline to the values.
 
-    ``None`` (and an absent key) mean "unset" and take the documented default of
-    ``False`` rather than raising — parity with apcore-typescript.
+    ``None`` (and an absent key) mean "unset" and take the fail-closed default of
+    ``True`` rather than raising — parity with apcore-typescript.
 
     Note ``bool`` is checked before ``int``: ``True`` is an ``int`` in Python, so
     an ``isinstance(value, int)`` test would accept ``1`` and ``0`` as flags.
@@ -147,7 +147,7 @@ def _require_bool(value: Any, key: str) -> bool:
         ValueError: When *value* is neither None nor a bool.
     """
     if value is None:
-        return False
+        return True
     if not isinstance(value, bool):
         raise ValueError(
             f"Policy key '{key}' must be a boolean, got {type(value).__name__} ({value!r}); "
@@ -191,8 +191,8 @@ class ExecutionPolicy:
         self,
         rules: list[PolicyRule] | None = None,
         *,
-        gate_destructive: bool = False,
-        strict: bool = False,
+        gate_destructive: bool = True,
+        strict: bool = True,
     ) -> None:
         self._rules: tuple[PolicyRule, ...] = tuple(rules or ())
         for rule in self._rules:

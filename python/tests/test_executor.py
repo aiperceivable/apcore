@@ -545,7 +545,7 @@ class TestValidate:
         ex_b = _make_executor(module=MockModule())
 
         ctx = Context.create()
-        ctx._bind_executor(ex_b)  # bind to a different executor
+        ctx.bind_executor(ex_b)  # bind to a different executor
 
         result = ex_a.validate("test.module", {"name": "Alice", "age": 30}, context=ctx)
         assert result.valid is False

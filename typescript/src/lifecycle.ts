@@ -1,4 +1,4 @@
-import { v4 as uuidv4 } from 'uuid';
+import { uuidV4 as uuidv4 } from './utils/uuid.js';
 import { ErrorCodes, InvalidInputError, ModuleError } from './errors.js';
 
 /** Options for the registry drain and this client's event shutdown. */
@@ -184,11 +184,11 @@ export class LifecycleCompletion {
 export function lifecycleHandle(
   snapshot: () => LifecycleReport,
   completion: LifecycleCompletion,
-  callbackOwners: readonly object[],
+  callbackWaitError: () => InvalidInputError | undefined,
 ): LifecycleOperation {
   return Object.freeze({ snapshot, async wait(timeoutMs?: number, signal?: AbortSignal): Promise<LifecycleReport> {
     validateLifecycleDuration('waitTimeoutMs', timeoutMs);
-    const error = timeoutMs === 0 || completion.settled ? undefined : lifecycleCallbackWaitError(callbackOwners);
+    const error = timeoutMs === 0 || completion.settled ? undefined : callbackWaitError();
     if (error) throw error;
     await completion.wait(timeoutMs, signal);
     return snapshot();
@@ -201,9 +201,13 @@ export class LifecycleProgress {
   readonly operation: LifecycleOperation;
   private readonly _completion = new LifecycleCompletion();
 
-  constructor(kind: LifecycleReport['kind'], modules: ModuleLifecycleProgress[], callbackOwners: readonly object[]) {
+  constructor(
+    kind: LifecycleReport['kind'], modules: ModuleLifecycleProgress[], callbackOwners: readonly object[],
+    readonly callbacks: LifecycleCallbacks,
+  ) {
     this.report = { operationId: uuidv4(), kind, status: 'pending', modules, eventFlush: 'not_applicable' };
-    this.operation = lifecycleHandle(() => freezeLifecycleReport(this.report), this._completion, [...callbackOwners, this]);
+    const owners = [...callbackOwners, this];
+    this.operation = lifecycleHandle(() => freezeLifecycleReport(this.report), this._completion, () => callbacks.waitError(owners));
   }
 
   finish(): void {
@@ -227,60 +231,60 @@ export class LifecycleProgress {
   }
 }
 
-interface CallbackScope {
+export interface LifecycleCallbackScope {
   readonly owners: readonly object[];
-  readonly parent: CallbackScope | undefined;
+  readonly parent: LifecycleCallbackScope | undefined;
   active: boolean;
 }
 
-interface CallbackContext {
-  getStore(): CallbackScope | undefined;
-  run<T>(scope: CallbackScope, callback: () => T): T;
+export interface LifecycleCallbackContext {
+  getStore(): LifecycleCallbackScope | undefined;
+  run<T>(scope: LifecycleCallbackScope, callback: () => T): T;
 }
 
-let synchronousScope: CallbackScope | undefined;
-let callbackContext: CallbackContext = {
-  getStore: () => synchronousScope,
-  run<T>(scope: CallbackScope, callback: () => T): T {
-    const previous = synchronousScope;
-    synchronousScope = scope;
-    try {
-      return callback();
-    } finally {
-      synchronousScope = previous;
-    }
-  },
-};
-
-/** @internal Installed by the Node entry point. */
-export function _setLifecycleCallbackContext(context: CallbackContext): void {
-  callbackContext = context;
+function synchronousCallbackContext(): LifecycleCallbackContext {
+  let current: LifecycleCallbackScope | undefined;
+  return {
+    getStore: () => current,
+    run<T>(scope: LifecycleCallbackScope, callback: () => T): T {
+      const previous = current;
+      current = scope;
+      try {
+        return callback();
+      } finally {
+        current = previous;
+      }
+    },
+  };
 }
 
-/** @internal Reject a wait whose completion depends on the current callback. */
-export function lifecycleCallbackWaitError(owners: readonly object[]): InvalidInputError | undefined {
-  for (let scope = callbackContext.getStore(); scope !== undefined; scope = scope.parent) {
-    if (scope.active && scope.owners.some(owner => owners.includes(owner))) {
-      return new InvalidInputError('A lifecycle callback cannot wait for its own operation');
+/** Tracks which callbacks are currently holding up a lifecycle operation. */
+export class LifecycleCallbacks {
+  constructor(private readonly context: LifecycleCallbackContext = synchronousCallbackContext()) {}
+
+  waitError(owners: readonly object[]): InvalidInputError | undefined {
+    for (let scope = this.context.getStore(); scope !== undefined; scope = scope.parent) {
+      if (scope.active && scope.owners.some(owner => owners.includes(owner))) {
+        return new InvalidInputError('A lifecycle callback cannot wait for its own operation');
+      }
     }
+    return undefined;
   }
-  return undefined;
-}
 
-/** @internal Associate callback activity with operations that depend on it. */
-export function lifecycleCallback<T>(owners: readonly object[], callback: () => T): T {
-  const scope: CallbackScope = { owners, parent: callbackContext.getStore(), active: true };
-  const finish = (): void => { scope.active = false; };
-  try {
-    const value = callbackContext.run(scope, callback);
-    if (value != null && typeof (value as { then?: unknown }).then === 'function') {
-      void Promise.resolve(value).then(finish, finish);
-    } else {
+  run<T>(owners: readonly object[], callback: () => T): T {
+    const scope: LifecycleCallbackScope = { owners, parent: this.context.getStore(), active: true };
+    const finish = (): void => { scope.active = false; };
+    try {
+      const value = this.context.run(scope, callback);
+      if (value != null && typeof (value as { then?: unknown }).then === 'function') {
+        void Promise.resolve(value).then(finish, finish);
+      } else {
+        finish();
+      }
+      return value;
+    } catch (error) {
       finish();
+      throw error;
     }
-    return value;
-  } catch (error) {
-    finish();
-    throw error;
   }
 }

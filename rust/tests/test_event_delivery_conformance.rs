@@ -82,6 +82,7 @@ impl EventSubscriber for FailNSubscriber {
 #[derive(Debug)]
 struct AlwaysFailSubscriber {
     id: String,
+    subscriber_type: String,
     pattern: String,
     attempt_count: Arc<AtomicU32>,
     on_failure_count: Arc<AtomicU32>,
@@ -90,6 +91,9 @@ struct AlwaysFailSubscriber {
 
 #[async_trait]
 impl EventSubscriber for AlwaysFailSubscriber {
+    fn subscriber_type(&self) -> &str {
+        &self.subscriber_type
+    }
     fn subscriber_id(&self) -> &str {
         &self.id
     }
@@ -278,6 +282,10 @@ async fn conformance_permanent_failure_emits_dlq_event() {
         .unwrap()
         .to_string();
     let sub = AlwaysFailSubscriber {
+        subscriber_type: case["setup"]["subscriber"]["type"]
+            .as_str()
+            .expect("subscriber type")
+            .to_string(),
         id: case["setup"]["subscriber"]["id"]
             .as_str()
             .unwrap()
@@ -353,6 +361,10 @@ async fn conformance_permanent_failure_emits_dlq_event() {
     // Verify specific data values
     let data_contains = &case["expected"]["dlq_event"]["data_contains"];
     assert_eq!(
+        dlq.data["subscriber_type"],
+        data_contains["subscriber_type"]
+    );
+    assert_eq!(
         dlq.data["subscriber_id"].as_str(),
         data_contains["subscriber_id"].as_str(),
         "subscriber_id mismatch"
@@ -390,6 +402,10 @@ async fn conformance_dlq_event_subscriber_failure_is_not_retried() {
     let primary_max = primary_cfg["max_attempts"].as_u64().unwrap() as u32;
     let primary_attempts = Arc::new(AtomicU32::new(0));
     let primary_sub = AlwaysFailSubscriber {
+        subscriber_type: case["setup"]["primary_subscriber"]["type"]
+            .as_str()
+            .expect("subscriber type")
+            .to_string(),
         id: case["setup"]["primary_subscriber"]["id"]
             .as_str()
             .unwrap()
@@ -410,6 +426,7 @@ async fn conformance_dlq_event_subscriber_failure_is_not_retried() {
     let dlq_cfg = &case["setup"]["dlq_subscriber"]["retry"];
     let dlq_attempts = Arc::new(AtomicU32::new(0));
     let dlq_sub = AlwaysFailSubscriber {
+        subscriber_type: "test_dlq".to_string(),
         id: case["setup"]["dlq_subscriber"]["id"]
             .as_str()
             .unwrap()
@@ -535,6 +552,10 @@ async fn conformance_dlq_subscriber_failure_logs_at_error() {
 
     let primary_cfg = &case["setup"]["primary_subscriber"]["retry"];
     let primary_sub = AlwaysFailSubscriber {
+        subscriber_type: case["setup"]["primary_subscriber"]["type"]
+            .as_str()
+            .expect("subscriber type")
+            .to_string(),
         id: case["setup"]["primary_subscriber"]["id"]
             .as_str()
             .unwrap()
@@ -550,6 +571,7 @@ async fn conformance_dlq_subscriber_failure_logs_at_error() {
         },
     };
     let broken_dlq = AlwaysFailSubscriber {
+        subscriber_type: "test_dlq".to_string(),
         id: case["setup"]["dlq_subscriber"]["id"]
             .as_str()
             .unwrap()
@@ -760,7 +782,7 @@ async fn conformance_declared_retry_policy_is_read_for_every_subscriber_type() {
     // The fixture's `every_type_or_the_case_is_half_done` contract: the defect
     // was NOT uniform — `webhook` parsed a different (flat) spelling while
     // `file` / `stdout` / `filter` had no `retry` field at all here, so a
-    // webhook-only assertion was green while four types ignored their config.
+    // webhook-only assertion would miss the other built-in types.
     let declared = case["subscribers"]
         .as_array()
         .expect("subscribers is an array");

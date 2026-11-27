@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import gc
+import threading
 import time
+from collections.abc import Callable
+from contextvars import Context as ContextVarsContext
 from typing import Any
 
 import pytest
@@ -172,6 +176,47 @@ class TestGlobalTimeoutAcrossChain:
 
         with pytest.raises(ModuleTimeoutError):
             executor.call("chain.mod", {"sleep_seconds": 0.15})
+
+    def test_late_nested_timeout_does_not_leave_an_unretrieved_future(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        allow_child = threading.Event()
+        completion_queued = threading.Event()
+        diagnostics: list[str] = []
+
+        class DelayedChainer(ChainingModule):
+            def execute(self, inputs: dict[str, Any], context: Context) -> dict[str, Any]:
+                assert allow_child.wait(5)
+                return context.executor.call(self._target_module_id, inputs, context)
+
+        executor = _make_executor(
+            {"chain.mod": DelayedChainer("fast.mod"), "fast.mod": FastModule()}, global_timeout=50
+        )
+        try:
+            with pytest.raises(ModuleTimeoutError):
+                executor.call("chain.mod", {})
+
+            loop = executor._sync_bridge._local.owner.loop
+            loop.set_exception_handler(lambda _, context: diagnostics.append(context["message"]))
+            schedule = loop.call_soon_threadsafe
+
+            def track_completion(
+                callback: Callable[..., object], *args: object, context: ContextVarsContext | None = None
+            ) -> asyncio.Handle:
+                handle = schedule(callback, *args, context=context)
+                completion_queued.set()
+                return handle
+
+            monkeypatch.setattr(loop, "call_soon_threadsafe", track_completion)
+            allow_child.set()
+            assert completion_queued.wait(5)
+            # Process the worker's result without running its next-turn callbacks.
+            loop.stop()
+            loop.run_forever()
+        finally:
+            allow_child.set()
+            executor.close()
+
+        gc.collect()
+        assert "Future exception was never retrieved" not in diagnostics
 
 
 class TestContextSerializationExcludesDeadline:

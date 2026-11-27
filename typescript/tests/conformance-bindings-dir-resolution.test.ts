@@ -73,12 +73,12 @@ import * as path from 'node:path';
 import yaml from 'js-yaml';
 
 import { BindingLoader } from '../src/bindings.js';
-import { APCore } from '../src/client.js';
+import { APCore } from '../src/full.js';
 import { Config } from '../src/config.js';
 import type { Context } from '../src/context.js';
 import { BindingFileInvalidError } from '../src/errors.js';
 import type { FunctionModule } from '../src/decorator.js';
-import { Registry } from '../src/registry/registry.js';
+import { Registry } from '../src/full.js';
 import { findFixturesRoot } from './spec-repo.js';
 
 // ---------------------------------------------------------------------------

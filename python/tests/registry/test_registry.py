@@ -1163,7 +1163,7 @@ class TestHotReload:
 
     def test_module_change_handler_is_module_level(self) -> None:
         """_ModuleChangeHandler is hoisted out of watch() so it is testable."""
-        from apcore.registry.registry import _ModuleChangeHandler
+        from apcore.registry.watcher import _ModuleChangeHandler
 
         reg = Registry()
         handler = _ModuleChangeHandler(reg)
@@ -1173,7 +1173,7 @@ class TestHotReload:
 
     def test_module_change_handler_debounce_bounds_memory(self) -> None:
         """Debounce dict is pruned when it exceeds the bound."""
-        from apcore.registry.registry import _ModuleChangeHandler
+        from apcore.registry.watcher import _ModuleChangeHandler
 
         reg = Registry()
         handler = _ModuleChangeHandler(reg)

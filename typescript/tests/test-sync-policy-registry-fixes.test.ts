@@ -36,10 +36,10 @@ describe('W3: ExecutionPolicy.fromObject rejects non-boolean governance switches
     expect(policy.strict).toBe(false);
   });
 
-  it('defaults both switches to false when absent', () => {
+  it('defaults both switches to true when absent', () => {
     const policy = ExecutionPolicy.fromObject({});
-    expect(policy.gateDestructive).toBe(false);
-    expect(policy.strict).toBe(false);
+    expect(policy.gateDestructive).toBe(true);
+    expect(policy.strict).toBe(true);
   });
 
   it('rejects an empty array for gate_destructive (JS truthiness would say true)', () => {
@@ -60,8 +60,8 @@ describe('W3: ExecutionPolicy.fromObject rejects non-boolean governance switches
 
   it('accepts an explicit null as "unset"', () => {
     const policy = ExecutionPolicy.fromObject({ gate_destructive: null, strict: null });
-    expect(policy.gateDestructive).toBe(false);
-    expect(policy.strict).toBe(false);
+    expect(policy.gateDestructive).toBe(true);
+    expect(policy.strict).toBe(true);
   });
 });
 

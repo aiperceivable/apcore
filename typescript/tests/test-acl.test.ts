@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { writeFileSync, mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { ACL } from '../src/acl.js';
+import { ACL } from '../src/full.js';
 import type { AuditEntry } from '../src/acl.js';
 import type { ACLConditionHandler } from '../src/acl-handlers.js';
 import { ACLRuleError, ConfigNotFoundError } from '../src/errors.js';

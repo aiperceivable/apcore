@@ -1,6 +1,6 @@
 implementation:
   name: apcore-rust
-  version: 1.0.0-alpha.1
+  version: 1.0.0-alpha.2
   language: rust
   spec_version: 1.65.0
   maintainer: AI Perceivable
@@ -10,9 +10,9 @@ conformance:
   date: '2026-10-08'
   fixture_results:
     scope: issue-123-and-canonicalize-name
-    fixtures: 9
-    cases: 79
-    passed: 79
+    fixtures: 8
+    cases: 74
+    passed: 74
     failed: 0
     skipped: 0
     report:
@@ -24,7 +24,6 @@ conformance:
       - env_prefix_dispatch
       - ephemeral_modules
       - error_details_shape
-      - export_profiles
       - json_input_native_types
       - preflight_check_reporting
       - timeout_cancellation
@@ -44,5 +43,5 @@ conformance:
       severity: minor
     - feature: complete fixture inventory certification
       spec: conformance declaration
-      reason: This declaration certifies the eight issue-123 fixtures and the bare-name fixture only; it does not claim that every canonical fixture case or a higher conformance level was verified.
+      reason: This declaration certifies the seven Core issue-123 fixtures and the bare-name fixture only; it does not claim that every canonical fixture case or a higher conformance level was verified.
       severity: major

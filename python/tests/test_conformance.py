@@ -1251,10 +1251,11 @@ def test_annotations_extra_round_trip(case: dict[str, Any]) -> None:
 
 import asyncio  # noqa: E402
 
-from apcore.approval import ApprovalResult  # noqa: E402
+from apcore.approval import ApprovalResult, AutoApproveHandler  # noqa: E402
 from apcore.builtin_steps import BuiltinApprovalGate  # noqa: E402
 from apcore.errors import ApprovalDeniedError, ApprovalPendingError, ApprovalTimeoutError  # noqa: E402
 from apcore.pipeline import PipelineContext  # noqa: E402
+from apcore.policy import ExecutionPolicy  # noqa: E402
 
 _approval_data = _load("approval_gate")
 
@@ -1351,7 +1352,9 @@ def test_approval_gate(case: dict[str, Any]) -> None:
         handler_type = _ScopedFixtureApprovalHandler if resume.get("scoped_handler") else _FixtureApprovalHandler
         handler = handler_type(case["approval_result"])
 
-    gate = BuiltinApprovalGate(handler=handler if case["approval_handler_configured"] else None)
+    policy_data = case.get("execution_policy")
+    policy = ExecutionPolicy.from_dict(policy_data) if policy_data is not None else None
+    gate = BuiltinApprovalGate(handler=handler if case["approval_handler_configured"] else None, policy=policy)
 
     module = _FakeModule(requires_approval=_declared_requires_approval(case))
     ctx_obj = Context.create()
@@ -2510,6 +2513,7 @@ def _make_toggle_instance(module_ids: list[str]) -> APCore:
     # Fresh Config per instance so each APCore owns an independent ToggleState.
     config = Config(data={"sys_modules": {"enabled": True, "events": {"enabled": True}}})
     client = APCore(config=config)
+    client.executor.set_approval_handler(AutoApproveHandler())
     _register_noop_modules(client, module_ids)
     return client
 

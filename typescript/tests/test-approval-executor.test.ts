@@ -1,3 +1,4 @@
+import { ExecutionPolicy } from '../src/policy.js';
 /**
  * Unit tests for the approval gate in the Executor (Step 4.5).
  */
@@ -170,7 +171,7 @@ function createTestRegistry(): Registry {
 describe('ApprovalGate call()', () => {
   it('skips gate when no handler is configured', async () => {
     const registry = createTestRegistry();
-    const executor = new Executor({ registry });
+    const executor = new Executor({ registry, policy: new ExecutionPolicy([], { strict: false }) });
     const result = await executor.call('test.approval_required');
     expect(result['status']).toBe('executed');
   });
@@ -267,13 +268,10 @@ describe('ApprovalGate call()', () => {
     const registry = createTestRegistry();
     const executor = new Executor({ registry });
 
-    // No handler → executes
-    const result = await executor.call('test.approval_required');
-    expect(result['status']).toBe('executed');
-
-    // Set deny handler → raises
-    executor.setApprovalHandler(new AlwaysDenyHandler());
     await expect(executor.call('test.approval_required')).rejects.toThrow(ApprovalDeniedError);
+
+    executor.setApprovalHandler(new AutoApproveHandler());
+    await expect(executor.call('test.approval_required')).resolves.toMatchObject({ status: 'executed' });
   });
 
   it('carries correct context in ApprovalRequest', async () => {
@@ -379,7 +377,7 @@ describe('ApprovalGate call()', () => {
 describe('ApprovalGate callAsync()', () => {
   it('skips gate when no handler configured', async () => {
     const registry = createTestRegistry();
-    const executor = new Executor({ registry });
+    const executor = new Executor({ registry, policy: new ExecutionPolicy([], { strict: false }) });
     const result = await executor.callAsync('test.approval_required');
     expect(result['status']).toBe('executed');
   });
@@ -530,7 +528,7 @@ describe('ApprovalAuditEvents', () => {
 
   it('does not emit audit log when gate is skipped', async () => {
     const registry = createTestRegistry();
-    const executor = new Executor({ registry });
+    const executor = new Executor({ registry, policy: new ExecutionPolicy([], { strict: false }) });
     const infoSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
       await executor.call('test.approval_required');

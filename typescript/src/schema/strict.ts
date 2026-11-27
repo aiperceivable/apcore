@@ -12,46 +12,6 @@ export function toStrictSchema(schema: Record<string, unknown>): Record<string, 
   return result;
 }
 
-export function applyLlmDescriptions(node: unknown): void {
-  if (typeof node !== 'object' || node === null || Array.isArray(node)) return;
-
-  const obj = node as Record<string, unknown>;
-  // Only substitute when a description already exists; never inject a
-  // description onto a node that lacked one (Python/Rust parity — avoids
-  // fabricating descriptions the spec did not declare).
-  if ('x-llm-description' in obj && 'description' in obj) {
-    obj['description'] = obj['x-llm-description'];
-  }
-
-  if ('properties' in obj && typeof obj['properties'] === 'object' && obj['properties'] !== null) {
-    for (const prop of Object.values(obj['properties'] as Record<string, unknown>)) {
-      applyLlmDescriptions(prop);
-    }
-  }
-  if ('items' in obj && typeof obj['items'] === 'object') {
-    applyLlmDescriptions(obj['items']);
-  }
-  if ('prefixItems' in obj && Array.isArray(obj['prefixItems'])) {
-    for (const item of obj['prefixItems'] as unknown[]) {
-      applyLlmDescriptions(item);
-    }
-  }
-  for (const keyword of ['oneOf', 'anyOf', 'allOf']) {
-    if (keyword in obj && Array.isArray(obj[keyword])) {
-      for (const sub of obj[keyword] as unknown[]) {
-        applyLlmDescriptions(sub);
-      }
-    }
-  }
-  for (const defsKey of ['definitions', '$defs']) {
-    if (defsKey in obj && typeof obj[defsKey] === 'object' && obj[defsKey] !== null) {
-      for (const defn of Object.values(obj[defsKey] as Record<string, unknown>)) {
-        applyLlmDescriptions(defn);
-      }
-    }
-  }
-}
-
 export function stripExtensions(node: unknown, stripDefaults: boolean = true, nameMap: boolean = false): void {
   if (typeof node !== 'object' || node === null || Array.isArray(node)) return;
 

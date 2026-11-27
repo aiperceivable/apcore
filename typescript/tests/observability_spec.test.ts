@@ -12,7 +12,7 @@
  *   2. `MetricsEmitter.record`     — MISSING SYMBOL in apcore-typescript (no
  *                                    `MetricsEmitter` export; the SDK ships
  *                                    `MetricsCollector.increment` / `observe`). Skips.
- *   3. `PrometheusExporter.export` — PRESENT and fully exercised.
+ *   3. `renderPrometheusMetrics` — PRESENT and fully exercised.
  *
  * Each `it(...)` name carries the verbatim clause id formatted
  * `observability.<method>.<kind>.<detail>` so cross-language diffs line up
@@ -23,7 +23,7 @@
 
 import { describe, it, expect } from 'vitest';
 import { MetricsCollector } from '../src/observability/metrics.js';
-import { PrometheusExporter } from '../src/observability/prometheus-exporter.js';
+import { renderPrometheusMetrics } from '../src/observability/prometheus.js';
 import * as Observability from '../src/observability/index.js';
 
 // ---------------------------------------------------------------------------
@@ -40,10 +40,10 @@ const MetricsEmitter = (Observability as Record<string, unknown>)['MetricsEmitte
 // Helpers
 // ---------------------------------------------------------------------------
 
-function exporterWithOneCounter(): PrometheusExporter {
+function collectorWithOneCounter(): MetricsCollector {
   const collector = new MetricsCollector();
   collector.incrementCalls('math.add', 'success');
-  return new PrometheusExporter({ collector });
+  return collector;
 }
 
 // ===========================================================================
@@ -97,39 +97,29 @@ describe('Contract: MetricsEmitter.record', () => {
 });
 
 // ===========================================================================
-// Contract 3: PrometheusExporter.export  (PRESENT — fully exercised)
+// Contract 3: renderPrometheusMetrics  (PRESENT — fully exercised)
 //
-// In apcore-typescript the `collector` from the contract's ### Inputs is
-// supplied at construction (`new PrometheusExporter({ collector })`), and
-// `export()` takes no arguments and returns the Prometheus text string.
 // ===========================================================================
 
-describe('Contract: PrometheusExporter.export', () => {
+describe('Contract: renderPrometheusMetrics', () => {
   it('observability.export.input.collector.required: collector is required and its live data is rendered', () => {
-    // Negative: the required `collector` arg cannot be omitted. The TS
-    // constructor dereferences `options.collector`, so calling with no
-    // argument throws a TypeError (mirrors Python's pytest.raises(TypeError)).
-    expect(() => new (PrometheusExporter as unknown as new () => PrometheusExporter)()).toThrow(TypeError);
-
-    // Positive: a supplied collector's data is what `export()` renders.
     const collector = new MetricsCollector();
     collector.incrementCalls('math.add', 'success');
-    const exporter = new PrometheusExporter({ collector });
-    const text = exporter.export();
+    const text = renderPrometheusMetrics(collector);
     expect(text).toContain('apcore_module_calls_total');
     expect(text).toContain('module_id="math.add"');
     expect(text).toContain('status="success"');
   });
 
   it('observability.export.error.none: export over empty collector returns string without throwing', () => {
-    const exporter = new PrometheusExporter({ collector: new MetricsCollector() });
-    const text = exporter.export();
+    const collector = new MetricsCollector();
+    const text = renderPrometheusMetrics(collector);
     expect(typeof text).toBe('string');
   });
 
   it('observability.export.returns.prometheus_text: returns UTF-8 string with HELP/TYPE comment lines', () => {
-    const exporter = exporterWithOneCounter();
-    const text = exporter.export();
+    const collector = collectorWithOneCounter();
+    const text = renderPrometheusMetrics(collector);
     expect(typeof text).toBe('string');
     // Round-trips through UTF-8 without loss.
     expect(Buffer.from(text, 'utf-8').toString('utf-8')).toBe(text);
@@ -139,17 +129,17 @@ describe('Contract: PrometheusExporter.export', () => {
   });
 
   it('observability.export.property.async: export() is synchronous, returns a concrete string (not a Promise)', () => {
-    const exporter = exporterWithOneCounter();
-    const result = exporter.export();
+    const collector = collectorWithOneCounter();
+    const result = renderPrometheusMetrics(collector);
     expect(typeof result).toBe('string');
     expect(result).not.toBeInstanceOf(Promise);
   });
 
   it('observability.export.property.thread_safe: >=8 concurrent exports yield identical snapshots, no throw', async () => {
-    const exporter = exporterWithOneCounter();
+    const collector = collectorWithOneCounter();
     const doExport = async (): Promise<string> => {
       await Promise.resolve();
-      return exporter.export();
+      return renderPrometheusMetrics(collector);
     };
     const results = await Promise.all(Array.from({ length: 12 }, () => doExport()));
     expect(results.length).toBe(12);
@@ -161,10 +151,9 @@ describe('Contract: PrometheusExporter.export', () => {
   it('observability.export.property.pure: export() does not mutate collector but reflects live state', () => {
     const collector = new MetricsCollector();
     collector.incrementCalls('math.add', 'success');
-    const exporter = new PrometheusExporter({ collector });
 
     const before = JSON.stringify(collector.snapshot());
-    const first = exporter.export();
+    const first = renderPrometheusMetrics(collector);
     const after = JSON.stringify(collector.snapshot());
     // export() is a query: it does not mutate collector state.
     expect(before).toBe(after);
@@ -172,15 +161,15 @@ describe('Contract: PrometheusExporter.export', () => {
 
     // Live-state coupling: a new module appears on the next export.
     collector.incrementCalls('math.sub', 'success');
-    const second = exporter.export();
+    const second = renderPrometheusMetrics(collector);
     expect(second).toContain('module_id="math.sub"');
     expect(first).not.toContain('module_id="math.sub"');
   });
 
   it('observability.export.property.idempotent: two successive calls on unchanged state are identical', () => {
-    const exporter = exporterWithOneCounter();
-    const first = exporter.export();
-    const second = exporter.export();
+    const collector = collectorWithOneCounter();
+    const first = renderPrometheusMetrics(collector);
+    const second = renderPrometheusMetrics(collector);
     expect(first).toBe(second);
     expect(first).not.toBe('');
   });

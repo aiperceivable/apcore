@@ -115,7 +115,7 @@ class TestContextDeserialize:
         # Under the unified Context.create() signature (Issue #66), executor
         # is no longer a constructor input; binding happens via the private
         # helper.
-        ctx._bind_executor("some-executor")
+        ctx.bind_executor("some-executor")
         serialized = ctx.serialize()
         restored = Context.deserialize(serialized)
         assert restored.executor is None

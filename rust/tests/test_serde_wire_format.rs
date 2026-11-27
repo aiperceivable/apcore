@@ -4,7 +4,6 @@
 // expected by the Python and TypeScript SDKs on the wire.
 
 use apcore::registry::conflicts::{ConflictSeverity, ConflictType};
-use apcore::schema::exporter::ExportProfile;
 use apcore::schema::loader::SchemaStrategy;
 
 // ---------------------------------------------------------------------------
@@ -103,35 +102,6 @@ fn task_status_cancelled_serializes_to_snake_case() {
     use apcore::async_task::TaskStatus;
     let json = serde_json::to_string(&TaskStatus::Cancelled).unwrap();
     assert_eq!(json, r#""cancelled""#);
-}
-
-// ---------------------------------------------------------------------------
-// ExportProfile — snake_case wire format (matches Python: "mcp", "openai", etc.)
-// ---------------------------------------------------------------------------
-
-#[test]
-fn export_profile_mcp_serializes_to_snake_case() {
-    let json = serde_json::to_string(&ExportProfile::Mcp).unwrap();
-    assert_eq!(json, r#""mcp""#);
-}
-
-#[test]
-fn export_profile_openai_serializes_to_openai() {
-    // Python ExportProfile.OPENAI = "openai" — explicit rename overrides snake_case
-    let json = serde_json::to_string(&ExportProfile::OpenAi).unwrap();
-    assert_eq!(json, r#""openai""#);
-}
-
-#[test]
-fn export_profile_anthropic_serializes_to_snake_case() {
-    let json = serde_json::to_string(&ExportProfile::Anthropic).unwrap();
-    assert_eq!(json, r#""anthropic""#);
-}
-
-#[test]
-fn export_profile_generic_serializes_to_snake_case() {
-    let json = serde_json::to_string(&ExportProfile::Generic).unwrap();
-    assert_eq!(json, r#""generic""#);
 }
 
 // ---------------------------------------------------------------------------

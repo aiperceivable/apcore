@@ -6,9 +6,9 @@ description: "The canonical apcore protocol specification (RFC 2119): module, sc
 
 > **Canonical specification.** This document is the single normative source for the apcore protocol. Where any other document disagrees with it, this document wins.
 
-> Version: 2.1.0
+> Version: 2.0.0
 > Status: Draft
-> Last Updated: 2026-11-26
+> Last Updated: 2026-11-27
 
 ---
 
@@ -136,6 +136,30 @@ Implementations **MUST** follow these naming rules:
 - In languages with namespace mechanisms, **MUST NOT** add redundant prefixes to public APIs
 - In languages without namespace mechanisms, **MUST** use `apcore_` prefix
 - Error types **SHOULD** be prefixed with their domain (e.g., `ModuleError`, `SchemaValidationError`)
+
+### 1.8 Runtime Profiles
+
+A conformant SDK declares the profiles it implements. A requirement applies when its
+profile is active. Shared module IDs, schemas, errors and execution semantics have the
+same meaning across profile combinations.
+
+| Profile | Scope |
+|---------|-------|
+| Core | In-memory registration and metadata, schema validation, call and preflight, ACL and approval governance, middleware, lifecycle, cancellation, and streaming completion |
+| Configuration | File-backed configuration, ACL rules, external schemas and overrides |
+| Discovery | Filesystem scanning, file bindings, watchers, and reload driven by an external source |
+| System Modules | Health, usage, manifest, control, and event composition driven by host configuration |
+| Events | Host-owned subscriber factories, optional sinks, retry, and dead-letter delivery |
+| Observability | Optional exporters and host-specific telemetry sinks. Core execution may deliver data to a sink supplied by the host. |
+
+The default SDK assembly **MUST** provide the Core Profile and **MUST** allow
+in-memory registration and execution independently of a filesystem, YAML parser,
+file watcher, HTTP listener, or external service. Extension profiles **MUST** be
+explicitly installed or composed by the host. An SDK may provide a full assembly
+that selects its extension profiles together. When selected, each extension
+profile **MUST** implement the requirements in its corresponding protocol
+sections. Outside the SDK, adapter profiles (§4.17) own protocol-specific tool
+shapes and network delivery.
 
 ---
 
@@ -1929,8 +1953,8 @@ apcore defines standard export Profiles for adapter developers to follow. Profil
 
 | Profile | Characteristics | Typical Users |
 |---------|------|-----------|
-| `mcp` | Preserve `x-*` fields; map annotations → hints; contains `inputSchema` (no `outputSchema`) | MCP Server adapters |
-| `openai` | Strip `x-*`; `strict: true`; replace `.` with `_` in id; parameters only | OpenAI Function Calling adapters |
+| `mcp` | Preserve schema extensions and project input and output schemas and annotation hints | MCP Server adapters |
+| `openai` | Chat Completions and Responses envelopes, with the same tool names and strict schemas by default | OpenAI adapters |
 | `anthropic` | Strip `x-*`; map examples → input_examples; contains input_schema | Anthropic Claude Tool adapters |
 | `generic` | Full JSON Schema + all extensions (default) | Generic scenarios, debugging |
 
@@ -1941,19 +1965,19 @@ apcore defines standard export Profiles for adapter developers to follow. Profil
 - ID: Use as-is (`executor.email.send_email`)
 - Annotations: `readonly` → `readOnlyHint`, `destructive` → `destructiveHint`, `idempotent` → `idempotentHint`, `open_world` → `openWorldHint`
 - `requires_approval` and `streaming` have no MCP `ToolAnnotations` equivalent. They travel in the tool's `_meta` as `requiresApproval` and `streaming`, each present only when the annotation is `true`, and never in `annotations` (D-140)
-- Output schema: not carried. An MCP adapter that advertises a tool `outputSchema` takes it from the module's `output_schema` (Appendix D.1)
+- MCP clients negotiating `2025-06-18` or later can receive a tool `outputSchema` derived from the module's `output_schema` and the matching result `structuredContent` (Appendix D.1).
 - See Appendix D.1 MCP Mapping
 
 **`openai` Profile:**
-- Schema: Apply `to_strict_schema()` conversion (§4.16)
-- ID: Replace `.` with `_` (e.g., `executor_email_send_email`)
-- Replace `description` with `x-llm-description` then strip
+- Apply `to_strict_schema()` by default (§4.16), promoting schema-node `x-llm-description` strings before stripping extension keywords.
+- Replace `.` with `-` in the module ID (for example, `executor-email-send_email`).
+- Wrap the function in `function` for Chat Completions, or place its fields beside `type: function` for Responses. The Responses representation includes explicit `strict: false` when the caller opts out.
 - See Appendix D.3 OpenAI Mapping
 
 **`anthropic` Profile:**
 - Schema: Strip every `x-*` keyword, at any depth of `input_schema`. Only keywords are stripped: a property *name* beginning with `x-` (a key of `properties`) is data, and the property is kept (D-140)
-- ID: Replace `.` with `_`
-- Replace `description` with `x-llm-description` then strip
+- Replace `.` with `-` in the module ID.
+- Promote schema-node `x-llm-description` strings to `description` before stripping extension keywords.
 - Examples: `module.examples[*].inputs` → `input_examples`
 - See Appendix D.4 Anthropic Mapping
 
@@ -4671,7 +4695,9 @@ Adapters **SHOULD NOT** invent their own classification mechanisms (such as rese
 
 #### 6.6.3 Defense-in-Depth Model
 
-System module access is governed by three independent layers. Each layer operates regardless of the others — and each is **inactive by absence**: a layer that was never configured does not fail closed, it does not run. Nothing in this section is a default-deny. That is deliberate, and stating it is the point of §6.6.3.1.
+System module access uses three independent layers. Configuration activates the
+modules, an attached ACL defines authorization, and the approval gate evaluates
+each call's effective requirements (§6.6.3.1).
 
 ```text
 Layer 1: Activation (Config) — two stages, not one
@@ -4704,11 +4730,11 @@ The 0 / 6 / 9 distinction matters to anything that reasons about exposure: a reg
 
 Adapters and UI layers **SHOULD NOT** introduce additional independent permission switches. The three layers above are sufficient — adding adapter-level switches creates shadow permission systems that can diverge from the actual ACL state.
 
-##### 6.6.3.1 Layers 2 and 3 are inactive by absence
+##### 6.6.3.1 Effects of an absent ACL or approval handler {#6631-layers-2-and-3-are-inactive-by-absence}
 
 **Layer 2 — a missing `acl/` path attaches nothing.** When `acl.root` resolves to a path that does not exist, implementations **MUST** attach no ACL and **MUST NOT** synthesize an empty `default_effect: deny` ACL in its place. An empty default-deny ACL denies every inter-module call, so synthesizing one would break every project that has no `acl/` directory — which is every project that has not opted in. `default_effect: deny` is the default *within a ruleset that exists*; it is not a default *for the absence of one*. Pinned by `../../conformance/fixtures/acl_root_discovery.json`.
 
-**Layer 3 — a missing `ApprovalHandler` skips the gate.** With no handler configured, Step 5 is skipped and a module declaring `requires_approval` executes anyway, with a warning (§7.4, §7.9.4). Failing closed is opt-in through `ExecutionPolicy(strict = true)` (§7.9), which converts the skip into `ApprovalDeniedError`. Implementations **MUST NOT** change this default.
+**Layer 3 — a missing `ApprovalHandler` denies a call that requires approval.** The default approval gate **MUST** reject such a call before module execution. An explicit `ExecutionPolicy(strict = false)` selects the compatible warn-and-continue behavior (§7.4, §7.9.4).
 
 ##### 6.6.3.2 A configured layer is not necessarily an enforced one
 
@@ -5167,7 +5193,7 @@ Executor Pipeline:
 **Step 5 Algorithm:**
 
 ```text
-Algorithm: approval_gate(module, arguments, resume_credential, context, approval_handler)
+Algorithm: approval_gate(module, arguments, resume_credential, context, approval_handler, policy)
 
 Input:
   module         — Resolved module instance
@@ -5175,14 +5201,14 @@ Input:
   resume_credential — Optional private invocation credential from _approval_token
   context        — Execution context (with identity)
   approval_handler — Configured ApprovalHandler or null
+  policy         — Attached ExecutionPolicy or the built-in defaults
 
 Behavior:
-  1. IF approval_handler is null → SKIP (no enforcement)
-  2. LET annotations = module.annotations
-  3. IF annotations is null OR annotations.requires_approval is false → SKIP
-     (the requirement is the UNION of every governance source — see
-      "The gate fires on the union of its governance sources" below —
-      not this one alone)
+  1. LET annotations = resolve_effective_annotations(module, policy, ACL decision, context)
+  2. IF annotations.requires_approval is false → SKIP
+  3. IF approval_handler is null:
+       a. IF policy.strict → EMIT rejected decision and THROW ApprovalDeniedError
+       b. WARN once per module, then CONTINUE to Step 6
   4. LET request = ApprovalRequest(module_id, snapshot of arguments, context, annotations, ...)
      IF resume_credential is present:
        a. IF approval_handler has no check_approval_for_call → THROW ApprovalDeniedError
@@ -5196,7 +5222,7 @@ Behavior:
        "pending"  → THROW ApprovalPendingError(result)
 ```
 
-**The gate fires on the union of its governance sources (D-96, D-125).** Step 2 of the algorithm binds `module.annotations`, and an implementation **MUST** consult it. An implementation whose registry also holds **declared** annotations for the module — a `ModuleDescriptor` supplied by the caller at registration, or a descriptor into which a metadata document (`*_meta.yaml`, `*.binding.yaml`, a `metadata` argument) is merged (§4.13) — **MUST** fire the gate when *either* the live module instance or the declared annotations declare the requirement. The union is `OR` on `requires_approval` and `destructive` only; every other annotation describes behaviour rather than governance and stays instance-sourced.
+**The gate fires on the union of its governance sources (D-96, D-125).** Step 1 of the algorithm **MUST** consult `module.annotations`. When the registry also holds declared annotations for the module, the gate **MUST** include the registry declaration in its evaluation (§4.13). The effective metadata starts with the logical OR of the live and declared `requires_approval` and `destructive` values. Other annotations come from the live instance. The gate then evaluates the attached policy and the call's ACL approval requirement.
 
 The union binds **every** reader of `requires_approval` / `destructive` for a registered module, not the gate alone:
 
@@ -5220,7 +5246,7 @@ Rationale: reading only the declared annotations ignores what the module declare
 An implementation that read only the annotation would silently ignore every rule carrying `approval` — the rule would load, match, and do nothing.
 
 **Key behaviors:**
-- When no `ApprovalHandler` is configured, Step 5 is **skipped** (inactive by absence, §6.6.3.1) — but per the fail-loud principle (§7.9.4) a module that needs approval **MUST** produce a warning on skip, and an `ExecutionPolicy` with `strict` (§7.9) turns this skip into a fail-closed `ApprovalDeniedError` instead.
+- When an invocation requires approval and has no `ApprovalHandler`, the default gate **MUST** raise `ApprovalDeniedError` before running the module. An explicit `ExecutionPolicy(strict = false)` permits the invocation with the warning in §7.9.4.
 - When an `ExecutionPolicy` (§7.9) is attached, the gate consults it first: the policy may force approval on a module that does not declare `requires_approval`, or (with `gate_destructive`) gate a `destructive` module.
 - The `_approval_token` mechanism (Phase B) allows clients to retry after external approval without re-triggering the approval flow.
 - The `_approval_token` key **MUST** be removed from business arguments before they reach subsequent steps. This applies to an invocation whose strategy omits the approval gate as well. The executor can carry the credential separately for the approval handler. A preflight has no approval decision to resume.
@@ -5319,10 +5345,10 @@ An **Execution Policy** is a declarative, execution-time governance layer that o
 
 #### 7.9.2 `destructive` → approval resolution
 
-The approval gate keys on the **effective** `requires_approval`. Because HTTP-method inference and scanners can set `destructive = true` without setting `requires_approval` (a governance footgun — e.g. an inferred `DELETE`), a policy **MAY** enable `gate_destructive`:
+The approval gate keys on the **effective** `requires_approval`. HTTP-method inference and scanners can set `destructive = true` independently of `requires_approval`.
 
 - When `gate_destructive` is true, a module whose **effective** `destructive` is true **MUST** be treated as needing approval even when `requires_approval` is false.
-- `gate_destructive` is **opt-in**; with no policy, `destructive` and `requires_approval` remain orthogonal (no behavior change). Independently, an implementation **SHOULD** warn when a `destructive` module is exposed with no approval/ACL covering it (see §7.9.4).
+- The built-in policy **MUST** default `gate_destructive` to true, including when the host supplies no policy. An explicit `gate_destructive = false` disables this source of approval while preserving requirements from module annotations, ACL rules, and policy rules. An implementation **SHOULD** warn when a destructive module is exposed without approval or ACL coverage (see §7.9.4).
 
 #### 7.9.3 Effective annotations to the handler
 
@@ -5332,10 +5358,17 @@ When the gate invokes the handler because a policy forced approval, the `Approva
 
 A misconfigured or unreachable governance control **MUST NOT** silently allow. Concretely:
 
-1. When a module needs approval but **no** `ApprovalHandler` is configured, the implementation **MUST** either (default) keep the §7.4 skip behavior **and** emit a warning (at least once per module), or — when the policy sets `strict` — **fail closed** by raising `ApprovalDeniedError` (`APPROVAL_DENIED`).
+1. The built-in policy **MUST** default `strict` to true. When a call needs approval and has no handler, the gate **MUST** raise `ApprovalDeniedError` (`APPROVAL_DENIED`). Given explicit `strict = false`, it **MUST** emit a warning at least once per module and continue.
 2. A `destructive` module that no approval gate covers **SHOULD** produce a warning (at least once per module).
 3. A strict-fail-closed rejection **MUST** emit `apcore.approval.decision` (status `rejected`) like any other adjudication.
-4. Strict parsing: an implementation that loads a policy from a document (YAML/JSON) **MUST** reject unknown keys and a missing rule `pattern`, so a typo cannot silently disable a control.
+4. An implementation that loads a policy from YAML or JSON **MUST** reject unknown keys and rules missing `pattern`. Omitted policy booleans **MUST** take the built-in defaults, and explicit boolean values **MUST** be preserved.
+
+The implicit warn-and-continue behavior from earlier protocol versions is
+deprecated. During migration an application can select
+`strict = false, gate_destructive = false` explicitly to retain that behavior.
+An application that requires approval can provide an `ApprovalHandler`. Explicit
+strategies that omit the built-in approval gate remain visible in the governance
+posture report (§6.6.5).
 
 #### 7.9.5 Preflight
 
@@ -5366,7 +5399,7 @@ The tiers below grade the approval subsystem alone. They are not the SDK conform
 
 | Tier | Requirement |
 |-------|-------------|
-| **Tier 1 (Basic)** | `ApprovalHandler` protocol defined; Executor skips gate when handler is null |
+| **Tier 1 (Basic)** | `ApprovalHandler` protocol defined. The default gate raises `APPROVAL_DENIED` when a call needs approval and lacks a handler. |
 | **Tier 2 (Standard)** | Step 5 implemented in `call()`, `call_async()`, and `stream()` paths; `AlwaysDenyHandler` and `AutoApproveHandler` provided |
 | **Tier 3 (Full)** | Phase B support (`check_approval_for_call`, `_approval_token`); `CallbackApprovalHandler` provided; approval audit events emitted |
 | **Tier 4 (Governance)** | Execution Policy (§7.9): external override + specificity precedence, `gate_destructive`, `strict` fail-closed, effective-annotations contract, and the `apcore.approval.decision` / `apcore.policy.override` / `apcore.acl.denied` events |
@@ -6097,7 +6130,7 @@ version: "1.0.0"                    # REQUIRED — no default exists
 # Project information
 project:
   name: "my-ai-project"             # REQUIRED — no default exists (pattern: ^[a-z][a-z0-9_-]*$)
-  version: "0.1.0"                   # SHOULD, project version (semver). No effect — read by no implementation
+  version: "0.1.0"                   # SHOULD use semver. Reported by system.health.summary.
 
 # Extension configuration
 extensions:
@@ -6786,7 +6819,7 @@ Config.register_namespace(
 **TypeScript:**
 
 ```typescript
-import { Config } from 'apcore-js';
+import { Config } from 'apcore-js/config';
 
 // Nested style (default)
 Config.registerNamespace({
@@ -7599,7 +7632,7 @@ Config.reserved_namespaces()
 
 === "TypeScript"
     ```typescript
-    import { Config } from 'apcore-js';
+    import { Config } from 'apcore-js/config';
 
     // Static getter — no Config instance needed
     const reserved: ReadonlySet<string> = Config.reservedNamespaces;
@@ -7959,7 +7992,7 @@ Config.register_namespace(
 
 ```typescript
 // nestjs-apcore/src/index.ts
-import { Config } from 'apcore-js';
+import { Config } from 'apcore-js/config';
 
 Config.registerNamespace({
   name: 'nestjs-apcore',
@@ -8095,8 +8128,8 @@ Config.register_namespace(
         "manifest": {"enabled": True},
         "usage": {
             "enabled": True,
-            "retention_hours": 168,          # No effect — read by no implementation
-            "bucketing_strategy": "hourly",  # No effect — read by no implementation
+            "retention_hours": 168,          # Retention for usage records in hourly buckets
+            "bucketing_strategy": "hourly",  # Supported granularity
         },
         "control":  {"enabled": True},
         "error_history": {
@@ -8937,8 +8970,8 @@ Implementations **MUST** handle middleware edge cases according to the following
 | Component | Responsibility | Phase |
 |------|------|------|
 | `IDConverter` | Canonical ID ↔ Local ID conversion (class or utility function) | Phase 1 |
-| `SchemaLoader` | Load YAML Schema | Phase 1 |
-| `Registry` | Module discovery, registration, loading | Phase 1 |
+| `SchemaLoader` | Load file-backed schemas (Configuration Profile) | Phase 1 |
+| `Registry` | In-memory registration and lookup (Core Profile), external module discovery (Discovery Profile) | Phase 1 |
 | `Executor` | Module invocation, Schema validation | Phase 1 |
 | `ACLChecker` | Permission checking | Phase 2 |
 | `MiddlewareManager` | Middleware management | Phase 2 |
@@ -8947,7 +8980,7 @@ Implementations **MUST** handle middleware edge cases according to the following
 
 ### 12.2 Core Component Interface Contracts
 
-Following are formalized interface definitions for each core component (language-agnostic pseudocode). All SDK implementations **MUST** provide equivalent implementations of these interfaces.
+The following interface definitions use language-agnostic pseudocode. An SDK **MUST** provide equivalent implementations for the requirements of each profile it declares (§1.8).
 
 ```text
 Interface: IDConverter
@@ -10192,10 +10225,18 @@ An A2A `AgentSkill` has no schema member, so `input_schema` and `output_schema` 
 ```yaml
 # Module → OpenAI Function mapping
 openai_mapping:
-  function:
-    name: "{module.id.replace('.', '_')}"  # OpenAI doesn't support dots
+  chat_completions:
+    type: function
+    function:
+      name: "{module.id.replace('.', '-')}"
+      description: "{module.description}"
+      parameters: "{module.input_schema}"  # after to_strict_schema() (§4.16)
+      strict: true
+  responses:
+    type: function
+    name: "{module.id.replace('.', '-')}"
     description: "{module.description}"
-    parameters: "{module.input_schema}"    # after to_strict_schema() (§4.16), per the openai profile (§4.17)
+    parameters: "{module.input_schema}"  # after to_strict_schema() (§4.16)
     strict: true
 
   # annotations mapping (OpenAI Agents SDK)
@@ -10209,7 +10250,7 @@ openai_mapping:
 # Module → Anthropic Tool mapping
 anthropic_mapping:
   tool:
-    name: "{module.id.replace('.', '_')}"
+    name: "{module.id.replace('.', '-')}"
     description: "{module.description}"
     input_schema: "{module.input_schema}"
     input_examples: "{module.examples[*].inputs}"
@@ -10261,12 +10302,11 @@ Each language SDK **SHOULD** provide idiomatic module definition syntax. The fol
 
 ## Revision History
 
-The specification is versioned independently of the SDK release line (`0.x`); `CHANGELOG.md` records which SDK release shipped each specification version. The reasoning behind each change is recorded in `CHANGELOG.md` and in the decision records indexed by [`decision-register.md`](./decision-register.md).
+The specification and the SDK have independent version numbers. `CHANGELOG.md` records which SDK release ships each specification version. The change rationale appears in `CHANGELOG.md` and the [decision register](./decision-register.md).
 
 | Version | Date | Summary | Records |
 |---|---|---|---|
-| 2.1.0 | Unreleased | Add managed drain and recovery hooks, scoped forced removal, opt-in governed reload reports, and lifecycle events (§6.7, §9.16.2, §12.7.9). | D-153 |
-| 2.0.0 | Unreleased | Resolve every path-typed configuration value against one project root (§9.2.2). Clarify configured redaction for schema-less calls (§6.1.8, §10.6.1). Require invocation-scoped approval resumption and use a non-secret correlation ID in approval telemetry (§7, §9.16.2). Clarify pipeline configuration, preflight, and approval argument scope (§5.16.1, §7.3–7.4, §12.8). Align schema examples with Draft 2020-12 and the unified validation error format (§4.2, §4.14, §8.1). Clarify the APCore trace ID reservation (§10.5). | [#113](https://github.com/aiperceivable/apcore/issues/113) |
+| 2.0.0 | Unreleased | Define an in-memory Core Profile and opt-in extensions (§1.8, §12). Deny calls requiring approval when the handler is absent, and require approval for destructive modules by default (§6.6.3.1, §7.4, §7.9). Require invocation-scoped approval resumption and use a non-secret correlation ID in telemetry (§7, §9.16.2). Specify managed drain, recovery, scoped forced removal, reload reports and lifecycle events (§6.7, §9.16.2, §12.7.9). Assign provider projections to Surfaces (§4.17 and Appendix D). Resolve path-typed configuration against one project root (§9.2.2). Clarify pipeline configuration, preflight and approval argument scope (§5.16.1, §7.3–7.4, §12.8), configured redaction (§6.1.8, §10.6.1) and trace IDs (§10.5). Align schema examples with Draft 2020-12 and the validation error format (§4.2, §4.14, §8.1). | D-153, [#113](https://github.com/aiperceivable/apcore/issues/113), [Changelog](https://github.com/aiperceivable/apcore/blob/main/CHANGELOG.md) |
 | 1.66.0 | 2026-10-19 | A23 preserves optional enum, const, reference and applicator constraints inside an anyOf-null wrapper; required fields remain unchanged. | [#124](https://github.com/aiperceivable/apcore/issues/124) |
 | 1.65.0 | 2026-10-08 | Add public bare-name canonicalization with structured, non-throwing results in all SDKs; preserve A02, ASCII-only case conversion and existing underscores, and reject non-ASCII, invalid starts and overlong output (§2.2.1). | [Rust #40](https://github.com/aiperceivable/apcore-rust/issues/40) |
 | 1.64.0 | 2026-10-08 | Algorithm A02 is exhaustive and ASCII-scoped: it preserves existing underscores and non-ASCII characters through case conversion, then rejects a result outside the Canonical ID grammar; it never repairs arbitrary identifiers (§2.2). The repairing class-name conversion is named `snake_case_name` and is distinct from A02's `snake_case_identifier` (§2.1.1). | #122 |

@@ -17,7 +17,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { Type } from '@sinclair/typebox';
 
-import { APCore } from '../src/client.js';
+import { APCore } from '../src/full.js';
 import { Config } from '../src/config.js';
 import { ConfigError } from '../src/errors.js';
 import { DEFAULTS } from '../src/config-defaults.js';

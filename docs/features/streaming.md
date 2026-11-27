@@ -416,7 +416,7 @@ rules:
       Config,
       STREAMING_MARKER,
       createApprovalResult,
-    } from "apcore-js";
+    } from "apcore-js/full";
     import type { StreamingModule } from "apcore-js";
 
     class EchoModule implements StreamingModule {

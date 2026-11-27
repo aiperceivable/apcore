@@ -2,8 +2,10 @@
 // Spec reference: §4.13 metadata merge, companion YAML loading
 
 use std::collections::HashMap;
+#[cfg(feature = "discovery")]
 use std::path::Path;
 
+#[cfg(feature = "discovery")]
 use crate::errors::{ErrorCode, ModuleError};
 use crate::registry::types::DepInfo;
 
@@ -13,6 +15,7 @@ use crate::registry::types::DepInfo;
 ///
 /// Aligned with `apcore-python.load_metadata` and
 /// `apcore-typescript.loadMetadata`.
+#[cfg(feature = "discovery")]
 pub fn load_metadata(meta_path: &Path) -> Result<HashMap<String, serde_json::Value>, ModuleError> {
     match meta_path.symlink_metadata() {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(HashMap::new()),
@@ -228,6 +231,7 @@ pub(crate) fn merge_annotation_fields(
 ///
 /// Aligned with `apcore-python.load_id_map` and
 /// `apcore-typescript.loadIdMap`.
+#[cfg(feature = "discovery")]
 pub fn load_id_map(
     id_map_path: &Path,
 ) -> Result<HashMap<String, HashMap<String, serde_json::Value>>, ModuleError> {
@@ -293,7 +297,7 @@ pub fn load_id_map(
     Ok(result)
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "discovery"))]
 mod tests {
     use super::*;
 

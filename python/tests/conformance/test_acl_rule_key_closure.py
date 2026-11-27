@@ -40,7 +40,7 @@ def _cases() -> list[dict[str, Any]]:
 
 def test_closed_key_set_matches_the_fixture() -> None:
     """The canonical set lives in the fixture, not in this SDK."""
-    from apcore.acl import _RESERVED_RULE_KEYS, _RULE_KEYS
+    from apcore.acl_loader import _RESERVED_RULE_KEYS, _RULE_KEYS
 
     fixture = load_fixture(FIXTURE)
     assert set(fixture["closed_rule_keys"]) == set(_RULE_KEYS)

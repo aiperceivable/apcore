@@ -8,8 +8,8 @@ description: "MetricsCollector and MetricsMiddleware, Prometheus export, per-mod
 
 apcore has two collectors for call statistics:
 
-- **`MetricsCollector`** — Prometheus-style counters and histograms, fed by `MetricsMiddleware`. Read by the `system.health.*` modules, `PlatformNotifyMiddleware` and `PrometheusExporter`.
-- **`UsageCollector`** — per-module call records in hourly buckets, fed by `UsageMiddleware`. Read by the `system.usage.*` modules, `PrometheusExporter` and `PeriodicUsageExporter`.
+- **`MetricsCollector`** tracks Prometheus-style counters and histograms fed by `MetricsMiddleware`. The health modules and the Prometheus renderer read these metrics.
+- **`UsageCollector`** groups per-module call records in hourly buckets. The usage modules, the Prometheus renderer, and `PeriodicUsageExporter` read these records.
 
 Neither is configured from `apcore.yaml`: `observability.metrics.enabled` and `observability.metrics.exporter` are inert, and so are `sys_modules.usage.retention_hours` and `sys_modules.usage.bucketing_strategy` (see [Which config keys work](./observability.md#which-config-keys-work)). You construct the collectors and middlewares yourself, or let [system modules](./system-modules.md) create `UsageCollector`, `ErrorHistory` and their middlewares. `MetricsMiddleware` is never installed for you — add it when you want metrics.
 
@@ -43,27 +43,14 @@ The [Observability quick start](./observability.md#quick-start) and the [Prometh
 
 ## Prometheus export
 
-`PrometheusExporter` serves the collectors over HTTP for scraping. It is constructed and started by your application — no configuration key starts it (`observability.prometheus.*` does not exist).
+Render the current collectors to Prometheus text and pass the render callback to
+the [Toolkit HTTP listener](https://github.com/aiperceivable/apcore-surfaces/tree/main/toolkit).
+It serves `GET /metrics`, `GET /healthz`, and `GET /readyz`. Mark the listener
+ready after the application finishes startup.
 
-| Endpoint | Response |
-|---|---|
-| `GET {path}` (default `/metrics`) | Prometheus text: the `MetricsCollector` families, plus the usage families below when a `UsageCollector` is attached |
-| `GET /healthz` | `200 OK` — liveness |
-| `GET /readyz` | `200 OK` after `mark_ready()` / `markReady()`, `503` before |
-
-Attaching a `UsageCollector` adds the `apcore_usage_calls_24h` gauge (by `module_id` and `status`), `apcore_usage_error_rate`, and `apcore_usage_p50_latency_ms` / `p95` / `p99`. The rolling call count can decrease as records age out. The deprecated `apcore_usage_calls_total` name is a gauge alias with the same values and labels. Use `apcore_usage_calls_24h` for rolling counts and the cumulative `apcore_module_calls_total` counter for queries such as `rate()` and `increase()`. The Rust exporter always emits the three standard `apcore_module_*` families, even before the first observation.
-
-| | Construct | Start / stop |
-|---|---|---|
-| Python | `PrometheusExporter(collector, usage_collector=None)` | `start(port=9090, path="/metrics", host="127.0.0.1")` (background thread), `stop()` |
-| TypeScript | `new PrometheusExporter({ collector, usageCollector })` | `start({ port, path })`; `await stop()` |
-| Rust | `PrometheusExporter::new(collector).with_usage_collector(usage)` | `start(port, path).await?` (spawns a task, returns `io::Result`), `shutdown()`, `local_addr()` |
-
-The Python listener binds to IPv4 loopback by default. Set `host` explicitly when metrics need to be reachable from a remote scraper. The Rust listener binds to all IPv4 interfaces. Both listeners limit concurrent connections and set timeouts for request headers and response writes. Python `stop()` closes the listener. Rust `shutdown()` signals it to close, and `local_addr()` reports `None` once the listening socket is released.
-
-`export()` returns the same text the endpoint serves. It reads live collector state.
-
-Applications that own the HTTP listener can render the same response without opening a socket. Pass one of these render callbacks to the [Toolkit Prometheus listener](https://github.com/aiperceivable/apcore-surfaces/tree/main/toolkit) or to the application's existing HTTP server.
+The usage collector adds the rolling `apcore_usage_calls_24h` gauge, error
+rate, and latency percentiles. Use the cumulative `apcore_module_calls_total`
+counter for `rate()` or `increase()`.
 
 === "Python"
     ```python
@@ -76,12 +63,11 @@ Applications that own the HTTP listener can render the same response without ope
 
 === "TypeScript"
     ```typescript
-    import { MetricsCollector, PrometheusExporter, UsageCollector } from "apcore-js";
+    import { MetricsCollector, UsageCollector, renderPrometheusMetrics } from "apcore-js/observability";
 
-    const collector = new MetricsCollector();
-    const usageCollector = new UsageCollector();
-    const renderer = new PrometheusExporter({ collector, usageCollector });
-    console.log(renderer.export());
+    const metrics = new MetricsCollector();
+    const usage = new UsageCollector();
+    console.log(renderPrometheusMetrics(metrics, usage));
     ```
 
 === "Rust"
@@ -92,89 +78,6 @@ Applications that own the HTTP listener can render the same response without ope
         let metrics = MetricsCollector::new();
         let usage = UsageCollector::new();
         print!("{}", render_prometheus_metrics(&metrics, Some(&usage)));
-    }
-    ```
-
-The following examples use the built-in HTTP exporter.
-
-=== "Python"
-    ```python
-    from apcore import APCore
-    from apcore.observability import (
-        MetricsCollector,
-        MetricsMiddleware,
-        PrometheusExporter,
-        UsageCollector,
-        UsageMiddleware,
-    )
-
-    metrics = MetricsCollector()
-    usage = UsageCollector()
-
-    client = APCore()
-    client.use(MetricsMiddleware(metrics))
-    client.use(UsageMiddleware(usage))
-
-    exporter = PrometheusExporter(metrics, usage_collector=usage)
-    exporter.start(port=9090, path="/metrics")
-    exporter.mark_ready()  # /readyz answers 200 from now on
-
-    # ... serve traffic ...
-
-    exporter.stop()
-    ```
-
-=== "TypeScript"
-    ```typescript
-    import {
-      APCore,
-      MetricsCollector,
-      MetricsMiddleware,
-      PrometheusExporter,
-      UsageCollector,
-      UsageMiddleware,
-    } from "apcore-js";
-
-    const metrics = new MetricsCollector();
-    const usage = new UsageCollector();
-
-    const client = new APCore();
-    client.use(new MetricsMiddleware(metrics));
-    client.use(new UsageMiddleware(usage));
-
-    const exporter = new PrometheusExporter({ collector: metrics, usageCollector: usage });
-    exporter.start({ port: 9090, path: "/metrics" });
-    exporter.markReady(); // /readyz answers 200 from now on
-
-    // ... serve traffic ...
-
-    await exporter.stop();
-    ```
-
-=== "Rust"
-    ```rust
-    use apcore::observability::{
-        MetricsCollector, MetricsMiddleware, PrometheusExporter, UsageCollector, UsageMiddleware,
-    };
-    use apcore::APCore;
-
-    #[tokio::main]
-    async fn main() -> Result<(), Box<dyn std::error::Error>> {
-        let metrics = MetricsCollector::new();
-        let usage = UsageCollector::new();
-
-        let client = APCore::new();
-        client.use_middleware(Box::new(MetricsMiddleware::new(metrics.clone())))?;
-        client.use_middleware(Box::new(UsageMiddleware::new(usage.clone())))?;
-
-        let exporter = PrometheusExporter::new(metrics).with_usage_collector(usage);
-        exporter.start(9090, "/metrics").await?;
-        exporter.mark_ready(); // /readyz answers 200 from now on
-
-        // ... serve traffic ...
-
-        exporter.shutdown();
-        Ok(())
     }
     ```
 
@@ -212,7 +115,7 @@ A module with no recorded calls is not an error: it reports zero counts, a zero-
 
 ## UsageExporter (push-style)
 
-`PrometheusExporter` is scraped; a `UsageExporter` pushes. `PeriodicUsageExporter` polls a `UsageCollector` on an interval and hands the summary to your exporter — an HTTP poster, a Kafka producer, a file writer. apcore ships only `NoopUsageExporter` (drops everything) and the periodic driver; transport-specific exporters are yours to write.
+A Prometheus listener answers scrape requests. `PeriodicUsageExporter` polls a `UsageCollector` and passes each summary to a host-supplied `UsageExporter`. The built-in `NoopUsageExporter` discards summaries.
 
 | | Exporter interface | Driver |
 |---|---|---|
@@ -254,8 +157,8 @@ A module with no recorded calls is not an error: it reports zero counts, a zero-
 
 === "TypeScript"
     ```typescript
-    import { PeriodicUsageExporter, UsageCollector } from "apcore-js";
-    import type { UsageExporter } from "apcore-js";
+    import { PeriodicUsageExporter, UsageCollector } from "apcore-js/full";
+    import type { UsageExporter } from "apcore-js/full";
 
     class PrintUsageExporter implements UsageExporter {
       async export(summary: Record<string, unknown>): Promise<void> {
@@ -395,8 +298,8 @@ An alert fires once per module and does not fire again until the module has reco
 
 === "TypeScript"
     ```typescript
-    import { ErrorHistory, InMemoryStorageBackend, MetricsCollector, UsageCollector } from "apcore-js";
-    import type { StorageBackend } from "apcore-js";
+    import { ErrorHistory, InMemoryStorageBackend, MetricsCollector, UsageCollector } from "apcore-js/full";
+    import type { StorageBackend } from "apcore-js/full";
 
     // One backend shared by all three collectors; namespaces keep them apart.
     const backend = new InMemoryStorageBackend();

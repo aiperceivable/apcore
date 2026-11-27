@@ -3,42 +3,68 @@
 //                 system-modules.md §1.1–§1.5 hardening (Issue #45).
 
 pub mod audit;
+#[cfg(feature = "sys-modules")]
 pub mod control;
+#[cfg(feature = "sys-modules")]
 pub mod health;
+#[cfg(feature = "sys-modules")]
 pub mod manifest;
+#[cfg(feature = "sys-modules")]
 pub mod overrides;
+#[cfg(feature = "sys-modules")]
 pub mod usage;
 
 use std::collections::{HashMap, HashSet};
+#[cfg(feature = "sys-modules")]
 use std::path::PathBuf;
-use std::sync::{Arc, OnceLock, Weak};
+#[cfg(feature = "sys-modules")]
+use std::sync::Weak;
+use std::sync::{Arc, OnceLock};
 
 use parking_lot::RwLock;
 
+#[cfg(feature = "sys-modules")]
 use serde_json::json;
 use thiserror::Error;
+#[cfg(feature = "sys-modules")]
 use tokio::sync::Mutex;
 
+#[cfg(feature = "sys-modules")]
 use crate::config::Config;
 use crate::errors::{ErrorCode, ModuleError};
+#[cfg(feature = "sys-modules")]
 use crate::events::circuit_breaker::{CircuitBreakerWrapper, CircuitEventSink};
-use crate::events::emitter::{ApCoreEvent, EventEmitter};
-use crate::events::subscribers::create_subscriber;
+#[cfg(feature = "sys-modules")]
+use crate::events::emitter::ApCoreEvent;
+use crate::events::emitter::EventEmitter;
+#[cfg(feature = "sys-modules")]
+use crate::events::subscribers::SubscriberRegistry;
+#[cfg(feature = "sys-modules")]
 use crate::executor::Executor;
+#[cfg(feature = "sys-modules")]
 use crate::middleware::PlatformNotifyMiddleware;
+#[cfg(feature = "sys-modules")]
 use crate::module::Module;
-use crate::observability::error_history::{ErrorHistory, ErrorHistoryMiddleware};
+use crate::observability::error_history::ErrorHistory;
+#[cfg(feature = "sys-modules")]
+use crate::observability::error_history::ErrorHistoryMiddleware;
+#[cfg(feature = "sys-modules")]
 use crate::observability::metrics::MetricsCollector;
-use crate::observability::usage::{UsageCollector, UsageMiddleware};
+use crate::observability::usage::UsageCollector;
+#[cfg(feature = "sys-modules")]
+use crate::observability::usage::UsageMiddleware;
+#[cfg(feature = "sys-modules")]
 use crate::registry::registry::{is_ephemeral_module_id, ModuleDescriptor, Registry};
 
 // Standalone system modules own the registry given to their public constructors.
 // Bootstrap modules are registered inside that same registry and borrow it weakly.
+#[cfg(feature = "sys-modules")]
 enum SystemRegistry {
     Owned(Arc<Registry>),
     Registered(Weak<Registry>),
 }
 
+#[cfg(feature = "sys-modules")]
 impl SystemRegistry {
     fn release_ownership(&mut self) {
         if let Self::Owned(registry) = self {
@@ -60,14 +86,20 @@ impl SystemRegistry {
 }
 
 pub use audit::{AuditAction, AuditChange, AuditEntry, AuditStore, InMemoryAuditStore};
+#[cfg(feature = "sys-modules")]
 pub use control::{ReloadModule, ToggleFeatureModule, UpdateConfigModule};
+#[cfg(feature = "sys-modules")]
 pub use health::{HealthModule, HealthSummaryModule};
+#[cfg(feature = "sys-modules")]
 pub use manifest::{ManifestFullModule, ManifestModule};
+#[cfg(feature = "sys-modules")]
 pub use usage::{UsageModule, UsageSummaryModule};
 
 #[derive(Debug)]
+#[cfg(feature = "sys-modules")]
 struct EmitterCircuitSink(std::sync::Weak<EventEmitter>);
 
+#[cfg(feature = "sys-modules")]
 impl CircuitEventSink for EmitterCircuitSink {
     fn emit_circuit_event(&self, event: ApCoreEvent) {
         if let Some(emitter) = self.0.upgrade() {
@@ -167,9 +199,11 @@ pub fn check_module_disabled(module_id: &str) -> Result<(), ModuleError> {
 // Sensitive key detection
 // ---------------------------------------------------------------------------
 
+#[cfg(feature = "sys-modules")]
 pub(crate) const SENSITIVE_SEGMENTS: &[&str] =
     &["token", "secret", "key", "password", "auth", "credential"];
 
+#[cfg(feature = "sys-modules")]
 pub(crate) fn is_sensitive_key(key: &str) -> bool {
     let lower = key.to_lowercase();
     // W-6: Match exact segments ("key") or underscore-compound segments ("api_key",
@@ -188,12 +222,14 @@ pub(crate) fn is_sensitive_key(key: &str) -> bool {
 // W-7: Lists keys that must not be changed at runtime via update_config.
 // Scope: runtime-safety critical keys only. Schema-level immutability is
 // enforced at load time; this list protects against inadvertent runtime mutations.
+#[cfg(feature = "sys-modules")]
 pub(crate) const RESTRICTED_KEYS: &[&str] = &["sys_modules.enabled"];
 
 // ---------------------------------------------------------------------------
 // Shared helpers (used by control.rs)
 // ---------------------------------------------------------------------------
 
+#[cfg(feature = "sys-modules")]
 pub(crate) fn require_string(
     inputs: &serde_json::Value,
     field: &str,
@@ -211,6 +247,7 @@ pub(crate) fn require_string(
         })
 }
 
+#[cfg(feature = "sys-modules")]
 pub(crate) fn missing_field_error(field: &str) -> ModuleError {
     ModuleError::new(
         ErrorCode::GeneralInvalidInput,
@@ -219,6 +256,7 @@ pub(crate) fn missing_field_error(field: &str) -> ModuleError {
 }
 
 /// Emit an event; errors are logged and not propagated (error isolation).
+#[cfg(feature = "sys-modules")]
 pub(crate) async fn emit_event(
     emitter: &Arc<EventEmitter>,
     event_type: &str,
@@ -245,6 +283,7 @@ pub(crate) async fn emit_event(
 /// an audit record shows for a context-less call and the value the ACL matched
 /// to produce that record are the same identity, and two independent literals
 /// are how they drift apart.
+#[cfg(feature = "sys-modules")]
 pub(crate) const DEFAULT_EXTERNAL_CALLER: &str = crate::acl::EXTERNAL_CALLER;
 
 /// Identity attribute names whose values are replaced with `<redacted>` in
@@ -253,6 +292,7 @@ pub(crate) const DEFAULT_EXTERNAL_CALLER: &str = crate::acl::EXTERNAL_CALLER;
 /// `obs.redaction.sensitive_keys` so bearer tokens, signed cookies, and
 /// credentials can never leak through the contextual-audit channel even when
 /// global redaction is disabled.
+#[cfg(feature = "sys-modules")]
 const IDENTITY_SENSITIVE_SUBSTRINGS: &[&str] = &[
     "token",
     "secret",
@@ -266,8 +306,10 @@ const IDENTITY_SENSITIVE_SUBSTRINGS: &[&str] = &[
     "bearer",
 ];
 
+#[cfg(feature = "sys-modules")]
 const IDENTITY_REDACTED_TOKEN: &str = "<redacted>";
 
+#[cfg(feature = "sys-modules")]
 fn redact_identity_attr(name: &str, value: &serde_json::Value) -> serde_json::Value {
     let lower = name.to_lowercase();
     if IDENTITY_SENSITIVE_SUBSTRINGS
@@ -291,6 +333,7 @@ fn redact_identity_attr(name: &str, value: &serde_json::Value) -> serde_json::Va
 ///     compatibility with pre-D-31 consumers.
 ///
 /// The `data` argument is mutated in place and returned for ergonomic chaining.
+#[cfg(feature = "sys-modules")]
 pub(crate) fn augment_with_context_identity(
     mut data: serde_json::Value,
     ctx: &crate::context::Context<serde_json::Value>,
@@ -380,7 +423,9 @@ pub struct SysModulesContext {
 
 /// Startup results for the client, alongside the public registration context.
 #[derive(Default)]
-pub(crate) struct SysModulesStartup {
+#[cfg(feature = "sys-modules")]
+pub(crate) struct SysModulesStartup<'a> {
+    pub(crate) subscribers: Option<&'a SubscriberRegistry>,
     pub(crate) events_enabled: bool,
     pub(crate) errors: Vec<SysModuleError>,
 }
@@ -396,6 +441,7 @@ pub(crate) struct SysModulesStartup {
 /// `overrides_path`, and `fail_on_error` parameters in the Python and
 /// TypeScript SDKs.
 #[derive(Default, Clone)]
+#[cfg(feature = "sys-modules")]
 pub struct SysModulesOptions {
     /// When set, runtime overrides are loaded from this YAML path on startup
     /// and persisted on every `update_config` / `toggle_feature` call. Use
@@ -446,6 +492,7 @@ pub struct SysModulesOptions {
 /// 4. Create `UsageCollector` + `UsageMiddleware`.
 /// 5. Register health, manifest, and usage modules.
 /// 6. If `sys_modules.events.enabled`: register control modules + `EventEmitter`.
+#[cfg(feature = "sys-modules")]
 pub fn register_sys_modules(
     registry: Arc<Registry>,
     executor: &Executor,
@@ -463,6 +510,7 @@ pub fn register_sys_modules(
 
 /// Variant of [`register_sys_modules`] accepting hardening options. See
 /// [`SysModulesOptions`] for details.
+#[cfg(feature = "sys-modules")]
 pub fn register_sys_modules_with_options(
     registry: Arc<Registry>,
     executor: &Executor,
@@ -481,15 +529,45 @@ pub fn register_sys_modules_with_options(
     )
 }
 
+#[cfg(feature = "sys-modules")]
+fn configured_usage_collector(config: &Config) -> Result<UsageCollector, SysModuleError> {
+    let invalid = |message| SysModuleError::RegistrationFailed {
+        module_id: "system.usage.summary".to_owned(),
+        source: ModuleError::new(ErrorCode::ConfigInvalid, message),
+    };
+
+    if config
+        .get_declared("sys_modules.usage.bucketing_strategy")
+        .is_some_and(|strategy| strategy.as_str() != Some("hourly"))
+    {
+        return Err(invalid(
+            "sys_modules.usage.bucketing_strategy must be 'hourly'",
+        ));
+    }
+
+    let Some(hours) = config.get_declared("sys_modules.usage.retention_hours") else {
+        return Ok(UsageCollector::new());
+    };
+    let retention = hours
+        .as_i64()
+        .filter(|hours| *hours > 0)
+        .and_then(chrono::Duration::try_hours)
+        .ok_or_else(|| {
+            invalid("sys_modules.usage.retention_hours must be a positive number of hours")
+        })?;
+    Ok(UsageCollector::with_retention(retention))
+}
+
 #[allow(clippy::too_many_lines)] // complex orchestration; extraction would obscure the registration flow
 #[allow(clippy::needless_pass_by_value)] // Arc<Registry> and Option<MetricsCollector> consumed by sub-modules
+#[cfg(feature = "sys-modules")]
 pub(crate) fn register_sys_modules_for_client(
     registry: Arc<Registry>,
     executor: &Executor,
     config: &Config,
     metrics_collector: Option<MetricsCollector>,
     options: SysModulesOptions,
-    startup: &mut SysModulesStartup,
+    startup: &mut SysModulesStartup<'_>,
     executor_supplied: bool,
 ) -> Result<SysModulesContext, SysModuleError> {
     let SysModulesOptions {
@@ -561,6 +639,8 @@ pub(crate) fn register_sys_modules_for_client(
         );
     }
 
+    let usage_collector = configured_usage_collector(&effective_config)?;
+
     // --- Step 2: ErrorHistory + middleware ---
     #[allow(clippy::cast_possible_truncation)] // config value won't exceed platform usize limits
     let max_per_module = effective_config
@@ -579,7 +659,6 @@ pub(crate) fn register_sys_modules_for_client(
     }
 
     // --- Step 3: UsageCollector + middleware ---
-    let usage_collector = UsageCollector::new();
     let usage_middleware = UsageMiddleware::new(usage_collector.clone());
     if let Err(e) = executor.use_middleware(Box::new(usage_middleware)) {
         tracing::error!(error = %e, middleware = "UsageMiddleware", "sys middleware registration failed");
@@ -619,11 +698,18 @@ pub(crate) fn register_sys_modules_for_client(
     }
 
     if events_enabled {
+        let builtins;
+        let subscribers = if let Some(registry) = startup.subscribers {
+            registry
+        } else {
+            builtins = SubscriberRegistry::new();
+            &builtins
+        };
         // Configured subscribers share the bootstrap emitter through weak circuit sinks.
         if let Some(subs) = effective_config.get("sys_modules.events.subscribers") {
             if let Some(arr) = subs.as_array() {
                 for sub_config in arr {
-                    match create_subscriber(sub_config) {
+                    match subscribers.create(sub_config) {
                         Ok(subscriber) => {
                             let circuit = sub_config.get("circuit_breaker");
                             let value = |key: &str, default: u64| {

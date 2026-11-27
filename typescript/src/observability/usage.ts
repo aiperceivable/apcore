@@ -299,6 +299,7 @@ export class UsageCollector {
 
   private _cleanupExpired(moduleId: string): void {
     const cutoff = new Date(Date.now() - this.retentionHours * 3600_000);
+    if (Number.isNaN(cutoff.getTime())) return;
     const cutoffKey = bucketKey(cutoff);
     const mod = this._data.get(moduleId);
     if (!mod) return;

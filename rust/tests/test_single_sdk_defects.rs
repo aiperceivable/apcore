@@ -981,6 +981,19 @@ fn sys_config(dir: &std::path::Path, extra: &str) -> Config {
     Config::from_yaml_file(&path).expect("config loads")
 }
 
+fn apcore_with_control_approval(config: Config, mut executor: Option<apcore::Executor>) -> APCore {
+    if let Some(executor) = &mut executor {
+        executor.set_approval_handler(Box::new(apcore::AutoApproveHandler));
+    }
+    APCore::try_start(apcore::APCoreOptions {
+        config: Some(config),
+        executor,
+        approval_handler: Some(Box::new(apcore::AutoApproveHandler)),
+        ..Default::default()
+    })
+    .unwrap()
+}
+
 #[tokio::test]
 async fn apcore_persists_a_toggle_to_the_configured_overrides_path() {
     let dir = tempfile::tempdir().unwrap();
@@ -992,7 +1005,7 @@ async fn apcore_persists_a_toggle_to_the_configured_overrides_path() {
             serde_json::to_string(&overrides.to_string_lossy()).unwrap()
         ),
     );
-    let client = APCore::with_config(config);
+    let client = apcore_with_control_approval(config, None);
     client.register("probe.toggled", fixed(json!({}))).unwrap();
     client.disable("probe.toggled", Some("test")).await.unwrap();
 
@@ -1003,7 +1016,7 @@ async fn apcore_persists_a_toggle_to_the_configured_overrides_path() {
 #[tokio::test]
 async fn reload_module_can_reload_the_config_of_an_apcore_client() {
     let dir = tempfile::tempdir().unwrap();
-    let client = APCore::with_config(sys_config(dir.path(), ""));
+    let client = apcore_with_control_approval(sys_config(dir.path(), ""), None);
     let out = client
         .call(
             "system.control.reload_module",
@@ -1019,10 +1032,13 @@ async fn reload_module_can_reload_the_config_of_an_apcore_client() {
 #[tokio::test]
 async fn test_update_config_rejects_empty_path_without_persisting_or_emitting() {
     let dir = tempfile::tempdir().unwrap();
-    let mut client = APCore::with_config(sys_config(
-        dir.path(),
-        "  control:\n    overrides_path: overrides.yaml\nextensions:\n  root: original\n",
-    ));
+    let mut client = apcore_with_control_approval(
+        sys_config(
+            dir.path(),
+            "  control:\n    overrides_path: overrides.yaml\nextensions:\n  root: original\n",
+        ),
+        None,
+    );
     let changes = Arc::new(AtomicUsize::new(0));
     let observed = Arc::clone(&changes);
     client
@@ -1104,8 +1120,7 @@ async fn test_control_reload_refreshes_the_supplied_executor_and_rolls_back_on_f
     let executor_source = dir.path().join("executor.yaml");
     let executor =
         apcore::Executor::new(Registry::new(), read_executor_config(&executor_source, 40));
-    let mut client =
-        APCore::with_options(None, Some(executor), Some(sys_config(dir.path(), "")), None);
+    let mut client = apcore_with_control_approval(sys_config(dir.path(), ""), Some(executor));
     client
         .register("probe.timeout", Box::new(TimeoutProbe))
         .unwrap();
@@ -1164,7 +1179,7 @@ async fn test_control_reload_reapplies_persisted_config_overrides() {
         dir.path(),
         "  control:\n    overrides_path: overrides.yaml\nexecutor:\n  default_timeout: 45\n",
     );
-    let client = APCore::with_config(config);
+    let client = apcore_with_control_approval(config, None);
     client
         .register("probe.timeout", Box::new(TimeoutProbe))
         .unwrap();
@@ -1214,7 +1229,7 @@ async fn test_control_reload_removes_a_persisted_override_from_the_source_less_e
     let mut executor_config = Config::from_defaults();
     executor_config.set("executor.default_timeout", json!(35));
     let executor = apcore::Executor::new(Registry::new(), executor_config);
-    let client = APCore::with_options(None, Some(executor), Some(config), None);
+    let client = apcore_with_control_approval(config, Some(executor));
     client
         .register("probe.timeout", Box::new(TimeoutProbe))
         .unwrap();
@@ -1252,7 +1267,7 @@ async fn test_control_update_reports_the_bare_value_for_a_qualified_path() {
         "apcore:\n  version: '1.0'\n  project:\n    name: path-probe\n  sys_modules:\n    enabled: true\n    events:\n      enabled: true\n",
     )
     .unwrap();
-    let client = APCore::with_config(Config::from_yaml_file(&path).unwrap());
+    let client = apcore_with_control_approval(Config::from_yaml_file(&path).unwrap(), None);
     let key = "apcore.extensions.root";
     let result = client
         .call(
@@ -1286,11 +1301,9 @@ async fn test_control_update_reports_the_supplied_executor_value_for_a_qualified
         Registry::new(),
         read_executor_config(&dir.path().join("executor.yaml"), 45),
     );
-    let mut client = APCore::with_options(
-        None,
+    let mut client = apcore_with_control_approval(
+        sys_config(dir.path(), "executor:\n  default_timeout: 72\n"),
         Some(executor),
-        Some(sys_config(dir.path(), "executor:\n  default_timeout: 72\n")),
-        None,
     );
     client
         .register("probe.timeout", Box::new(TimeoutProbe))
@@ -1329,10 +1342,13 @@ async fn test_control_update_reports_the_supplied_executor_value_for_a_qualified
 #[tokio::test]
 async fn test_control_update_redacts_the_canonical_path_of_a_qualified_key() {
     let dir = tempfile::tempdir().unwrap();
-    let mut client = APCore::with_config(sys_config(
-        dir.path(),
-        "obs:\n  redaction:\n    sensitive_keys: ['executor.default_*']\n",
-    ));
+    let mut client = apcore_with_control_approval(
+        sys_config(
+            dir.path(),
+            "obs:\n  redaction:\n    sensitive_keys: ['executor.default_*']\n",
+        ),
+        None,
+    );
     let changes = Arc::new(StdMutex::new(Vec::new()));
     let observed = Arc::clone(&changes);
     client

@@ -1,6 +1,6 @@
 implementation:
   name: apcore-python
-  version: 1.0.0a1
+  version: 1.0.0a2
   language: python
   spec_version: 1.65.0
   maintainer: AI Perceivable
@@ -11,9 +11,9 @@ conformance:
   date: "2026-10-08"
   assessment_scope: issue-123-regressions-and-canonical-name
   fixture_results:
-    fixtures: 9
-    cases: 79
-    passed: 79
+    fixtures: 8
+    cases: 74
+    passed: 74
     failed: 0
     skipped: 0
     report: tests/conformance/test_issue123_contracts.py
@@ -26,7 +26,6 @@ conformance:
       - env_prefix_dispatch
       - ephemeral_modules
       - error_details_shape
-      - export_profiles
       - json_input_native_types
       - preflight_check_reporting
       - timeout_cancellation
@@ -34,7 +33,7 @@ conformance:
   known_deviations:
     - feature: full-fixture-verification
       spec: conformance §6.2
-      reason: Only nine fixtures (47 issue-123 cases and 32 canonical-name cases) have individually verified case counts in this assessment. No claim is made that all 1107 canonical cases pass; Level 1 or 2 certification requires a complete case-level report.
+      reason: Only eight fixtures (42 issue-123 cases and 32 canonical-name cases) have individually verified case counts in this assessment. No claim is made that all 1107 canonical cases pass; Level 1 or 2 certification requires a complete case-level report.
       severity: major
     - feature: storage-backend-scalar-values
       spec: StorageBackend.save

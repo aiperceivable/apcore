@@ -36,7 +36,9 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Type } from '@sinclair/typebox';
-import { ACLDeniedError, APCore, Config, Context, createIdentity } from 'apcore-js';
+import { ACLDeniedError, Context, createIdentity } from 'apcore-js';
+import { Config } from 'apcore-js/config';
+import { APCore } from 'apcore-js/full';
 
 // ---------------------------------------------------------------------------
 // 1. Lay out a throwaway project: apcore.yaml + co-located acl/global_acl.yaml.

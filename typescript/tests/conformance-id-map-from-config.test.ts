@@ -15,7 +15,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import yaml from 'js-yaml';
 
 import { Config } from '../src/config.js';
-import { Registry } from '../src/registry/registry.js';
+import { Registry } from '../src/full.js';
 import { findFixturesRoot } from './spec-repo.js';
 
 interface IdMapCase {

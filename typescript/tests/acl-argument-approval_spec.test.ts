@@ -18,7 +18,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { Type } from '@sinclair/typebox';
-import { ACL } from '../src/acl.js';
+import { ACL } from '../src/full.js';
 import type { ACLRule, AuditEntry } from '../src/acl.js';
 import { ArgumentsHandler, buildGovernanceProjection } from '../src/acl-handlers.js';
 import { createApprovalResult } from '../src/approval.js';

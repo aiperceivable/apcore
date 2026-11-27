@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { expect, it, vi } from 'vitest';
-import { AlwaysDenyHandler, APCore, AutoApproveHandler, CancelToken, Config, Context, ModuleError, ModuleLoadError, STREAMING_MARKER } from '../src/index.js';
+import { AlwaysDenyHandler, APCore, AutoApproveHandler, CancelToken, Config, Context, ModuleError, ModuleLoadError, STREAMING_MARKER } from '../src/full.js';
 import { jsonSchemaToTypeBox } from '../src/schema/loader.js';
 import { RefResolver } from '../src/schema/ref-resolver.js';
 import { SchemaValidator } from '../src/schema/validator.js';

@@ -12,7 +12,7 @@ import {
   type RedactionReferenceContext,
 } from './utils/redaction-references.js';
 import { type ApprovalHandler, discardApprovalToken, prepareApprovalInputs, stripApprovalToken } from './approval.js';
-import type { ExecutionPolicy } from './policy.js';
+import { DEFAULT_EXECUTION_POLICY, type ExecutionPolicy } from './policy.js';
 import {
   BuiltinACLCheck,
   BuiltinApprovalGate,
@@ -750,13 +750,13 @@ export class Executor {
     const enforcingGates = this._strategy.steps.filter(
       (step): step is BuiltinApprovalGate =>
         step instanceof BuiltinApprovalGate &&
-        (step.approvalHandler !== null || step.policy?.strict === true),
+        (step.approvalHandler !== null || step.policy.strict),
     );
     return this._registry.list({ visibility: ['public', 'hidden'] }).filter((id) => {
       const annotations = this._moduleGovernanceAnnotations(id);
       if (!annotations?.requiresApproval) return false;
       return !enforcingGates.some(
-        (gate) => gate.policy === null || gate.policy.resolve(id, annotations).needsApproval,
+        (gate) => gate.policy.resolve(id, annotations).needsApproval,
       );
     });
   }
@@ -825,8 +825,8 @@ export class Executor {
       ? approvalGates.every((gate) => gate.approvalHandler !== null)
       : this._approvalHandler !== null;
     const policyStrict = builtinApprovalGateWired
-      ? approvalGates.every((gate) => gate.policy !== null && gate.policy.strict === true)
-      : this._policy !== null && this._policy.strict === true;
+      ? approvalGates.every((gate) => gate.policy.strict)
+      : this._policy?.strict === true;
 
     // PROTOCOL_SPEC 6.6.5.1. The approval conjunct carries
     // `allControlModulesRequireApproval` because `approval_gate` is per-module
@@ -1541,19 +1541,12 @@ export class Executor {
         // That disagreement is the one thing this method exists to prevent.
         const governance = governanceUnion(mod['annotations'], pipeCtx.declaredAnnotations);
         const gate = this._strategy.steps.find((step) => step instanceof BuiltinApprovalGate);
-        const policy = gate instanceof BuiltinApprovalGate ? gate.policy : this._policy;
-        if (policy !== null) {
-          // Policy overrides win over declared annotations (apcore#76), so
-          // preflight reports the same verdict the gate will enforce.
-          requiresApproval = policy.resolve(moduleId, governance, {
-            // §7.9.6: preflight resolves against the same call site the gate
-            // will see, so the reported verdict matches the enforced one.
-            arguments: effectiveInputs,
-            context: validateCtx,
-          }).needsApproval;
-        } else {
-          requiresApproval = Boolean(governance?.requiresApproval);
-        }
+        const policy = gate?.policy ?? this._policy ?? DEFAULT_EXECUTION_POLICY;
+        // §7.9.6: preflight resolves the same policy against the same call site.
+        requiresApproval = policy.resolve(moduleId, governance, {
+          arguments: effectiveInputs,
+          context: validateCtx,
+        }).needsApproval;
       }
       // §7.9.5 — report the GOVERNANCE-effective requirement, the union of §6.9
       // rows 3–5, which since v1.28.0 includes an ACL rule carrying `approval`

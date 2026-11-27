@@ -754,7 +754,7 @@ pub struct GovernanceState {
     pub approval_handler_configured: bool,
     /// The running strategy contains the built-in approval gate, matched by capability.
     pub builtin_approval_gate_wired: bool,
-    /// An `ExecutionPolicy` with `strict = true` is attached.
+    /// The effective policy uses strict approval enforcement.
     pub policy_strict: bool,
     /// Every registered `system.control.*` module declares `requires_approval`.
     ///
@@ -1191,7 +1191,7 @@ impl Executor {
     /// Step-5 approval gate (apcore#76 RFC pilot). Mirrors
     /// [`Self::set_approval_handler`]; the policy flows to the gate via
     /// `PipelineContext` at each invocation, so this takes effect immediately
-    /// for subsequent calls. Pass `None` to remove the policy.
+    /// for subsequent calls. Pass `None` to restore the default policy.
     pub fn set_policy(&mut self, policy: Option<ExecutionPolicy>) {
         self.policy = policy.map(Arc::new);
     }
@@ -1558,19 +1558,11 @@ impl Executor {
                 .as_ref(),
             pipe_ctx.declared_module_annotations().as_ref(),
         );
-        let policy_effective_approval = if let Some(policy) = self.policy.as_ref() {
-            // §7.9.6: preflight resolves through the same call-site-aware entry
-            // point the Step-5 gate uses, so the two cannot report different
-            // verdicts. The built-in rules ignore the call site (§7.9.6 rule 2),
-            // so this is identical to `resolve()` for any rule-based policy.
-            policy
-                .resolve_with_call_site(module_id, module_annotations.as_ref(), Some(inputs), ctx)
-                .needs_approval
-        } else {
-            module_annotations
-                .as_ref()
-                .is_some_and(|a| a.requires_approval)
-        };
+        // Resolve preflight through the same default and call-site-aware
+        // policy entry point as the Step-5 gate (§7.9.6).
+        let policy_effective_approval = ExecutionPolicy::effective(self.policy.as_deref())
+            .resolve_with_call_site(module_id, module_annotations.as_ref(), Some(inputs), ctx)
+            .needs_approval;
         // PROTOCOL_SPEC §7.9.5: report the GOVERNANCE-effective requirement —
         // the union of §6.9 rows 3-5 for this call site — not merely the
         // policy-effective one. Since v1.28.0 that union includes an ACL rule
@@ -2297,8 +2289,8 @@ impl Executor {
     /// ACL requirements are evaluated during each invocation.
     #[must_use]
     pub fn ungated_approval_modules(&self) -> Vec<String> {
-        let enforcing_gate = (self.approval_handler.is_some()
-            || self.policy.as_ref().is_some_and(|policy| policy.strict))
+        let policy = ExecutionPolicy::effective(self.policy.as_deref());
+        let enforcing_gate = (self.approval_handler.is_some() || policy.strict)
             && self
                 .strategy
                 .steps()
@@ -2312,11 +2304,9 @@ impl Executor {
                 let Some(annotations) = self.registry.governance_annotations(id) else {
                     return false;
                 };
-                annotations.requires_approval
-                    && !(enforcing_gate
-                        && self.policy.as_ref().is_none_or(|policy| {
-                            policy.resolve(id, Some(&annotations)).needs_approval
-                        }))
+                let needs_approval = policy.resolve(id, Some(&annotations)).needs_approval;
+                (annotations.requires_approval || needs_approval)
+                    && !(enforcing_gate && needs_approval)
             })
             .collect()
     }
@@ -2387,7 +2377,11 @@ impl Executor {
         // cannot drift from the gate.
         let acl_configured = self.acl.is_some();
         let approval_handler_configured = self.approval_handler.is_some();
-        let policy_strict = self.policy.as_ref().is_some_and(|p| p.strict);
+        let policy_strict = if builtin_approval_gate_wired {
+            ExecutionPolicy::effective(self.policy.as_deref()).strict
+        } else {
+            self.policy.as_deref().is_some_and(|policy| policy.strict)
+        };
 
         // PROTOCOL_SPEC 6.6.5.1. The approval conjunct carries
         // `all_control_modules_require_approval` because `approval_gate` is
@@ -2424,17 +2418,6 @@ impl Executor {
     /// Use `.to_string()` on the result for a human-readable summary.
     pub fn describe_pipeline(&self) -> StrategyInfo {
         self.strategy.info()
-    }
-
-    /// Register a strategy's info in the global registry for introspection.
-    ///
-    /// Delegates to the module-level [`register_strategy`] function.
-    #[deprecated(
-        since = "0.20.0",
-        note = "Use the module-level `register_strategy` function directly."
-    )]
-    pub fn register_strategy(info: StrategyInfo) {
-        register_strategy(info);
     }
 
     /// Strategy summaries for this executor: its current strategy first, then
@@ -2521,6 +2504,7 @@ impl Executor {
         .await
     }
 
+    #[cfg(feature = "sys-modules")]
     pub(crate) fn set_runtime_config(&self, config: Arc<tokio::sync::Mutex<Config>>) {
         *self.runtime_config.write() = Some(Arc::new(RuntimeConfig {
             source: config,
@@ -3374,7 +3358,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_approval_token_stripped_when_no_handler_configured() {
+    async fn test_approval_token_stripped_when_nonstrict_and_no_handler_configured() {
         // PROTOCOL_SPEC §7.4 is unconditional: `_approval_token` MUST be
         // removed from the arguments before they reach a subsequent step. The
         // no-handler skip returns from Step 5 early, so the token used to
@@ -3387,7 +3371,8 @@ mod tests {
             requires_approval: true,
             ..Default::default()
         };
-        let executor = build_executor_with_module(module, annotations);
+        let mut executor = build_executor_with_module(module, annotations);
+        executor.set_policy(Some(ExecutionPolicy::default().with_strict(false)));
 
         let result = executor
             .call(

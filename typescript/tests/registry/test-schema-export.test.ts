@@ -286,47 +286,6 @@ describe('exportAllSchemas', () => {
 });
 
 describe('exportSchema with profile', () => {
-  it('exports with mcp profile and returns valid JSON with MCP shape', () => {
-    const mod = createModule('mcp.mod');
-    const registry = makeRegistry(['mcp.mod', mod]);
-
-    const result = exportSchema(registry, 'mcp.mod', 'json', false, false, 'mcp');
-    const parsed = JSON.parse(result);
-    expect(parsed['name']).toBeDefined();
-    expect(parsed['description']).toBeDefined();
-    expect(parsed['inputSchema']).toBeDefined();
-    expect(parsed['annotations']).toBeDefined();
-    expect(parsed['annotations']['readOnlyHint']).toBe(true);
-    expect(parsed['annotations']['destructiveHint']).toBe(false);
-  });
-
-  it('exports with openai profile and returns function tool shape', () => {
-    const mod = createModule('openai.mod');
-    const registry = makeRegistry(['openai.mod', mod]);
-
-    const result = exportSchema(registry, 'openai.mod', 'json', false, false, 'openai');
-    const parsed = JSON.parse(result);
-    expect(parsed['type']).toBe('function');
-    expect(parsed['function']).toBeDefined();
-    expect(parsed['function']['name']).toBe('openai_mod');
-    expect(parsed['function']['description']).toBeDefined();
-    expect(parsed['function']['parameters']).toBeDefined();
-    expect(parsed['function']['strict']).toBe(true);
-  });
-
-  it('exports with anthropic profile and returns tool shape with input_examples', () => {
-    const mod = createModule('anthro.mod');
-    const registry = makeRegistry(['anthro.mod', mod]);
-
-    const result = exportSchema(registry, 'anthro.mod', 'json', false, false, 'anthropic');
-    const parsed = JSON.parse(result);
-    expect(parsed['name']).toBe('anthro_mod');
-    expect(parsed['description']).toBeDefined();
-    expect(parsed['input_schema']).toBeDefined();
-    expect(parsed['input_examples']).toBeDefined();
-    expect((parsed['input_examples'] as unknown[]).length).toBe(1);
-  });
-
   it('exports with generic profile and returns module_id and schema fields', () => {
     const mod = createModule('generic.mod');
     const registry = makeRegistry(['generic.mod', mod]);
@@ -340,31 +299,12 @@ describe('exportSchema with profile', () => {
     expect(parsed['definitions']).toBeDefined();
   });
 
-  it('exports with profile using yaml format', () => {
-    const mod = createModule('mcp.yaml');
-    const registry = makeRegistry(['mcp.yaml', mod]);
-
-    const result = exportSchema(registry, 'mcp.yaml', 'yaml', false, false, 'mcp');
-    expect(result).toContain('name:');
-    expect(result).toContain('inputSchema:');
-  });
-
-  it('throws InvalidInputError for an unrecognized profile name', () => {
-    const mod = createModule('bad.profile');
-    const registry = makeRegistry(['bad.profile', mod]);
-
-    expect(() =>
-      exportSchema(registry, 'bad.profile', 'json', false, false, 'not_a_real_profile'),
-    ).toThrow(InvalidInputError);
-  });
-
-  it('includes the invalid profile name in the error message', () => {
-    const mod = createModule('err.profile');
-    const registry = makeRegistry(['err.profile', mod]);
-
-    expect(() =>
-      exportSchema(registry, 'err.profile', 'json', false, false, 'bogus'),
-    ).toThrowError(/bogus/);
+  it('rejects profiles owned by protocol adapters', () => {
+    const registry = makeRegistry(['profile.demo', createModule('profile.demo')]);
+    for (const profile of ['mcp', 'openai', 'anthropic']) {
+      expect(() => exportSchema(registry, 'profile.demo', 'json', false, false, profile))
+        .toThrow("Only the 'generic' export profile is supported by Core");
+    }
   });
 });
 

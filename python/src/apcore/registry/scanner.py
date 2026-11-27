@@ -55,6 +55,34 @@ def _watched_source(
     return None
 
 
+def scan_watched_source(
+    path: Path,
+    roots: Sequence[dict[str, Any]],
+    max_depth: int,
+    follow_symlinks: bool,
+    ignore_patterns: Sequence[str],
+) -> DiscoveredModule | None:
+    """Find the first eligible watched source and metadata within the configured roots."""
+    prefixed = len(roots) > 1 or any("namespace" in r for r in roots)
+    for root_config in roots:
+        root = Path(root_config["root"])
+        source = _watched_source(path, root, max_depth, follow_symlinks, ignore_patterns)
+        if source is None:
+            continue
+        real_root = root.resolve()
+        canonical_id = str(source.relative_to(real_root).with_suffix("")).replace(os.sep, ".")
+        namespace = (root_config.get("namespace") or root.name) if prefixed else None
+        if namespace is not None:
+            canonical_id = f"{namespace}.{canonical_id}"
+        return DiscoveredModule(
+            file_path=source,
+            canonical_id=canonical_id,
+            meta_path=_companion_metadata_path(source, real_root, follow_symlinks),
+            namespace=namespace,
+        )
+    return None
+
+
 def _companion_metadata_path(module_path: Path, root: Path, follow_symlinks: bool) -> Path | None:
     candidate = module_path.with_name(f"{module_path.stem}_meta.yaml")
     if (candidate.is_symlink() and not follow_symlinks) or not candidate.is_file():

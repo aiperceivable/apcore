@@ -18,8 +18,6 @@ from pathlib import Path
 from collections.abc import Sequence
 from typing import Any, Type, TypeVar
 
-import yaml
-
 from apcore.errors import (
     ConfigBindError,
     ConfigEnvMapConflictError,
@@ -1487,6 +1485,8 @@ class Config:
         if not absolute_path.is_file():
             raise ConfigNotFoundError(config_path=str(path))
 
+        import yaml
+
         with open(absolute_path, encoding="utf-8") as f:
             try:
                 file_data = yaml.safe_load(f)
@@ -1825,6 +1825,8 @@ class Config:
             path = Path(from_file)
             if not path.is_file():
                 raise ConfigMountError(message=f"Mount file not found: {from_file}")
+            import yaml
+
             with open(path, encoding="utf-8") as f:
                 try:
                     loaded = yaml.safe_load(f)

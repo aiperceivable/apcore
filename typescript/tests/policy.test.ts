@@ -147,8 +147,8 @@ describe('ExecutionPolicy.fromObject', () => {
   it('parses an empty document', () => {
     const policy = ExecutionPolicy.fromObject({});
     expect(policy.rules).toHaveLength(0);
-    expect(policy.gateDestructive).toBe(false);
-    expect(policy.strict).toBe(false);
+    expect(policy.gateDestructive).toBe(true);
+    expect(policy.strict).toBe(true);
   });
 
   it('rejects a non-mapping', () => {
@@ -343,8 +343,8 @@ describe('Approval gate with policy', () => {
     expect(result['status']).toBe('executed');
   });
 
-  it('warns once and skips when a handler is missing (fail-loud default)', async () => {
-    const executor = new Executor({ registry: makeRegistry() });
+  it('warns once when strict mode is explicitly disabled and a handler is missing', async () => {
+    const executor = new Executor({ registry: makeRegistry(), policy: new ExecutionPolicy([], { strict: false }) });
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
       expect((await executor.call('admin.reset'))['status']).toBe('executed');
@@ -361,7 +361,7 @@ describe('Approval gate with policy', () => {
   });
 
   it('warns once about a destructive-ungated module', async () => {
-    const executor = new Executor({ registry: makeRegistry() });
+    const executor = new Executor({ registry: makeRegistry(), policy: new ExecutionPolicy([], { gateDestructive: false }) });
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
       await executor.call('orders.delete_order');
@@ -400,6 +400,7 @@ describe('Approval gate with policy', () => {
     const executor = new Executor({
       registry: makeRegistry(),
       approvalHandler: new AlwaysDenyHandler(),
+      policy: new ExecutionPolicy([], { gateDestructive: false }),
     });
     expect((await executor.call('orders.delete_order'))['status']).toBe('executed');
 
@@ -409,7 +410,7 @@ describe('Approval gate with policy', () => {
     await expect(executor.call('orders.delete_order')).rejects.toThrow(ApprovalDeniedError);
 
     executor.setPolicy(null);
-    expect((await executor.call('orders.delete_order'))['status']).toBe('executed');
+    await expect(executor.call('orders.delete_order')).rejects.toThrow(ApprovalDeniedError);
   });
 
   it('policy-gated request upholds the annotations contract', async () => {
@@ -579,7 +580,8 @@ describe('Governance events', () => {
 
   it('emits no decision event when the gate is skipped without a handler', async () => {
     const emitter = new CollectingEmitter();
-    const executor = new Executor({ registry: makeRegistry(), eventEmitter: asEmitter(emitter) });
+    const executor = new Executor({ registry: makeRegistry(),
+      policy: new ExecutionPolicy([], { strict: false }), eventEmitter: asEmitter(emitter) });
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
       await executor.call('admin.reset');

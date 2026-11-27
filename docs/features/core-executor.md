@@ -36,7 +36,7 @@ The standard strategy runs eleven steps, in this order in all three SDKs:
 
 4. **`acl_check`** — Evaluates the attached ACL for (`caller_id`, or `@external` when it is null; target module ID; Context). A denial raises `ACL_DENIED`. With no ACL attached the step allows the call. A rule carrying `approval: required` is recorded for Step 5.
 
-5. **`approval_gate`** — Engages when **any** of these requires approval: the module's `requires_approval` annotation, the registry descriptor/metadata (D-96, D-125), an ACL rule with `approval: required` ([§6.9](../spec/protocol-spec.md)), or an `ExecutionPolicy` with `gate_destructive` ([§7.9.2](../spec/protocol-spec.md)). The configured `ApprovalHandler` decides; rejected, timed-out and pending decisions raise `APPROVAL_DENIED`, `APPROVAL_TIMEOUT` and `APPROVAL_PENDING`. With no handler the gate is skipped with a warning, unless `ExecutionPolicy(strict=true)` makes it fail closed. See [Approval System](./approval-system.md).
+5. **`approval_gate`** — Evaluates the module annotation, registry metadata, policy rules, and the call's ACL approval requirement. Destructive modules require approval by default. When approval is required, a configured `ApprovalHandler` decides. Rejected, timed-out and pending decisions raise `APPROVAL_DENIED`, `APPROVAL_TIMEOUT`, and `APPROVAL_PENDING`. Without a handler, the default gate raises `APPROVAL_DENIED` before running the module. See [Approval System](./approval-system.md).
 
 6. **`middleware_before`** — Runs every middleware's `before()` in priority order; each may replace the inputs. A failure here runs the `on_error` chain. See [Middleware System](./middleware-system.md).
 

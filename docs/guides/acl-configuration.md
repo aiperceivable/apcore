@@ -85,7 +85,7 @@ acl:
 === "TypeScript"
 
     ```typescript
-    import { APCore, Config } from 'apcore-js';
+    import { APCore, Config } from 'apcore-js/full';
 
     const client = new APCore({ config: Config.load('apcore.yaml') });
     ```
@@ -131,7 +131,7 @@ Load the file yourself when you need a custom audit destination or build the `Ex
 === "TypeScript"
 
     ```typescript
-    import { ACL, APCore } from 'apcore-js';
+    import { ACL, APCore } from 'apcore-js/full';
     import type { AuditEntry } from 'apcore-js';
 
     const logDecision = (entry: AuditEntry): void => {
@@ -570,7 +570,7 @@ Python and TypeScript ACLs have a `debug` flag that logs each rule evaluation in
 === "TypeScript"
 
     ```typescript
-    import { ACL } from 'apcore-js';
+    import { ACL } from 'apcore-js/full';
 
     const acl = ACL.load('./acl/global_acl.yaml');
     acl.debug = true;
@@ -609,7 +609,7 @@ For a record of decisions rather than evaluation steps, use the audit block or a
 === "TypeScript"
 
     ```typescript
-    import { ACL } from 'apcore-js';
+    import { ACL } from 'apcore-js/full';
 
     const acl = ACL.load('./acl/global_acl.yaml');
 
@@ -1044,7 +1044,7 @@ Test the file you ship, with the decisions you expect. This checks the §9.1 fil
 
     ```typescript
     import { describe, expect, it } from 'vitest';
-    import { ACL } from 'apcore-js';
+    import { ACL } from 'apcore-js/full';
 
     const acl = ACL.load('./acl/global_acl.yaml');
 

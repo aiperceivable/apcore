@@ -200,16 +200,6 @@ class TestExportSchema:
         with pytest.raises(ModuleNotFoundError):
             export_schema(reg, "missing")
 
-    def test_profile_export(self) -> None:
-        """export_schema with profile delegates to SchemaExporter."""
-        reg = _make_registry()
-        result = export_schema(reg, "test.annotated", format="json", profile="mcp")
-        parsed = json.loads(result)
-        # MCP format has 'name' and 'inputSchema' keys
-        assert "name" in parsed
-        assert "inputSchema" in parsed
-
-
 # ---------------------------------------------------------------------------
 # get_all_schemas() / export_all_schemas() tests
 # ---------------------------------------------------------------------------

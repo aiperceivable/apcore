@@ -75,7 +75,15 @@ class HealthSummaryModule:
     output_schema: dict[str, Any] = {
         "type": "object",
         "properties": {
-            "project": {"type": "object", "description": "Project information"},
+            "project": {
+                "type": "object",
+                "description": "Project information",
+                "properties": {
+                    "name": {"type": "string", "description": "Project name"},
+                    "version": {"type": "string", "description": "Configured project version"},
+                },
+                "required": ["name"],
+            },
             "summary": {
                 "type": "object",
                 "description": "Aggregated health counts by status",
@@ -114,7 +122,6 @@ class HealthSummaryModule:
         degraded_threshold = _DEFAULT_DEGRADED_THRESHOLD
         include_healthy: bool = inputs.get("include_healthy", True)
 
-        project_name = self._get_project_name()
         module_ids = self._registry.list()
 
         modules_output: list[dict[str, Any]] = []
@@ -140,7 +147,7 @@ class HealthSummaryModule:
             )
 
         return {
-            "project": {"name": project_name},
+            "project": self._get_project_details(),
             "summary": {
                 "total_modules": len(module_ids),
                 **counts,
@@ -152,13 +159,15 @@ class HealthSummaryModule:
     # Private helpers
     # ------------------------------------------------------------------
 
-    def _get_project_name(self) -> str:
-        """Extract project name from config."""
-        if self._config is not None:
-            name = self._config.get("project.name")
-            if name:
-                return str(name)
-        return "apcore"
+    def _get_project_details(self) -> dict[str, str]:
+        """Read the current project identity and any configured version."""
+        if self._config is None:
+            return {"name": "apcore"}
+        project = {"name": str(self._config.get("project.name") or "apcore")}
+        version = self._config.get("project.version")
+        if isinstance(version, str):
+            project["version"] = version
+        return project
 
     def _get_call_counts(self, module_id: str) -> tuple[int, int]:
         """Return (total_calls, error_calls) for a module from metrics."""

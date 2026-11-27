@@ -7,26 +7,36 @@
 // is byte-identical across Python, TypeScript, and Rust SDKs.
 
 use serde::{Deserialize, Serialize};
+#[cfg(feature = "config")]
 use serde_yaml_ng as serde_yaml;
 use std::collections::HashMap;
+#[cfg(feature = "config")]
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::Arc;
 
 use crate::context::Context;
+#[cfg(feature = "config")]
 use crate::decorator::FunctionModule;
 use crate::errors::{ErrorCode, ModuleError};
+#[cfg(feature = "config")]
 use crate::module::ModuleAnnotations;
+#[cfg(feature = "config")]
 use crate::registry::registry::Registry;
+#[cfg(feature = "config")]
 use crate::schema::openai_strict::assert_openai_strict_compatible;
+#[cfg(feature = "config")]
 use crate::utils::helpers::match_glob;
 
+#[cfg(feature = "config")]
 const CURRENT_SPEC_VERSION: &str = "1.0";
 
 /// Config key naming the directory scanned for binding files (§9.1.1).
+#[cfg(feature = "config")]
 const CONFIG_KEY_BINDINGS_DIR: &str = "bindings.dir";
 
 /// Config key naming the glob binding files must match within that directory.
+#[cfg(feature = "config")]
 const CONFIG_KEY_BINDINGS_PATTERN: &str = "bindings.pattern";
 
 /// Canonical default for `bindings.dir`, from `schemas/defaults.schema.json`
@@ -48,12 +58,15 @@ const CONFIG_KEY_BINDINGS_PATTERN: &str = "bindings.pattern";
 /// pinned rather than trusted: `the_loader_default_matches_the_canonical_
 /// default_table` asserts these two constants equal `Config::default_for` for
 /// their keys, so the pair cannot drift.
+#[cfg(feature = "config")]
 const DEFAULT_BINDING_DIR: &str = "./bindings";
 
 /// Canonical default for `bindings.pattern`, from the same schemas, kept on the
 /// same terms as [`DEFAULT_BINDING_DIR`].
+#[cfg(feature = "config")]
 const DEFAULT_BINDING_PATTERN: &str = "*.binding.yaml";
 
+#[cfg(feature = "config")]
 const SUPPORTED_SPEC_VERSIONS: &[&str] = &["1.0"];
 
 /// Boxed async handler function type.
@@ -205,6 +218,7 @@ impl AutoSchemaValue {
 /// without a configuration uses — so a binding file that loaded before this
 /// type existed still loads after it.
 #[derive(Debug, Default, Clone)]
+#[cfg(feature = "config")]
 pub struct ValidationLimits {
     description_max: Option<usize>,
     documentation_max: Option<usize>,
@@ -212,6 +226,7 @@ pub struct ValidationLimits {
     require_semver: bool,
 }
 
+#[cfg(feature = "config")]
 impl ValidationLimits {
     /// Read the four keys from a [`Config`]. Unset keys stay unconstrained.
     ///
@@ -253,6 +268,7 @@ impl ValidationLimits {
     }
 
     /// Apply the configured limits to one entry. Unset limits check nothing.
+    #[cfg(feature = "config")]
     fn check(&self, entry: &BindingEntry, path: &Path) -> Result<(), ModuleError> {
         let invalid = |reason: String| {
             ModuleError::new(
@@ -318,6 +334,7 @@ impl ValidationLimits {
 /// spaces inside the pattern. It compiled, and it rejected EVERY version
 /// including valid SemVer. There is no `(?x)` flag here: whitespace in this
 /// pattern is significant, so it must contain none.
+#[cfg(feature = "config")]
 fn semver_re() -> &'static regex::Regex {
     static RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
     RE.get_or_init(|| {
@@ -391,6 +408,7 @@ pub struct BindingsFile {
 
 /// In-memory resolved schema pair for a binding.
 #[derive(Debug, Clone)]
+#[cfg(feature = "config")]
 struct ResolvedSchemas {
     input: serde_json::Value,
     output: serde_json::Value,
@@ -398,6 +416,7 @@ struct ResolvedSchemas {
 
 /// Loads and resolves module bindings from `*.binding.yaml` files.
 #[derive(Debug)]
+#[cfg(feature = "config")]
 pub struct BindingLoader {
     /// Registered binding entries keyed by `module_id`.
     bindings: HashMap<String, BindingEntry>,
@@ -409,6 +428,7 @@ pub struct BindingLoader {
     limits: ValidationLimits,
 }
 
+#[cfg(feature = "config")]
 fn read_schema_reference(
     binding_dir: &Path,
     source_path: &Path,
@@ -467,6 +487,7 @@ fn read_schema_reference(
     })
 }
 
+#[cfg(feature = "config")]
 fn reference_in_schema_root(
     reference: &Path,
     binding_root: &Path,
@@ -484,6 +505,7 @@ fn reference_in_schema_root(
         .is_some_and(|parent| reference.starts_with(parent.join("schemas")))
 }
 
+#[cfg(feature = "config")]
 impl BindingLoader {
     /// Create a new empty binding loader.
     #[must_use]
@@ -1023,6 +1045,7 @@ impl BindingLoader {
     }
 }
 
+#[cfg(feature = "config")]
 impl Default for BindingLoader {
     fn default() -> Self {
         Self::new()
@@ -1032,6 +1055,7 @@ impl Default for BindingLoader {
 /// Normalized `auto_schema` mode for an entry: `Some("permissive")`,
 /// `Some("strict")`, or `None` (absent, explicitly `false`, or invalid — the
 /// latter two are already rejected by `resolve_schemas` at ingest).
+#[cfg(feature = "config")]
 fn normalized_auto_mode(entry: &BindingEntry) -> Option<&'static str> {
     match entry.auto_schema.as_ref()?.normalize() {
         Ok(Some("strict")) => Some("strict"),
@@ -1047,6 +1071,7 @@ fn normalized_auto_mode(entry: &BindingEntry) -> Option<&'static str> {
 /// apcore-typescript `BindingSchemaInferenceFailedError`: message carries the
 /// `{file_path}: ` prefix from protocol-spec §5.12.8 and the details
 /// map carries `module_id`, `target` and `file_path`.
+#[cfg(feature = "config")]
 fn strict_inference_failed(entry: &BindingEntry, module_id: &str, reason: &str) -> ModuleError {
     let mode = normalized_auto_mode(entry).unwrap_or("implicit");
     let loc = entry
@@ -1091,6 +1116,7 @@ fn strict_inference_failed(entry: &BindingEntry, module_id: &str, reason: &str) 
 /// apcore-python and apcore-typescript emit for the same file — a message-parity
 /// divergence that no test could see, because the driver for that fixture case
 /// asserted nothing (apcore#93).
+#[cfg(feature = "config")]
 fn require_bindings_key<T>(path: &Path, bindings: Option<&T>) -> Result<(), ModuleError> {
     if bindings.is_some() {
         return Ok(());
@@ -1120,6 +1146,7 @@ fn require_bindings_key<T>(path: &Path, bindings: Option<&T>) -> Result<(), Modu
 /// separator loaded silently and failed much later as an unrelated
 /// handler-lookup miss. The message matches apcore-python's
 /// `BindingInvalidTargetError` byte for byte.
+#[cfg(feature = "config")]
 fn validate_target(target: &str) -> Result<(), ModuleError> {
     let well_formed = target
         .split_once(':')
@@ -1134,6 +1161,7 @@ fn validate_target(target: &str) -> Result<(), ModuleError> {
 }
 
 /// Detect which schema-mode fields a binding entry sets.
+#[cfg(feature = "config")]
 fn detect_modes(entry: &BindingEntry) -> Vec<String> {
     let mut modes = Vec::new();
     if entry.auto_schema.is_some() {
@@ -1174,6 +1202,7 @@ fn detect_modes(entry: &BindingEntry) -> Vec<String> {
 /// `annotations.extra`, where the executor reads it (D-11). Keeping the budget
 /// in `extra` matches the canonical wire form (§4.4.1): extension keys are not
 /// flattened onto the annotations root.
+#[cfg(feature = "config")]
 fn annotations_with_resources(
     entry: &BindingEntry,
     module_id: &str,
@@ -1185,6 +1214,7 @@ fn annotations_with_resources(
     Ok(annotations)
 }
 
+#[cfg(feature = "config")]
 fn annotations_from_value(
     module_id: &str,
     value: Option<&serde_json::Value>,
@@ -1204,6 +1234,7 @@ fn annotations_from_value(
 }
 
 /// Publish the canonical overlay and retain the Rust compatibility key.
+#[cfg(feature = "config")]
 fn apply_display_metadata(
     metadata: &mut HashMap<String, serde_json::Value>,
     display: Option<&serde_json::Value>,
@@ -1216,7 +1247,7 @@ fn apply_display_metadata(
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "config"))]
 mod tests {
 
     /// PROTOCOL_SPEC §9.1.2 requirement 6 — BOTH halves.
@@ -1644,7 +1675,7 @@ bindings:
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "config"))]
 mod bindings_dir_from_config_tests {
     //! `bindings.dir` / `bindings.pattern` reaching the loader from a
     //! **config file** (aiperceivable/apcore#114, PROTOCOL_SPEC §5.12.6).

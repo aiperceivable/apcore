@@ -145,20 +145,31 @@ pub struct PolicyDecision {
 }
 
 /// Declarative execution-time governance overrides (apcore#76 RFC pilot).
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct ExecutionPolicy {
     rules: Vec<PolicyRule>,
     /// When true, modules whose effective `destructive` annotation is true
-    /// require approval even if `requires_approval` is false — the opt-in
-    /// resolution of the destructive↔approval gap described in apcore#76.
+    /// require approval even when `requires_approval` is false. Defaults to true.
     pub gate_destructive: bool,
     /// When true, the approval gate fails closed (denies) when a module needs
-    /// approval but no `ApprovalHandler` is configured. When false (default),
-    /// the gate keeps the `PROTOCOL_SPEC` §7.4 skip behavior but logs a warning.
+    /// approval but no `ApprovalHandler` is configured. Defaults to true.
+    /// An explicit false retains the warn-and-continue behavior.
     pub strict: bool,
 }
 
+impl Default for ExecutionPolicy {
+    fn default() -> Self {
+        Self::new(Vec::new())
+    }
+}
+
 impl ExecutionPolicy {
+    pub(crate) fn effective(configured: Option<&Self>) -> &Self {
+        static DEFAULT: std::sync::LazyLock<ExecutionPolicy> =
+            std::sync::LazyLock::new(ExecutionPolicy::default);
+        configured.unwrap_or(&DEFAULT)
+    }
+
     /// Build a policy from ordered pattern-based overrides. The most specific
     /// matching rule wins (Algorithm A10 specificity); on a tie the more
     /// restrictive rule wins, then the earlier-defined rule.
@@ -166,8 +177,8 @@ impl ExecutionPolicy {
     pub fn new(rules: Vec<PolicyRule>) -> Self {
         Self {
             rules,
-            gate_destructive: false,
-            strict: false,
+            gate_destructive: true,
+            strict: true,
         }
     }
 
@@ -431,10 +442,14 @@ fn argument_shape(arguments: &serde_json::Value) -> Vec<(&str, &'static str)> {
 struct PolicyDoc {
     #[serde(default)]
     rules: Vec<RuleDoc>,
-    #[serde(default)]
+    #[serde(default = "enabled_by_default")]
     gate_destructive: bool,
-    #[serde(default)]
+    #[serde(default = "enabled_by_default")]
     strict: bool,
+}
+
+fn enabled_by_default() -> bool {
+    true
 }
 
 #[derive(Deserialize)]
@@ -505,8 +520,8 @@ mod tests {
     fn empty_document() {
         let policy = ExecutionPolicy::from_value(json!({})).unwrap();
         assert_eq!(policy.rules(), []);
-        assert!(!policy.gate_destructive);
-        assert!(!policy.strict);
+        assert!(policy.gate_destructive);
+        assert!(policy.strict);
     }
 
     #[test]

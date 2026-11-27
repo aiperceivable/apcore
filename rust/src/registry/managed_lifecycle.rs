@@ -23,6 +23,7 @@ use super::{
 
 #[path = "managed_drain.rs"]
 mod managed_drain;
+#[cfg(any(feature = "discovery", feature = "sys-modules"))]
 #[path = "managed_reload.rs"]
 mod managed_reload;
 
@@ -157,8 +158,10 @@ impl Registry {
         });
         let registry = Arc::clone(self);
         let owned = operation.clone();
+        #[cfg(feature = "discovery")]
         let watcher = self.stop_watching();
         runtime.spawn(async move {
+            #[cfg(feature = "discovery")]
             if let Some(watcher) = watcher {
                 let _ = watcher.await;
             }

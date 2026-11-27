@@ -1,4 +1,5 @@
 {
+  "profile": "events",
   "description": "Event delivery semantics — retry policy, dead-letter event, and on_failure callback (Issue #61). Verifies that all subscriber types honor the unified retry config, that permanent failure emits apcore.event.delivery_failed with the normative payload schema, and that the DLQ event itself is not retried.",
   "test_cases": [
     {
@@ -44,10 +45,8 @@
       "description": "A subscriber that fails on every attempt MUST trigger emission of apcore.event.delivery_failed after max_attempts is reached. The DLQ event payload MUST conform to the normative schema.",
       "setup": {
         "subscriber": {
-          "type": "a2a",
+          "type": "test_remote",
           "id": "remote-monitor-1",
-          "platform_url": "https://platform.example.invalid",
-          "skill_id": "myapp.event_receiver",
           "retry": {
             "max_attempts": 3,
             "initial_backoff_ms": 10
@@ -71,7 +70,7 @@
         "dlq_event": {
           "event_type": "apcore.event.delivery_failed",
           "data_contains": {
-            "subscriber_type": "a2a",
+            "subscriber_type": "test_remote",
             "subscriber_id": "remote-monitor-1",
             "attempt_count": 3,
             "original_event": {
@@ -94,9 +93,8 @@
       "description": "If a subscriber registered for apcore.event.delivery_failed itself raises, the SDK MUST log at ERROR and discard. The DLQ event MUST NOT be retried (no infinite loop).",
       "setup": {
         "primary_subscriber": {
-          "type": "a2a",
+          "type": "test_remote",
           "id": "broken-primary",
-          "platform_url": "https://platform.example.invalid",
           "retry": {
             "max_attempts": 2,
             "initial_backoff_ms": 10
@@ -179,16 +177,6 @@
           }
         },
         {
-          "type": "a2a",
-          "platform_url": "https://platform.example.invalid",
-          "retry": {
-            "max_attempts": 7,
-            "initial_backoff_ms": 250,
-            "max_backoff_ms": 10000,
-            "backoff_multiplier": 3.0
-          }
-        },
-        {
           "type": "file",
           "path": "/tmp/apcore-conformance-retry-policy.jsonl",
           "retry": {
@@ -222,12 +210,6 @@
       "expected": {
         "resolved_policy_per_type": {
           "webhook": {
-            "max_attempts": 7,
-            "initial_backoff_ms": 250,
-            "max_backoff_ms": 10000,
-            "backoff_multiplier": 3.0
-          },
-          "a2a": {
             "max_attempts": 7,
             "initial_backoff_ms": 250,
             "max_backoff_ms": 10000,

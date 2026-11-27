@@ -26,24 +26,6 @@ import {
 } from './acl-handlers.js';
 
 /**
- * Reader for an ACL YAML file. Installed by the Node-only side-effect
- * module `./acl-file.ts`; remains `null` in browser bundles so that
- * `ACL.load()` throws a clear runtime error instead of silently
- * dragging `node:fs` into the browser closure.
- */
-type AclFileLoader = (yamlPath: string, auditLogger?: AuditLogger | null) => ACL;
-let _aclFileLoader: AclFileLoader | null = null;
-
-/**
- * @internal — used by `./acl-file.ts` to install the Node-side reader.
- * Pass `null` to uninstall (used by tests that need to assert the
- * browser-side guidance error).
- */
-export function _setAclFileLoader(fn: AclFileLoader | null): void {
-  _aclFileLoader = fn;
-}
-
-/**
  * Minimal structural view of a `Config` used by `ACL.discover()`.
  *
  * Declared structurally (rather than importing the concrete `Config`
@@ -53,32 +35,6 @@ export function _setAclFileLoader(fn: AclFileLoader | null): void {
 export interface AclConfigLike {
   get(key: string, defaultValue?: unknown): unknown;
   resolvePath(value: string): string;
-}
-
-/**
- * Node-side filesystem discovery for `acl.root`. Installed by the Node-only
- * side-effect module `./acl-file.ts`; remains `null` in browser bundles so
- * that `ACL.discover()` throws a clear runtime error instead of pulling
- * `node:fs` / `node:path` into the browser closure.
- */
-type AclDiscoverer = (config: AclConfigLike) => ACL | null;
-let _aclDiscoverer: AclDiscoverer | null = null;
-
-/**
- * @internal — used by `./acl-file.ts` to install the Node-side discoverer.
- * Pass `null` to uninstall (parity with `_setAclFileLoader`).
- */
-export function _setAclDiscoverer(fn: AclDiscoverer | null): void {
-  _aclDiscoverer = fn;
-}
-
-/**
- * @internal — true when the Node-side ACL discoverer has been installed.
- * Lets the `APCore` bootstrap skip `ACL.discover()` in browser bundles
- * (where the discoverer is never wired) instead of triggering its throw.
- */
-export function _isAclDiscovererInstalled(): boolean {
-  return _aclDiscoverer !== null;
 }
 
 /**
@@ -712,7 +668,7 @@ function precheckRule(rule: ACLRule, mode: EvaluationPath): RuleFault[] {
   return faults;
 }
 
-/** @internal — exported so `./acl-file.ts` can reuse the parser. */
+/** @internal — exported so `./acl-yaml.ts` can reuse the parser. */
 /**
  * The complete set of keys an ACL rule may carry (PROTOCOL_SPEC §6.1).
  *
@@ -775,7 +731,7 @@ function rejectInvalidEffect(effect: unknown, index: number): void {
  * rule is what stops `ACL.load()` naming rule 0 while `new ACL([...], 'Allow')`
  * names `default_effect` for the same content.
  *
- * @internal — exported for `./acl-file.ts`, which must run it *before* parsing
+ * @internal — exported for `./acl-yaml.ts`, which must run it *before* parsing
  *   any rule. The constructor runs it too, so the check exists once.
  */
 export function _rejectInvalidDefaultEffect(defaultEffect: unknown): void {
@@ -1502,7 +1458,7 @@ export class ACL {
 
   private _rules: ACLRule[];
   private _defaultEffect: string;
-  private _yamlPath: string | null = null;
+  private _reloadFromFile: (() => ACL) | null = null;
   private _auditLogger: AuditLogger | null = null;
   private _auditConfig: AuditConfig | null = null;
   private _auditSink: AuditSink = new AuditSink(null, null);
@@ -1696,49 +1652,17 @@ export class ACL {
     }
   }
 
-  static load(yamlPath: string, auditLogger?: AuditLogger | null): ACL {
-    if (_aclFileLoader === null) {
-      throw new ACLRuleError(
-        'ACL.load(yamlPath) requires the Node entry of apcore-js. The browser ' +
-          'build does not bundle the file reader. Construct ACL programmatically ' +
-          'with `new ACL([...rules])` instead.',
-      );
-    }
-    return _aclFileLoader(yamlPath, auditLogger ?? null);
+  static load(_yamlPath: string, _auditLogger?: AuditLogger | null): ACL {
+    throw new ACLRuleError('ACL file loading requires the apcore-js/config subpath');
   }
 
-  /**
-   * Config-driven ACL discovery (D-64 / issue #74).
-   *
-   * Reads `acl.root` from `config` (defaulting to `"./acl"` when unset),
-   * resolves it against the configuration's project root and loads the ACL
-   * from that directory if it exists.
-   *
-   * Returns `null` when the resolved path does NOT exist. A missing path
-   * MUST NOT synthesize an empty default-deny ACL: an empty ACL would deny
-   * every inter-module call in every project lacking an `acl/` directory, a
-   * silent and severe break. Missing path = no enforcement, identical to a
-   * project that never configured an ACL. `acl.default_effect` only takes
-   * effect once an ACL is actually loaded from a file.
-   *
-   * Node-only: filesystem access lives on `./acl-file.ts`. In browser
-   * bundles the discoverer is never installed and this throws a clear
-   * runtime error (parity with {@link ACL.load}).
-   */
-  static discover(config: AclConfigLike): ACL | null {
-    if (_aclDiscoverer === null) {
-      throw new ACLRuleError(
-        'ACL.discover(config) requires the Node entry of apcore-js. The browser ' +
-          'build does not bundle the filesystem discoverer. Construct ACL ' +
-          'programmatically with `new ACL([...rules])` instead.',
-      );
-    }
-    return _aclDiscoverer(config);
+  static discover(_config: AclConfigLike): ACL | null {
+    throw new ACLRuleError('ACL file discovery requires the apcore-js/config subpath');
   }
 
-  /** @internal — used by `./acl-file.ts` to set `_yamlPath` after parsing. */
-  _setYamlPath(yamlPath: string): void {
-    this._yamlPath = yamlPath;
+  /** @internal File loader attached by the Node configuration entry point. */
+  _setFileReload(reloadFromFile: () => ACL): void {
+    this._reloadFromFile = reloadFromFile;
   }
 
   /**
@@ -2350,14 +2274,14 @@ export class ACL {
   }
 
   reload(): void {
-    if (this._yamlPath === null) {
+    if (this._reloadFromFile === null) {
       throw new ACLRuleError('Cannot reload: ACL was not loaded from a YAML file');
     }
     // The callback is NOT passed here: `reload` preserves the one this
     // instance already has (requirement 7), and handing it to the temporary
     // would emit requirement 1's override notice a second time for a
     // configuration the caller has already been told about.
-    const reloaded = ACL.load(this._yamlPath);
+    const reloaded = this._reloadFromFile();
     this._rules = reloaded._rules;
     this._defaultEffect = reloaded._defaultEffect;
     // §6.3.2 requirement 7: a reload refreshes the `audit:` block and PRESERVES

@@ -92,7 +92,7 @@ TypeScript uses camelCase field names (`moduleId`, `aiGuidance`, `firstOccurred`
 
 === "TypeScript"
     ```typescript
-    import { ErrorHistory, ErrorHistoryMiddleware, ModuleError } from "apcore-js";
+    import { ErrorHistory, ErrorHistoryMiddleware, ModuleError } from "apcore-js/full";
 
     const history = new ErrorHistory({ maxEntriesPerModule: 50, maxTotalEntries: 1000 });
 
@@ -177,7 +177,7 @@ Every SDK exports the two functions, so you can compute a fingerprint without re
 
 === "TypeScript"
     ```typescript
-    import { computeFingerprint, normalizeMessage } from "apcore-js";
+    import { computeFingerprint, normalizeMessage } from "apcore-js/full";
 
     const message =
       "Order 48213 failed at 2026-09-16T10:30:00Z (request a1b2c3d4-e5f6-7890-abcd-ef1234567890)";

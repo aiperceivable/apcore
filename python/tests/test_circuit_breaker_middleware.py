@@ -87,7 +87,7 @@ def test_circuit_breaker_state_exported_from_top_level() -> None:
     )
 
     assert apcore.CircuitBreakerState is MiddlewareState
-    assert "CircuitBreakerState" in apcore.__all__
+    assert hasattr(apcore, "CircuitBreakerState")
 
 
 def test_circuit_breaker_state_has_expected_members() -> None:

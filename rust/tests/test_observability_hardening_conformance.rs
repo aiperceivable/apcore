@@ -20,8 +20,9 @@ use serde_json::Value;
 
 use apcore::errors::{ErrorCode, ModuleError};
 use apcore::observability::{
-    compute_fingerprint, normalize_message, BatchSpanProcessor, ErrorHistory, InMemoryExporter,
-    MetricsCollector, PrometheusExporter, RedactionConfig, Span, SpanExporter, SpanProcessor,
+    compute_fingerprint, normalize_message, render_prometheus_metrics, BatchSpanProcessor,
+    ErrorHistory, InMemoryExporter, MetricsCollector, RedactionConfig, Span, SpanExporter,
+    SpanProcessor,
 };
 
 // ---------------------------------------------------------------------------
@@ -430,8 +431,7 @@ fn case_prometheus_format_includes_required_metrics() {
         }
     }
 
-    let exporter = PrometheusExporter::new(collector);
-    let body = exporter.export();
+    let body = render_prometheus_metrics(&collector, None);
 
     for required in case["expected"]["output_contains"].as_array().unwrap() {
         let name = required.as_str().unwrap();

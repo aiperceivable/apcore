@@ -105,7 +105,7 @@ The Extension System provides a pluggable architecture for customizing and exten
     ```
 === "TypeScript"
     ```typescript
-    import { ExtensionManager } from "apcore-js";
+    import { ExtensionManager } from "apcore-js/full";
 
     const manager = new ExtensionManager();
 

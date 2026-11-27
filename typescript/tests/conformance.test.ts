@@ -57,6 +57,8 @@ import { SchemaValidator } from '../src/schema/validator.js';
 import type { SchemaDefinition } from '../src/schema/types.js';
 import type { TSchema } from '@sinclair/typebox';
 import { deepMergeChunk } from '../src/executor.js';
+import { APCore as CoreProfile, Registry as CoreRegistry } from '../src/core.js';
+import { ExecutionPolicy, PolicyRule } from '../src/policy.js';
 import {
   createAnnotations,
   annotationsToJSON,
@@ -78,8 +80,6 @@ import {
 } from '../src/events/index.js';
 import type { ApCoreEvent, EventSubscriber } from '../src/events/index.js';
 import {
-  registerSubscriberType,
-  resetSubscriberRegistry,
   createSubscriberFromConfig,
   registerSysModules,
 } from '../src/sys-modules/registration.js';
@@ -98,7 +98,7 @@ import {
 } from '../src/middleware/index.js';
 // Public export name (audit D2-001): middleware circuit-breaker state enum is
 // publicly exported as `CircuitBreakerState` for cross-SDK parity (matches apcore-rust).
-import { CircuitBreakerState } from '../src/index.js';
+import { CircuitBreakerState } from '../src/full.js';
 import {
   AsyncTaskManager,
   TaskStatus,
@@ -109,7 +109,7 @@ import type { TaskStore } from '../src/async-task.js';
 import { Executor } from '../src/executor.js';
 import { InMemoryOverridesStore } from '../src/sys-modules/overrides.js';
 import { Registry } from '../src/registry/registry.js';
-import { APCore } from '../src/client.js';
+import { APCore } from '../src/full.js';
 import { ManifestFullModule } from '../src/sys-modules/manifest.js';
 import { HealthSummaryModule } from '../src/sys-modules/health.js';
 import { FunctionModule } from '../src/decorator.js';
@@ -125,7 +125,7 @@ import {
   createSpan,
   TracingMiddleware,
   MetricsCollector,
-  PrometheusExporter,
+  renderPrometheusMetrics,
   RedactionConfig,
 } from '../src/observability/index.js';
 import { DEFAULT_REDACTION_FIELD_PATTERNS } from '../src/observability/context-logger.js';
@@ -1087,7 +1087,8 @@ describe('apcore Conformance Suite (TypeScript)', () => {
           }
         }
 
-        const gate = new BuiltinApprovalGate(handler);
+        const policy = tc.execution_policy ? ExecutionPolicy.fromObject(tc.execution_policy) : null;
+        const gate = new BuiltinApprovalGate(handler, policy);
 
         const mod: Record<string, unknown> = {
           annotations: {
@@ -1142,6 +1143,62 @@ describe('apcore Conformance Suite (TypeScript)', () => {
         if ('resume_arguments' in tc.expected) expect(resumeArguments).toEqual(tc.expected.resume_arguments);
       });
     });
+  });
+
+  // --- core_profile_governance ---
+  describe('Core profile governance', () => {
+    const governanceFixture = loadFixture('core_profile_governance');
+    const moduleId = 'governance.review';
+
+    for (const { id, input, expected } of governanceFixture.test_cases) {
+      it(id, async () => {
+        const source = input.approval_source;
+        const acl = source === 'acl' ? new ACL([{
+          callers: ['@external'],
+          targets: [moduleId],
+          effect: 'allow',
+          approval: 'required',
+          description: 'Request approval for the review module',
+        }], 'deny') : undefined;
+        const rules = source === 'policy_rule'
+          ? [new PolicyRule(moduleId, { requiresApproval: true })]
+          : [];
+        const policy = input.execution_policy
+          ? ExecutionPolicy.fromObject(input.execution_policy)
+          : rules.length ? new ExecutionPolicy(rules) : undefined;
+        const executor = input.client === 'injected_executor'
+          ? new Executor({ registry: new CoreRegistry(), acl, policy })
+          : undefined;
+        const client = new CoreProfile({ executor, policy });
+        if (acl) client.executor.setAcl(acl);
+        let executions = 0;
+        await client.register(moduleId, {
+          description: 'Review a pending change',
+          annotations: createAnnotations({
+            requiresApproval: source === 'annotation',
+            destructive: source === 'destructive',
+          }),
+          inputSchema: { type: 'object' },
+          outputSchema: { type: 'object' },
+          execute: () => {
+            executions += 1;
+            return {};
+          },
+        });
+
+        const preflight = await client.validate(moduleId, {});
+        expect(preflight.requiresApproval).toBe(expected.requires_approval);
+        if (expected.error_code === null) {
+          await expect(client.call(moduleId, {})).resolves.toEqual({});
+        } else {
+          await expect(client.call(moduleId, {})).rejects.toMatchObject({ code: expected.error_code });
+          await expect(client.stream(moduleId, {}).next()).rejects.toMatchObject({
+            code: expected.error_code,
+          });
+        }
+        expect(executions).toBe(expected.executions);
+      });
+    }
   });
 
   // --- binding_errors / binding_yaml_canonical ---
@@ -1828,12 +1885,7 @@ describe('apcore Conformance Suite (TypeScript)', () => {
   }
 
   describe('Event Management Hardening (Issue #36)', () => {
-    beforeEach(() => {
-      resetSubscriberRegistry();
-    });
-
     afterEach(() => {
-      resetSubscriberRegistry();
       vi.useRealTimers();
     });
 
@@ -1854,11 +1906,10 @@ describe('apcore Conformance Suite (TypeScript)', () => {
         async onEvent(_event: ApCoreEvent): Promise<void> {}
       }
 
-      for (const typeName of tc.input.registered_types as string[]) {
-        registerSubscriberType(typeName, () => new RegisteredSubscriber(typeName));
-      }
-
-      const subscriber = createSubscriberFromConfig(tc.input.subscriber_config);
+      const factories = Object.fromEntries((tc.input.registered_types as string[]).map(
+        (typeName) => [typeName, () => new RegisteredSubscriber(typeName)],
+      ));
+      const subscriber = createSubscriberFromConfig(tc.input.subscriber_config, factories);
       expect(subscriber !== null && subscriber !== undefined).toBe(
         tc.expected.subscriber_created,
       );
@@ -1903,14 +1954,12 @@ describe('apcore Conformance Suite (TypeScript)', () => {
         },
       };
 
-      registerSubscriberType('mock_passthrough', () => mockDelegate);
-
       const subscriber = createSubscriberFromConfig({
         type: 'filter',
         delegate_type: 'mock_passthrough',
         delegate_config: {},
         include_events: tc.input.subscriber_config.include_events,
-      }) as FilterSubscriber;
+      }, { mock_passthrough: () => mockDelegate }) as FilterSubscriber;
 
       const event = makeTestEvent({
         eventType: tc.input.event.event_type,
@@ -1945,8 +1994,6 @@ describe('apcore Conformance Suite (TypeScript)', () => {
             deliveryAttempted = true;
           },
         };
-        registerSubscriberType('mock_passthrough', () => mockDelegate);
-
         const subscriber = createSubscriberFromConfig({
           type: 'filter',
           delegate_type: 'mock_passthrough',
@@ -1957,7 +2004,7 @@ describe('apcore Conformance Suite (TypeScript)', () => {
           ...(tc.input.subscriber_config.exclude_events !== undefined
             ? { exclude_events: tc.input.subscriber_config.exclude_events }
             : {}),
-        }) as FilterSubscriber;
+        }, { mock_passthrough: () => mockDelegate }) as FilterSubscriber;
 
         await subscriber.onEvent(
           makeTestEvent({
@@ -1998,14 +2045,12 @@ describe('apcore Conformance Suite (TypeScript)', () => {
         },
       };
 
-      registerSubscriberType('mock_sink', () => mockDelegate);
-
       const subscriber = createSubscriberFromConfig({
         type: 'filter',
         delegate_type: 'mock_sink',
         delegate_config: {},
         include_events: tc.input.subscriber_config.include_events,
-      }) as FilterSubscriber;
+      }, { mock_sink: () => mockDelegate }) as FilterSubscriber;
 
       const event = makeTestEvent({
         eventType: tc.input.event.event_type,
@@ -2922,8 +2967,7 @@ describe('apcore Conformance Suite (TypeScript)', () => {
         collector.observe('apcore_module_duration_seconds', { module_id: 'test' }, obs);
       }
 
-      const exporter = new PrometheusExporter({ collector });
-      const output = exporter.export();
+      const output = renderPrometheusMetrics(collector);
 
       for (const metric of tc.expected.output_contains) {
         expect(output).toContain(metric);
@@ -3592,10 +3636,8 @@ describe('apcore Conformance Suite (TypeScript)', () => {
       }
 
       const collector = new MetricsCollector();
-      const exporter = new PrometheusExporter({ collector, usageCollector });
-
       const start = Date.now();
-      const output = exporter.export();
+      const output = renderPrometheusMetrics(collector, usageCollector);
       const elapsed = Date.now() - start;
 
       expect(elapsed).toBeLessThan(tc['expected']['export_within_timeout_ms']);

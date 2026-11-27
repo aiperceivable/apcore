@@ -5,7 +5,9 @@ use std::cmp::Ordering;
 
 use crate::errors::{ErrorCode, ModuleError, VersionIncompatibleError};
 
+#[cfg(feature = "config")]
 const CURRENT_DOCUMENT_VERSION: &str = "2.1.0";
+#[cfg(feature = "config")]
 const LEGACY_DOCUMENT_VERSION: &str = "1.66.0";
 const DEPRECATION_THRESHOLD: u64 = 2;
 
@@ -176,6 +178,7 @@ pub fn negotiate_version(declared_version: &str, sdk_version: &str) -> Result<St
 }
 
 /// Check file compatibility while preserving the declared version on the document.
+#[cfg(feature = "config")]
 pub(crate) fn negotiate_document_version(declared: &str) -> Result<(), ModuleError> {
     let declared = declared.trim();
     // Early configuration examples used a short major.minor version.

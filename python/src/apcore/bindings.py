@@ -11,7 +11,6 @@ import pathlib
 import re
 from typing import Any, Callable
 
-import yaml
 from pydantic import BaseModel
 
 from apcore.config import Config
@@ -276,6 +275,8 @@ class BindingLoader:
             raise BindingFileInvalidError(file_path=file_path, reason=str(exc)) from exc
         binding_file_dir = resolved_binding.parent
         schema_loader = SchemaLoader(config if config is not None else Config(), schemas_dir=binding_file_dir)
+
+        import yaml
 
         try:
             data = yaml.safe_load(content)
@@ -546,6 +547,8 @@ class BindingLoader:
 
         # Mode 2: external reference
         if "schema_ref" in binding:
+            import yaml
+
             ref_path = _schema_ref_path(binding["schema_ref"], binding_file_dir, config, file_path)
             try:
                 ref_data = yaml.safe_load(ref_path.read_text(encoding="utf-8"))

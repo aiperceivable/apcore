@@ -7,13 +7,9 @@ import dataclasses
 import json
 from typing import TYPE_CHECKING, Any
 
-import yaml
-
 from apcore.errors import ModuleNotFoundError
 from apcore.module import ModuleAnnotations, ModuleExample
-from apcore.schema.exporter import SchemaExporter
 from apcore.schema.strict import _strip_extensions, to_strict_schema
-from apcore.schema.types import ExportProfile, SchemaDefinition
 
 if TYPE_CHECKING:
     from apcore.registry.registry import Registry
@@ -58,7 +54,6 @@ def export_schema(
     format: str = "json",
     strict: bool = False,
     compact: bool = False,
-    profile: str | None = None,
 ) -> str:
     """Export a single module's schema as a JSON or YAML string.
 
@@ -67,9 +62,6 @@ def export_schema(
     schema_dict = get_schema(registry, module_id)
     if schema_dict is None:
         raise ModuleNotFoundError(module_id=module_id)
-
-    if profile is not None:
-        return _export_with_profile(registry, module_id, schema_dict, profile, format)
 
     result = copy.deepcopy(schema_dict)
 
@@ -97,7 +89,6 @@ def export_all_schemas(
     format: str = "json",
     strict: bool = False,
     compact: bool = False,
-    profile: str | None = None,
 ) -> str:
     """Export all module schemas as a combined JSON or YAML string."""
     all_schemas = get_all_schemas(registry)
@@ -116,36 +107,6 @@ def export_all_schemas(
 
 
 # ----- Helpers -----
-
-
-def _export_with_profile(
-    registry: Registry,
-    module_id: str,
-    schema_dict: dict[str, Any],
-    profile: str,
-    format: str,
-) -> str:
-    """Export using SchemaExporter with a specific profile."""
-    schema_def = SchemaDefinition(
-        module_id=module_id,
-        description=schema_dict["description"],
-        input_schema=schema_dict["input_schema"],
-        output_schema=schema_dict["output_schema"],
-        definitions={},
-    )
-    module = registry.get(module_id)
-    annotations = getattr(module, "annotations", None) if module else None
-    examples = getattr(module, "examples", []) if module else []
-    name = getattr(module, "name", None) if module else None
-
-    exported = SchemaExporter().export(
-        schema_def,
-        profile=ExportProfile(profile),
-        annotations=annotations,
-        examples=examples,
-        name=name,
-    )
-    return _serialize(exported, format)
 
 
 def _apply_compact(schema_dict: dict[str, Any]) -> None:
@@ -185,5 +146,7 @@ def _truncate_description(description: str) -> str:
 def _serialize(data: Any, format: str) -> str:
     """Serialize data to JSON or YAML string."""
     if format == "yaml":
+        import yaml
+
         return yaml.dump(data, default_flow_style=False)
     return json.dumps(data, indent=2)

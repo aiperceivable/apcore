@@ -1,35 +1,11 @@
 /**
- * Browser-safe subset of apcore-js.
- *
- * This entry exposes only the runtime symbols whose module-load and
- * runtime behaviour do not depend on any Node.js built-in (`node:fs`,
- * `node:path`, `node:os`, `node:crypto`, `node:process`). It is selected
- * automatically by bundlers via `package.json` `exports.browser`, so
- * consumer code keeps writing `import { ... } from 'apcore-js'` regardless
- * of target.
- *
- * The default Node entry (`src/index.ts`) re-exports a strict superset.
- * Adding any Node-only symbol here defeats the purpose of this file —
- * `tests/browser-entry.test.ts` walks the transitive import graph from
- * this file and fails CI if any `node:*` reference leaks in.
- *
- * Excluded from this entry (call them from the Node entry only):
- *   - Config / discoverConfigFile / DEFAULTS-aware Config.load (filesystem)
- *   - BindingLoader (loads YAML from disk)
- *   - SchemaLoader / RefResolver (load schemas from disk)
- *   - Registry directory scanning and watching. In-memory registry operations
- *     such as register, get, has and list are supported.
- *   - sys-modules `registerSysModules` overridesPath file loader
- *
- * If you reach for one of those in browser code, expose the equivalent
- * data programmatically (e.g. `new Registry()` + `register(...)`,
- * `new ACL([...])`, `jsonSchemaToTypeBox(yourSchema)`) — that is the
- * supported path for in-browser apcore-js use.
+ * Portable runtime exports shared by the default entry and the core subpath.
+ * Filesystem discovery, YAML config, and system modules use explicit Node entry points.
  */
 
 // ---- Client / runtime core -----------------------------------------------
 export { APCore } from '../client.js';
-export type { APCoreOptions, ModuleOptions } from '../client.js';
+export type { APCoreOptions, APCorePlugin, ModuleOptions } from '../client.js';
 export type { DrainAbortedContext, DrainAbortReason, DrainContext, LifecycleError, LifecycleEventFlush, LifecycleModuleReport, LifecycleOperation, LifecycleReport, LifecycleStatus, ShutdownOptions, UnregisterOptions, WatchOptions } from '../lifecycle.js';
 
 export { Executor, REDACTED_VALUE } from '../executor.js';

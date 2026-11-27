@@ -44,7 +44,7 @@ A module's metadata should guide an AI agent through each stage of using it:
 - `x-common-mistakes`: pitfalls callers run into
 - `x-workflow-hints`: steps that usually come before or after
 
-**3. Governance — declare the risk.** Set `destructive: true` for irreversible operations and `requires_approval: true` for operations a human must confirm (spending money, deleting data). The executor's approval gate then asks your `ApprovalHandler` before the module runs; with no handler configured the gate is skipped with a warning. See the [Approval Flow cookbook](./cookbook-approval-flow.md).
+**3. Governance.** Set `destructive: true` for irreversible operations and `requires_approval: true` for operations that need confirmation. The default gate requires an `ApprovalHandler` for either annotation and denies the call before running the module when the handler is absent. See the [Approval Flow cookbook](./cookbook-approval-flow.md).
 
 **4. Recovery — say what to do next.** When a module fails, `message` says what happened and `ai_guidance` says what the agent should do about it:
 
@@ -1877,7 +1877,7 @@ my-project/
 === "TypeScript"
 
     ```typescript
-    import { APCore, BindingLoader, Config } from 'apcore-js';
+    import { APCore, BindingLoader, Config } from 'apcore-js/full';
 
     const config = Config.load('apcore.yaml');
     const client = new APCore({ config });

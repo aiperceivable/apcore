@@ -16,6 +16,7 @@ from pydantic import BaseModel, ConfigDict
 
 from apcore import ExecutionPolicy, PolicyDecision, PolicyRule
 from apcore.approval import AlwaysDenyHandler, ApprovalRequest, ApprovalResult, AutoApproveHandler
+from apcore.builtin_steps import build_standard_strategy
 from apcore.context import Context
 from apcore.errors import ApprovalDeniedError
 from apcore.executor import Executor
@@ -95,6 +96,19 @@ def registry() -> Registry:
     return reg
 
 
+@pytest.mark.parametrize("strict", [True, False])
+def test_prebuilt_strategy_retains_its_policy_for_preflight_and_execution(registry: Registry, strict: bool) -> None:
+    strategy = build_standard_strategy(registry=registry, policy=ExecutionPolicy(strict=strict, gate_destructive=True))
+    with Executor(registry, strategy=strategy) as executor:
+        assert executor.validate("orders.delete_order").requires_approval
+        assert executor.governance_state().policy_strict is strict
+        if strict:
+            with pytest.raises(ApprovalDeniedError):
+                executor.call("orders.delete_order")
+        else:
+            assert executor.call("orders.delete_order") == {"status": "executed"}
+
+
 # ---------------------------------------------------------------------------
 # PolicyRule validation
 # ---------------------------------------------------------------------------
@@ -151,8 +165,8 @@ class TestFromDict:
     def test_empty_document(self) -> None:
         policy = ExecutionPolicy.from_dict({})
         assert policy.rules == ()
-        assert policy.gate_destructive is False
-        assert policy.strict is False
+        assert policy.gate_destructive is True
+        assert policy.strict is True
 
     def test_non_mapping_rejected(self) -> None:
         with pytest.raises(ValueError, match="mapping"):
@@ -320,8 +334,8 @@ class TestApprovalGateWithPolicy:
         assert result["status"] == "executed"
 
     def test_no_handler_warns_once_and_skips(self, registry: Registry, caplog: pytest.LogCaptureFixture) -> None:
-        """Fail-loud default: requires_approval without a handler skips per spec but warns once."""
-        executor = Executor(registry=registry)
+        """Explicit compatibility warns once before continuing without a handler."""
+        executor = Executor(registry=registry, policy=ExecutionPolicy(strict=False))
         with caplog.at_level(logging.WARNING, logger="apcore.builtin_steps"):
             result = executor.call("admin.reset")
             assert result["status"] == "executed"
@@ -333,7 +347,7 @@ class TestApprovalGateWithPolicy:
         assert "admin.reset" in warnings[0].getMessage()
 
     def test_destructive_ungated_warns_once(self, registry: Registry, caplog: pytest.LogCaptureFixture) -> None:
-        executor = Executor(registry=registry)
+        executor = Executor(registry=registry, policy=ExecutionPolicy(gate_destructive=False))
         with caplog.at_level(logging.WARNING, logger="apcore.builtin_steps"):
             executor.call("orders.delete_order")
             executor.call("orders.delete_order")
@@ -376,7 +390,9 @@ class TestApprovalGateWithPolicy:
         assert [r for r in caplog.records if "Policy override" in r.message] == []
 
     def test_set_policy_at_runtime(self, registry: Registry) -> None:
-        executor = Executor(registry=registry, approval_handler=AlwaysDenyHandler())
+        executor = Executor(
+            registry=registry, approval_handler=AlwaysDenyHandler(), policy=ExecutionPolicy(gate_destructive=False)
+        )
         assert executor.call("orders.delete_order")["status"] == "executed"
 
         executor.set_policy(ExecutionPolicy([PolicyRule("orders.delete_*", requires_approval=True)]))
@@ -384,7 +400,8 @@ class TestApprovalGateWithPolicy:
             executor.call("orders.delete_order")
 
         executor.set_policy(None)
-        assert executor.call("orders.delete_order")["status"] == "executed"
+        with pytest.raises(ApprovalDeniedError):
+            executor.call("orders.delete_order")
 
     def test_policy_gated_request_upholds_annotations_contract(self, registry: Registry) -> None:
         """ApprovalRequest.annotations must keep the 'requires_approval is guaranteed
@@ -518,7 +535,7 @@ class TestGovernanceEvents:
         """Non-strict skip (spec §7.4) emits no decision event — parity with the
         'no audit log when gate skipped' contract."""
         emitter = CollectingEmitter()
-        executor = Executor(registry=registry, event_emitter=emitter)
+        executor = Executor(registry=registry, event_emitter=emitter, policy=ExecutionPolicy(strict=False))
         executor.call("admin.reset")
         assert emitter.of_type("apcore.approval.decision") == []
 
@@ -629,10 +646,8 @@ class TestGovernanceFlagsAreNotCoerced:
 
     @pytest.mark.parametrize("key", ["gate_destructive", "strict"])
     def test_absent_and_null_mean_the_documented_default(self, key: str) -> None:
-        # Parity with apcore-typescript `_requireBoolean`: undefined/null are
-        # "unset" and take the documented default of False, not an error.
-        assert getattr(ExecutionPolicy.from_dict({}), key) is False
-        assert getattr(ExecutionPolicy.from_dict({key: None}), key) is False
+        assert getattr(ExecutionPolicy.from_dict({}), key) is True
+        assert getattr(ExecutionPolicy.from_dict({key: None}), key) is True
 
 
 # ---------------------------------------------------------------------------

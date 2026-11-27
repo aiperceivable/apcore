@@ -12,7 +12,7 @@ apcore instruments module calls through ordinary middleware, so observability pl
 |---|---|---|
 | Tracing — spans, sampling, exporters, processors, W3C propagation | `TracingMiddleware`, `BatchSpanProcessor`, `TraceContext` | this page |
 | Structured logging | `ContextLogger`, `ObsLoggingMiddleware` | this page |
-| Metrics, usage analytics, Prometheus, storage backends | `MetricsCollector`, `UsageCollector`, `PrometheusExporter`, `StorageBackend` | [Metrics and Usage](./metrics-and-usage.md) |
+| Metrics, usage analytics, Prometheus text, storage backends | `MetricsCollector`, `UsageCollector`, Prometheus renderer, `StorageBackend` | [Metrics and Usage](./metrics-and-usage.md) |
 | Recent-error tracking and fingerprints | `ErrorHistory`, `ErrorHistoryMiddleware` | [Error History](./error-history.md) |
 | Secret redaction in logs and captured I/O | `x-sensitive`, `obs.redaction.*`, `RedactionConfig` | [Redaction](./redaction.md) |
 
@@ -99,7 +99,7 @@ Or build the stack yourself. Register the middlewares outermost first — tracin
       MetricsMiddleware,
       ObsLoggingMiddleware,
       TracingMiddleware,
-    } from "apcore-js";
+    } from "apcore-js/full";
 
     const exporter = new InMemoryExporter();
     const metrics = new MetricsCollector();
@@ -306,7 +306,7 @@ Python passes a processor straight to `TracingMiddleware(processor=…)`. In Rus
 
 === "TypeScript"
     ```typescript
-    import { BatchSpanProcessor, OTLPExporter, TracingMiddleware } from "apcore-js";
+    import { BatchSpanProcessor, OTLPExporter, TracingMiddleware } from "apcore-js/full";
 
     const processor = new BatchSpanProcessor({
       exporter: new OTLPExporter({ endpoint: "http://otel-collector:4318/v1/traces" }),

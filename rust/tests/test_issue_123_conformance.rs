@@ -1,4 +1,4 @@
-//! Public-path drivers for apcore#123: §2.5.1, §4.17, §5.12, §9.8.2,
+//! Public-path drivers for apcore#123: §2.5.1, §5.12, §9.8.2,
 //! §12.7.5 and §12.8. Canonical fixtures remain the source of expectations.
 
 use std::collections::{BTreeSet, HashMap};
@@ -11,9 +11,7 @@ use apcore::cancel::CancelToken;
 use apcore::config::{Config, EnvStyle, NamespaceRegistration};
 use apcore::errors::ModuleError;
 use apcore::module::{Change, ChunkStream, ModuleAnnotations, PreviewResult, StreamingModule};
-use apcore::registry::{DefaultDiscoverer, ModuleDescriptor};
-use apcore::schema::exporter::{ExportProfile, SchemaExporter};
-use apcore::schema::SchemaDefinition;
+use apcore::registry::DefaultDiscoverer;
 use apcore::{ACLRule, Context, Executor, Module, Registry, ACL};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -63,11 +61,11 @@ fn test_conformance_declaration_matches_current_version_and_fixture_scope() {
     assert_eq!(declaration["implementation"]["spec_version"], "1.65.0");
     let results = &declaration["conformance"]["fixture_results"];
     let names = strings(&results["fixture_names"]);
-    assert_eq!(names.len(), 9);
+    assert_eq!(names.len(), 8);
     assert!(names.iter().any(|name| name == "canonicalize_name"));
     assert_eq!(json!(names.len()), results["fixtures"]);
     let count: usize = names.iter().map(|name| cases(&fixture(name)).len()).sum();
-    assert_eq!(count, 79);
+    assert_eq!(count, 74);
     assert_eq!(json!(count), results["cases"]);
     assert_eq!(results["passed"], results["cases"]);
     assert_eq!(results["failed"], 0);
@@ -225,149 +223,6 @@ fn conformance_binding_file_validation() {
             assert_eq!(json!(registry.module_ids()), case["expected"]["module_ids"]);
         }
     });
-}
-
-#[test]
-fn conformance_export_profiles() {
-    let fx = fixture("export_profiles");
-    run_cases!(fx, case, {
-        keys(
-            &case["expected"],
-            &["paths", "absent_paths", "no_x_keywords_under"],
-        );
-        let mut contract = fx["module_contract"].clone();
-        contract["annotations"] = case["input"]["annotations"].clone();
-        let descriptor: ModuleDescriptor = serde_json::from_value(contract.clone()).unwrap();
-        let registry = Registry::new();
-        let id = contract["module_id"].as_str().unwrap();
-        registry
-            .register(
-                id,
-                Box::new(FixtureModule {
-                    contract: contract.clone(),
-                    options: json!({}),
-                }),
-                descriptor,
-            )
-            .unwrap();
-        let descriptor = registry.get_definition(id).unwrap().unwrap();
-        let definition = SchemaDefinition {
-            module_id: descriptor.module_id,
-            description: descriptor.description,
-            input_schema: descriptor.input_schema,
-            output_schema: descriptor.output_schema,
-            error_schema: None,
-            definitions: None,
-            version: None,
-        };
-        let profile: ExportProfile =
-            serde_json::from_value(case["input"]["profile"].clone()).unwrap();
-        let typed = SchemaExporter::new()
-            .export_def(
-                &definition,
-                profile,
-                descriptor.annotations.as_ref(),
-                None,
-                None,
-            )
-            .unwrap();
-        let mut raw = contract.clone();
-        raw["name"] = json!(if profile == ExportProfile::Mcp {
-            id.to_string()
-        } else {
-            id.replace('.', "_")
-        });
-        let raw = SchemaExporter::new().export(&raw, profile, None).unwrap();
-        for exported in [typed, raw] {
-            if let Some(paths) = case["expected"].get("paths") {
-                for (path, expected) in paths.as_object().unwrap() {
-                    assert_eq!(exported.pointer(path), Some(expected), "{path}");
-                }
-            }
-            if let Some(paths) = case["expected"].get("absent_paths") {
-                for path in strings(paths) {
-                    assert!(exported.pointer(&path).is_none(), "{path}");
-                }
-            }
-            if let Some(path) = case["expected"].get("no_x_keywords_under") {
-                fn check(value: &Value, properties: bool) {
-                    match value {
-                        Value::Object(object) => {
-                            for (key, value) in object {
-                                assert!(
-                                    properties || !key.starts_with("x-"),
-                                    "unexpected extension keyword {key}"
-                                );
-                                check(value, key == "properties");
-                            }
-                        }
-                        Value::Array(array) => {
-                            for value in array {
-                                check(value, false);
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-                check(
-                    exported
-                        .pointer(path.as_str().unwrap())
-                        .expect("export schema"),
-                    false,
-                );
-            }
-        }
-    });
-}
-
-#[test]
-fn export_preserves_property_and_definition_names() {
-    let input = json!({
-        "type": "object",
-        "description": "Ordinary description", "x-llm-description": "LLM description",
-        "x-owner": "private",
-        "properties": {
-            "x-trace": {"type": "string", "x-sensitive": true},
-            "default": {"type": "string"},
-            "value": {"$ref": "#/$defs/x-item"}
-        },
-        "required": ["x-trace", "default", "value"],
-        "$defs": {"x-item": {"type": "string", "x-owner": "private"}}
-    });
-    let definition = SchemaDefinition {
-        module_id: "demo.send".into(),
-        description: "Send a message".into(),
-        input_schema: input.clone(),
-        output_schema: json!({}),
-        error_schema: None,
-        definitions: None,
-        version: None,
-    };
-    let raw = json!({"name": "demo_send", "description": "Send a message", "input_schema": input});
-    let exporter = SchemaExporter::new();
-    for profile in [ExportProfile::Anthropic, ExportProfile::OpenAi] {
-        for exported in [
-            exporter.export(&raw, profile, None).unwrap(),
-            exporter
-                .export_def(&definition, profile, None, None, None)
-                .unwrap(),
-        ] {
-            let schema = exported
-                .pointer(if profile == ExportProfile::Anthropic {
-                    "/input_schema"
-                } else {
-                    "/function/parameters"
-                })
-                .unwrap();
-            assert_eq!(schema["properties"]["x-trace"]["type"], "string");
-            assert_eq!(schema["properties"]["default"]["type"], "string");
-            assert_eq!(schema["$defs"]["x-item"]["type"], "string");
-            assert_eq!(schema["description"], "LLM description");
-            assert!(schema.get("x-owner").is_none());
-            assert!(schema["properties"]["x-trace"].get("x-sensitive").is_none());
-            assert!(schema["$defs"]["x-item"].get("x-owner").is_none());
-        }
-    }
 }
 
 #[tokio::test]
@@ -1083,10 +938,10 @@ impl apcore::events::EventSubscriber for FailingSubscriber {
 async fn test_configured_subscriber_circuit_breaker_uses_standard_bootstrap() {
     let calls = Arc::new(AtomicUsize::new(0));
     let factory_calls = calls.clone();
-    apcore::register_subscriber_type(
-        "issue123-failing",
-        Box::new(move |_| Ok(Box::new(FailingSubscriber(factory_calls.clone())))),
-    );
+    let mut subscribers = apcore::SubscriberRegistry::new();
+    subscribers.register("issue123-failing", move |_| {
+        Ok(Box::new(FailingSubscriber(Arc::clone(&factory_calls))))
+    });
     let mut config = Config::default();
     config.set("sys_modules.enabled", json!(true));
     config.set("sys_modules.events.enabled", json!(true));
@@ -1098,7 +953,14 @@ async fn test_configured_subscriber_circuit_breaker_uses_standard_bootstrap() {
             },
         }]),
     );
-    let mut client = apcore::APCore::with_config(config);
+    let mut client = apcore::APCore::try_start_with_subscribers(
+        apcore::APCoreOptions {
+            config: Some(config),
+            ..Default::default()
+        },
+        &subscribers,
+    )
+    .unwrap();
     let transitions = Arc::new(Mutex::new(Vec::new()));
     let recording = transitions.clone();
     client

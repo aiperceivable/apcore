@@ -67,7 +67,7 @@ A task waiting for its next retry attempt is `pending` with `retry_count > 0`; t
     ```
 === "TypeScript"
     ```typescript
-    import type { TaskStatus } from "apcore-js";
+    import type { TaskStatus } from "apcore-js/full";
 
     interface TaskInfo {
         readonly taskId: string;
@@ -160,7 +160,7 @@ A task waiting for its next retry attempt is `pending` with `retry_count > 0`; t
 === "TypeScript"
     ```typescript
     import { Type } from "@sinclair/typebox";
-    import { APCore, AsyncTaskManager, TaskStatus } from "apcore-js";
+    import { APCore, AsyncTaskManager, TaskStatus } from "apcore-js/full";
 
     const client = new APCore();
     client.module({
@@ -323,7 +323,7 @@ Task records live in a `TaskStore`. Every method is asynchronous in every SDK so
     ```
 === "TypeScript"
     ```typescript
-    import type { TaskInfo, TaskStatus } from "apcore-js";
+    import type { TaskInfo, TaskStatus } from "apcore-js/full";
 
     interface TaskStore {
         save(task: TaskInfo): Promise<void>;
@@ -368,7 +368,7 @@ Injecting a store:
     ```
 === "TypeScript"
     ```typescript
-    import { APCore, AsyncTaskManager, InMemoryTaskStore } from "apcore-js";
+    import { APCore, AsyncTaskManager, InMemoryTaskStore } from "apcore-js/full";
 
     const client = new APCore();
 
@@ -423,7 +423,7 @@ The class is exported at the package root as `AsyncRetryConfig` in all three SDK
     ```
 === "TypeScript"
     ```typescript
-    import { APCore, AsyncRetryConfig, AsyncTaskManager } from "apcore-js";
+    import { APCore, AsyncRetryConfig, AsyncTaskManager } from "apcore-js/full";
 
     const client = new APCore();
     const manager = new AsyncTaskManager({ executor: client.executor });
@@ -496,7 +496,7 @@ The reaper is an opt-in background task that periodically deletes terminal tasks
     ```
 === "TypeScript"
     ```typescript
-    import { APCore, AsyncTaskManager } from "apcore-js";
+    import { APCore, AsyncTaskManager } from "apcore-js/full";
 
     const client = new APCore();
     const manager = new AsyncTaskManager({ executor: client.executor });

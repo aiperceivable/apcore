@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
 import { describe, expect, it } from 'vitest';
-import { APCore } from '../src/client.js';
+import { APCore } from '../src/full.js';
 import { inferModuleSchemas } from '../src/compiler.js';
 import { module } from '../src/decorator.js';
 

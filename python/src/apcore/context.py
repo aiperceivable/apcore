@@ -15,7 +15,6 @@ from apcore.trace_context import _valid_inbound_parent_id
 if TYPE_CHECKING:
     from contextlib import AsyncExitStack
 
-    from apcore.observability.context_logger import ContextLogger
     from apcore.trace_context import TraceParent
 
 
@@ -276,17 +275,6 @@ class Context(Generic[T]):
             raise ContextBindingError("Context already bound to a different Executor instance")
         # else: same executor instance, noop.
 
-    def _bind_executor(self, executor: Any) -> None:
-        """Deprecated alias for :meth:`bind_executor`. Will be removed in a future major release."""
-        import warnings
-
-        warnings.warn(
-            "Context._bind_executor is deprecated; use Context.bind_executor.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        self.bind_executor(executor)
-
     def serialize(self) -> dict[str, Any]:
         """Serialize Context to a JSON-encodable dict.
 
@@ -383,43 +371,6 @@ class Context(Generic[T]):
             services=None,  # type: ignore[arg-type]
             cancel_token=None,
         )
-
-    @property
-    def logger(self) -> ContextLogger:
-        """DEPRECATED — use the host application's logger (apcore#121).
-
-        Application and module code SHOULD log through the logger the host
-        application has already configured. To emit automatic apcore execution
-        events instead, install ``ObsLoggingMiddleware`` explicitly — that is a
-        different facility, not a drop-in replacement for ad-hoc logging.
-
-        This property has no configuration door and cannot acquire one without
-        paying for it somewhere the framework should not: its logger is built
-        per access from a ``Context``, which carries no ``Config`` in any SDK,
-        and the only route that avoids threading one through ``Context``'s
-        pinned six-parameter contract is a process-global logger — which would
-        end the multi-instance isolation apcore currently gets for free. So the
-        output is fixed at stderr / ``info`` / JSON, bypassing whatever the host
-        has configured. Per PROTOCOL_SPEC §9.2.4's D-67 boundary, apcore does
-        not own the host's logging policy.
-
-        Removed at v2.0. Returns a logger carrying this context's ``trace_id``,
-        ``module_id`` and ``caller_id`` until then.
-        """
-        import warnings
-
-        warnings.warn(
-            "Context.logger is deprecated and will be removed in version 2.0. "
-            "Application and module code SHOULD use the host application's logger; "
-            "its output is under the host's control, and this one's is not "
-            "(always stderr, info, JSON). To emit automatic apcore execution events, "
-            "install ObsLoggingMiddleware explicitly. See apcore#121.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        from apcore.observability.context_logger import ContextLogger
-
-        return ContextLogger.from_context(self, name=self.caller_id or "unknown")
 
     def child(self, target_module_id: str) -> Context[T]:
         """Create a child Context for calling a target module.

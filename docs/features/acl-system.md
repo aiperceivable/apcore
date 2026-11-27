@@ -428,7 +428,7 @@ acl:
     ```
 === "TypeScript"
     ```typescript
-    import { ACL, APCore, Config } from "apcore-js";
+    import { ACL, APCore, Config } from "apcore-js/full";
 
     // APCore calls ACL.discover(config) and attaches the result.
     const app = new APCore({ config: Config.load("apcore.yaml") });
@@ -813,7 +813,7 @@ Condition handlers are registered at runtime into a process-wide registry, and a
     ```
 === "TypeScript"
     ```typescript
-    import { ACL, APCore, Context, createIdentity } from "apcore-js";
+    import { ACL, APCore, Context, createIdentity } from "apcore-js/full";
 
     // Load ACL from YAML (synchronous)
     const acl = ACL.load("acl.yaml");

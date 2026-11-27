@@ -4,6 +4,7 @@
 use parking_lot::RwLock;
 use serde::de::{DeserializeOwned, Error as DeError};
 use serde::{Deserialize, Deserializer, Serialize};
+#[cfg(feature = "config")]
 use serde_yaml_ng as serde_yaml;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -23,6 +24,7 @@ pub enum ConfigMode {
 /// Source for a `config.mount()` operation.
 pub enum MountSource {
     Dict(serde_json::Value),
+    #[cfg(feature = "config")]
     File(PathBuf),
 }
 
@@ -39,6 +41,7 @@ pub const DEFAULT_MAX_DEPTH: usize = 5;
 /// inside the **declared** document that [`Config::validate`]'s §9.1
 /// required-field check reads through [`Config::get_declared`].
 /// `discover_config_file` consumes it; both env-override passes drop it.
+#[cfg(feature = "config")]
 const ENV_CONFIG_FILE: &str = "APCORE_CONFIG_FILE";
 
 /// Environment variable key conversion strategy for a namespace.
@@ -288,6 +291,7 @@ fn is_declared_prefix(path: &str) -> bool {
 }
 
 /// Return the canonical spelling of a known framework key, preserving user keys.
+#[cfg(feature = "sys-modules")]
 pub(crate) fn canonical_config_key(key: &str) -> &str {
     key.strip_prefix("apcore.")
         .filter(|bare| is_declared_prefix(bare))
@@ -435,6 +439,7 @@ const PATH_TYPED_CONFIG_KEYS: &[&str] = &[
 /// `acl.default_effect` joined in v1.47.0 as §9.1.3's first application: it is
 /// read from the ACL FILE, and the `apcore.yaml` twin reaches nothing. Ordered
 /// first because §9.2.4's table lists it first.
+#[cfg(feature = "config")]
 const DEPRECATED_INERT_KEYS: &[&str] = &[
     "acl.default_effect",
     "observability.metrics.enabled",
@@ -761,12 +766,24 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
+            project_root_path: current_project_directory(),
+            ..Self::in_memory()
+        }
+    }
+}
+
+impl Config {
+    /// Construct an in-memory configuration without consulting the host environment.
+    /// Its base for relative paths is the literal `.`.
+    #[must_use]
+    pub fn in_memory() -> Self {
+        Self {
             modules_path: None,
             executor: ExecutorConfig::default(),
             observability: ObservabilityConfig::default(),
             user_namespaces: HashMap::new(),
             yaml_path: None,
-            project_root_path: current_project_directory(),
+            project_root_path: PathBuf::from("."),
             absolute_source_path: None,
             mode: ConfigMode::default(),
             generation: 0,
@@ -1080,15 +1097,18 @@ fn apply_allow_unknown(
 
 impl Config {
     /// Load config from a JSON file, apply env overrides, and validate.
+    #[cfg(feature = "config")]
     pub fn from_json_file(path: &Path) -> Result<Self, ModuleError> {
         Self::load_file(path, true, None)
     }
 
     /// Load config from a YAML file, apply env overrides, and validate.
+    #[cfg(feature = "config")]
     pub fn from_yaml_file(path: &Path) -> Result<Self, ModuleError> {
         Self::load_file(path, false, None)
     }
 
+    #[cfg(feature = "config")]
     fn load_file(
         source: &Path,
         json: bool,
@@ -1141,10 +1161,12 @@ impl Config {
     }
 
     /// Auto-detect format by file extension and load.
+    #[cfg(feature = "config")]
     pub fn load(path: &Path) -> Result<Self, ModuleError> {
         Self::load_with_root(path, None)
     }
 
+    #[cfg(feature = "config")]
     fn load_with_root(path: &Path, project_root: Option<PathBuf>) -> Result<Self, ModuleError> {
         let json = path
             .extension()
@@ -1162,6 +1184,7 @@ impl Config {
     /// separate method. This helper restores no-arg load parity for portable
     /// cross-language code without changing the strict-typed `load(&Path)`
     /// signature for callers that already know the path.
+    #[cfg(feature = "config")]
     pub fn load_or_discover() -> Result<Self, ModuleError> {
         Self::discover()
     }
@@ -1624,6 +1647,7 @@ impl Config {
 
     /// Build config from defaults, applying env var overrides.
     #[must_use]
+    #[cfg(feature = "config")]
     pub fn from_defaults() -> Self {
         let mut config = Self::default();
         config.detect_mode();
@@ -1641,7 +1665,7 @@ impl Config {
 
     /// Return the project root captured when this configuration was created (§9.2.2).
     /// Explicit and project-local files use their containing directory. User-level
-    /// discovery and in-memory configuration use the working directory at load time.
+    /// discovery uses the working directory at load time. [`Self::in_memory`] uses `.`.
     #[must_use]
     pub fn project_root(&self) -> PathBuf {
         self.project_root_path.clone()
@@ -1678,6 +1702,7 @@ impl Config {
     /// validate, still answer `get()`, and are still accepted under
     /// `_config.strict`. This adds the one thing they have never had — a way for
     /// an operator to find out that setting them does nothing.
+    #[cfg(feature = "config")]
     fn warn_deprecated_inert_keys(&self) {
         // Read the AS-WRITTEN document, not `get_declared` and not `data()`.
         // `observability` is a typed struct field, so both of those always carry
@@ -1747,6 +1772,7 @@ impl Config {
     /// Discover and load config using the §9.14 search order.
     ///
     /// If no file is found, returns `Config::from_defaults()`.
+    #[cfg(feature = "config")]
     pub fn discover() -> Result<Self, ModuleError> {
         match discover_config_file() {
             Some((path, project_root)) => Self::load_with_root(&path, project_root),
@@ -2161,6 +2187,7 @@ impl Config {
     }
 
     /// Reload config from the stored `yaml_path`. Returns error if no path stored.
+    #[cfg(feature = "config")]
     pub fn reload(&mut self) -> Result<(), ModuleError> {
         let start_gen = self.generation;
         let path = self.yaml_path.clone().ok_or_else(|| {
@@ -2225,6 +2252,7 @@ impl Config {
     /// Equivalent to [`Config::reload`] — kept as a separate method so the
     /// reload-module call site reads naturally and the spec terminology
     /// (`reload_from_disk`) stays first-class in the public API.
+    #[cfg(feature = "config")]
     pub fn reload_from_disk(&mut self) -> Result<(), ModuleError> {
         self.reload()
     }
@@ -2392,8 +2420,10 @@ impl Config {
                 "cannot mount to reserved namespace '_config'",
             ));
         }
+        #[cfg(feature = "config")]
         let data = match source {
             MountSource::Dict(v) => v,
+            #[cfg(feature = "config")]
             MountSource::File(path) => {
                 let content = std::fs::read_to_string(&path)
                     .map_err(|e| ModuleError::config_mount_error(namespace, &e.to_string()))?;
@@ -2401,6 +2431,8 @@ impl Config {
                     .map_err(|e| ModuleError::config_mount_error(namespace, &e.to_string()))?
             }
         };
+        #[cfg(not(feature = "config"))]
+        let MountSource::Dict(data) = source;
         if !data.is_object() {
             return Err(ModuleError::config_mount_error(
                 namespace,
@@ -2494,6 +2526,7 @@ impl Config {
 
     // --- Private helpers ---
 
+    #[cfg(feature = "config")]
     fn detect_mode(&mut self) {
         // W-3: Only activate namespace mode when "apcore" key is a mapping.
         // A null or scalar value is not a valid namespace indicator.
@@ -2508,6 +2541,7 @@ impl Config {
     /// In legacy mode, all `APCORE_*` vars are mapped via `env_key_to_dot_path`.
     /// In namespace mode, registered `env_prefix` values are dispatched via
     /// longest-prefix-match (§9.10).
+    #[cfg(feature = "config")]
     fn apply_env_overrides(&mut self) {
         if self.mode == ConfigMode::Namespace {
             self.apply_namespace_env_overrides();
@@ -2545,6 +2579,7 @@ impl Config {
     }
 
     /// §9.10: Namespace-aware env routing via longest-prefix-match.
+    #[cfg(feature = "config")]
     fn apply_namespace_env_overrides(&mut self) {
         let registry = global_ns_registry().read();
         let gmap = global_env_map().read();
@@ -2658,6 +2693,7 @@ impl Config {
     /// Non-path-typed keys are untouched. An empty `APCORE_LOGGING_LEVEL` is a
     /// value the operator can mean, and §9.2.1's requirement is scoped to the
     /// closed path-typed set precisely because `""` is meaningless only there.
+    #[cfg(feature = "config")]
     fn apply_one_env_override(&mut self, env_key: &str, dot_path: &str, value: &str) {
         let path_typed =
             Self::is_path_typed_key(dot_path.strip_prefix("apcore.").unwrap_or(dot_path));
@@ -2869,11 +2905,13 @@ impl Config {
     /// Example: `EXECUTOR_MAX__CALL__DEPTH` → `executor.max_call_depth`
     ///
     /// So to set `max_call_depth` via env, use `APCORE_EXECUTOR_MAX__CALL__DEPTH`.
+    #[cfg(feature = "config")]
     fn env_key_to_dot_path(raw: &str) -> String {
         Self::env_key_to_dot_path_with_depth(raw, usize::MAX)
     }
 
     /// Convert env var suffix to dot-path, stopping at `max_depth` segments.
+    #[cfg(feature = "config")]
     fn env_key_to_dot_path_with_depth(raw: &str, max_depth: usize) -> String {
         let lower = raw.to_lowercase();
         let chars: Vec<char> = lower.chars().collect();
@@ -2902,6 +2940,7 @@ impl Config {
     }
 
     /// Try to match suffix against keys in a JSON object tree (recursive).
+    #[cfg(feature = "config")]
     fn match_suffix_to_tree(
         suffix: &str,
         tree: &serde_json::Map<String, serde_json::Value>,
@@ -2935,6 +2974,7 @@ impl Config {
     }
 
     /// Resolve an env var suffix based on the registration's `env_style`.
+    #[cfg(feature = "config")]
     fn resolve_env_suffix(suffix: &str, reg: &NamespaceRegistration) -> String {
         match reg.env_style {
             EnvStyle::Flat => suffix.to_lowercase(),
@@ -2954,6 +2994,7 @@ impl Config {
         }
     }
 
+    #[cfg(feature = "config")]
     fn coerce_env_value(value: &str) -> serde_json::Value {
         if value.eq_ignore_ascii_case("true") {
             return serde_json::Value::Bool(true);
@@ -2977,6 +3018,7 @@ impl Config {
 // Built-in namespace initialization (§9.15)
 // ---------------------------------------------------------------------------
 
+#[cfg(feature = "config")]
 fn init_builtin_namespaces() {
     static INIT: OnceLock<()> = OnceLock::new();
     INIT.get_or_init(|| {
@@ -3073,6 +3115,7 @@ fn init_builtin_namespaces() {
 
 /// `$APCORE_CONFIG_FILE` is *consumed* here: both env-override passes skip it
 /// so it never becomes the `config.file` override (apcore#88).
+#[cfg(feature = "config")]
 fn discover_config_file() -> Option<(PathBuf, Option<PathBuf>)> {
     if let Ok(env_path) = std::env::var(ENV_CONFIG_FILE) {
         if !env_path.is_empty() {
@@ -3100,6 +3143,7 @@ fn discover_config_file() -> Option<(PathBuf, Option<PathBuf>)> {
 /// Tier 6 is the XDG-style path — `~/Library/Application Support/apcore/` on
 /// macOS, `~/.config/apcore/` elsewhere — and tier 7 the legacy `~/.apcore/`.
 ///
+#[cfg(feature = "config")]
 fn user_level_config_candidates() -> Vec<std::path::PathBuf> {
     let Some(home) = dirs_home() else {
         return Vec::new();
@@ -3118,9 +3162,15 @@ fn user_level_config_candidates() -> Vec<std::path::PathBuf> {
 }
 
 fn current_project_directory() -> PathBuf {
-    std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+    #[cfg(feature = "config")]
+    {
+        std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+    }
+    #[cfg(not(feature = "config"))]
+    PathBuf::from(".")
 }
 
+#[cfg(feature = "config")]
 fn dirs_home() -> Option<std::path::PathBuf> {
     std::env::var("HOME").ok().map(std::path::PathBuf::from)
 }
@@ -3146,7 +3196,7 @@ fn deep_merge_value(base: &mut serde_json::Value, overlay: &serde_json::Value) {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "config"))]
 mod tests {
     use super::*;
 

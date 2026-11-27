@@ -14,7 +14,7 @@ import path from 'node:path';
 
 import { describe, it, expect, vi } from 'vitest';
 
-import { APCore } from '../src/client.js';
+import { APCore } from '../src/full.js';
 import { Config } from '../src/config.js';
 import { ConfigError } from '../src/errors.js';
 import {

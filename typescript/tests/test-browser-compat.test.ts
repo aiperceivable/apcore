@@ -59,7 +59,7 @@ describe('module imports', () => {
   });
 
   it('barrel index re-exports all lazy-loaded modules', async () => {
-    const mod = await import('../src/index.js');
+    const mod = await import('../src/full.js');
     expect(mod.ACL).toBeDefined();
     expect(mod.BindingLoader).toBeDefined();
     expect(mod.SchemaLoader).toBeDefined();
@@ -74,7 +74,7 @@ describe('module imports', () => {
 
 describe('ACL pure-logic (no filesystem)', () => {
   it('constructor and check() work without filesystem', async () => {
-    const { ACL } = await import('../src/acl.js');
+    const { ACL } = await import('../src/full.js');
     const acl = new ACL([
       { callers: ['mod.a'], targets: ['mod.b'], effect: 'allow', description: 'test' },
       { callers: ['*'], targets: ['*'], effect: 'deny', description: 'default' },
@@ -84,7 +84,7 @@ describe('ACL pure-logic (no filesystem)', () => {
   });
 
   it('addRule() / removeRule() work without filesystem', async () => {
-    const { ACL } = await import('../src/acl.js');
+    const { ACL } = await import('../src/full.js');
     const acl = new ACL([], 'deny');
     expect(acl.check('a', 'b')).toBe(false);
 
@@ -231,11 +231,11 @@ describe('Registry pure-logic (no filesystem)', () => {
 // Verifies the Node-side build wires up node:fs / node:path correctly.
 
 describe('node: modules wired up in Node.js', () => {
-  it('ACL.load() uses lazy-loaded fs successfully', async () => {
+  it('the full Node ACL loads from disk', async () => {
     const { writeFileSync, mkdtempSync, rmSync } = await import('node:fs');
     const { join } = await import('node:path');
     const { tmpdir } = await import('node:os');
-    const { ACL } = await import('../src/acl.js');
+    const { ACL } = await import('../src/full.js');
 
     const tmp = mkdtempSync(join(tmpdir(), 'acl-lazy-'));
     const yamlPath = join(tmp, 'acl.yaml');

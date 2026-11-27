@@ -104,11 +104,12 @@ fn read_modules_only_is_not_a_control_surface() {
 
 #[test]
 fn control_modules_with_no_gates() {
-    let state = executor(registry_with(
+    let mut ex = executor(registry_with(
         &[("system.control.reload_module", true)],
         true,
-    ))
-    .governance_state();
+    ));
+    ex.set_policy(Some(ExecutionPolicy::default().with_strict(false)));
+    let state = ex.governance_state();
     assert!(state.control_modules_registered);
     assert!(state.unprotected_control_surface);
 }

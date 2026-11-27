@@ -54,6 +54,7 @@ pub struct ReloadOptions {
 }
 
 impl ReloadOptions {
+    #[cfg(feature = "sys-modules")]
     pub(crate) fn from_wire(value: &serde_json::Value) -> Result<Self, ModuleError> {
         let mut wire = value.clone();
         if let Some(timeout) = wire.get_mut("drain_timeout_ms") {
@@ -72,6 +73,7 @@ impl ReloadOptions {
             .validate()
     }
 
+    #[cfg(any(feature = "discovery", feature = "sys-modules"))]
     pub(crate) fn validate(self) -> Result<Self, ModuleError> {
         validate_duration(self.drain_timeout_ms, "drain_timeout_ms")?;
         Ok(self)

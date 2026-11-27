@@ -9,7 +9,8 @@
  */
 
 import { Type } from '@sinclair/typebox';
-import { FunctionModule, ContextLogger, createAnnotations } from 'apcore-js';
+import { FunctionModule, createAnnotations } from 'apcore-js';
+import { ContextLogger } from 'apcore-js/observability';
 import type { Context } from 'apcore-js';
 
 export const sendEmailModule = new FunctionModule({

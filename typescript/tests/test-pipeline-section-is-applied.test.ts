@@ -19,7 +19,7 @@ import { describe, it, expect, vi } from 'vitest';
 
 import { ACL } from '../src/acl.js';
 import { AlwaysDenyHandler, AutoApproveHandler } from '../src/approval.js';
-import { APCore } from '../src/client.js';
+import { APCore } from '../src/full.js';
 import { Config } from '../src/config.js';
 import { Executor } from '../src/executor.js';
 import { Registry } from '../src/registry/registry.js';

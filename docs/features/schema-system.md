@@ -1,5 +1,5 @@
 ---
-description: "Schema loading, validation, $ref resolution bridging YAML to runtime schema objects; strategies yaml_first/native_first/yaml_only, x-* extensions, strict-mode export, export to MCP/OpenAI/Anthropic formats."
+description: "Schema loading, validation, reference resolution, schema extensions, generic export and strict schema conversion."
 ---
 
 # Schema System
@@ -81,37 +81,53 @@ At the module-invocation boundary validation is strict: no type coercion is appl
 
 ### SchemaExporter and ExportProfile
 
-`SchemaExporter.export(schema_def, profile, ...)` converts a schema definition into a target format selected by `ExportProfile` (§4.17):
-
-- **`mcp`** — MCP tool definition; keeps `x-*` fields and maps annotations to hints.
-- **`openai`** — OpenAI function-calling definition; strips `x-*`, applies strict mode.
-- **`anthropic`** — Anthropic tool-use definition.
-- **`generic`** — provider-neutral representation.
+Core exports a provider-neutral representation of a module's schema and keeps
+the JSON Schema extension fields. TypeScript also accepts `ExportProfile.GENERIC`
+in `SchemaExporter.export()`. The MCP, OpenAI, and Anthropic profiles belong to
+the adapter layer ([§4.17](../spec/protocol-spec.md#417-export-profiles)).
 
 === "Python"
     ```python
-    from apcore.schema import ExportProfile
+    from apcore.schema import SchemaDefinition, SchemaExporter
 
-    profile = ExportProfile.MCP
-    # ExportProfile.OPENAI, ExportProfile.ANTHROPIC, ExportProfile.GENERIC
-    print(profile.value)  # "mcp"
+    definition = SchemaDefinition(
+        module_id="common.echo",
+        description="Echo a message.",
+        input_schema={"type": "object"},
+        output_schema={"type": "object"},
+    )
+    print(SchemaExporter().export_generic(definition)["module_id"])
     ```
 === "TypeScript"
     ```typescript
-    import { ExportProfile } from "apcore-js";
+    import { SchemaExporter } from "apcore-js";
 
-    const profile: ExportProfile = ExportProfile.MCP;
-    // ExportProfile.OPENAI, ExportProfile.ANTHROPIC, ExportProfile.GENERIC
-    console.log(profile); // "mcp"
+    const definition = {
+      moduleId: "common.echo",
+      description: "Echo a message.",
+      inputSchema: { type: "object" },
+      outputSchema: { type: "object" },
+      definitions: {},
+      version: "1.0.0",
+    };
+    console.log(new SchemaExporter().exportGeneric(definition).module_id);
     ```
 === "Rust"
     ```rust
-    use apcore::schema::ExportProfile;
+    use apcore::schema::{export_generic, SchemaDefinition};
+    use serde_json::json;
 
     fn main() {
-        let profile = ExportProfile::Mcp;
-        // ExportProfile::OpenAi, ExportProfile::Anthropic, ExportProfile::Generic
-        println!("{profile:?}");
+        let definition = SchemaDefinition {
+            module_id: "common.echo".into(),
+            description: "Echo a message.".into(),
+            input_schema: json!({"type": "object"}),
+            output_schema: json!({"type": "object"}),
+            error_schema: None,
+            definitions: None,
+            version: None,
+        };
+        println!("{}", export_generic(&definition)["module_id"]);
     }
     ```
 
@@ -256,8 +272,9 @@ Resolved schemas are cached in two levels: module ID → content hash, and conte
 
 === "Python"
     ```python
-    from apcore import Config
-    from apcore.schema import ExportProfile, SchemaExporter, SchemaLoader, SchemaValidator
+    from apcore.config import Config
+    from apcore.schema import SchemaLoader, SchemaValidator
+    from apcore.schema.strict import to_strict_schema
 
     # The loader reads schema.root / schema.strategy from the Config;
     # load() takes a MODULE ID, not a file path.
@@ -272,13 +289,13 @@ Resolved schemas are cached in two levels: module ID → content hash, and conte
     if not result.valid:
         print(f"Validation failed ({result.error_code}): {result.errors}")
 
-    exporter = SchemaExporter()
-    mcp_tool = exporter.export(schema_def, ExportProfile.MCP)
-    print(mcp_tool)  # {"name": "...", "description": "...", "inputSchema": {...}, ...}
+    print(to_strict_schema(schema_def.input_schema))
     ```
 === "TypeScript"
     ```typescript
-    import { Config, ExportProfile, SchemaExporter, SchemaLoader, SchemaValidator } from "apcore-js";
+    import { SchemaValidator, toStrictSchema } from "apcore-js";
+    import { Config } from "apcore-js/config";
+    import { SchemaLoader } from "apcore-js/full";
 
     // The loader reads schema.root / schema.strategy from the Config;
     // load() takes a MODULE ID and is synchronous.
@@ -294,14 +311,12 @@ Resolved schemas are cached in two levels: module ID → content hash, and conte
       console.error(`Validation failed (${result.errorCode}):`, result.errors);
     }
 
-    const exporter = new SchemaExporter();
-    const openaiTool = exporter.export(schemaDef, ExportProfile.OPENAI);
-    console.log(openaiTool);
+    console.log(toStrictSchema(schemaDef.inputSchema));
     ```
 === "Rust"
     ```rust
     use apcore::errors::ModuleError;
-    use apcore::schema::{ExportProfile, SchemaExporter, SchemaLoader, SchemaValidator};
+    use apcore::schema::{to_strict_schema, SchemaLoader, SchemaValidator};
     use apcore::Config;
     use serde_json::json;
 
@@ -321,13 +336,14 @@ Resolved schemas are cached in two levels: module ID → content hash, and conte
             eprintln!("Validation failed: {:?}", result.errors);
         }
 
-        // export() takes the schema Value, a profile, and optional ExportOptions.
-        let exporter = SchemaExporter::new();
-        let anthropic_tool = exporter.export(&schema_def.input_schema, ExportProfile::Anthropic, None)?;
-        println!("{anthropic_tool}");
+        println!("{}", to_strict_schema(&schema_def.input_schema));
         Ok(())
     }
     ```
+
+The Registry exports schema and description data independently of the
+publication protocol. Use [Surfaces MCP converters](https://github.com/aiperceivable/apcore-surfaces/tree/main/mcp)
+for MCP, OpenAI, and Anthropic tool definitions.
 
 ## Dependencies
 
@@ -343,7 +359,7 @@ Resolved schemas are cached in two levels: module ID → content hash, and conte
     | `schema/ref_resolver.py` | `RefResolver`: `$ref` resolution, self-reference vs. circular classification |
     | `schema/validator.py` | `SchemaValidator`: result-object validation and the raising `validate_input` / `validate_output` |
     | `schema/hardening.py` | `content_hash`, exhaustive union validation, `format` warnings |
-    | `schema/exporter.py` | `SchemaExporter`: MCP / OpenAI / Anthropic / generic export |
+    | `schema/exporter.py` | Generic schema export |
     | `schema/strict.py` | `to_strict_schema` (Algorithm A23) |
     | `schema/openai_strict.py` | OpenAI strict-mode compatibility detection |
     | `schema/annotations.py` | Merging YAML and code annotations, examples and metadata |
