@@ -1,0 +1,18 @@
+# MCP discovery projection
+
+Pending maintainer approval of the [shared discovery contract](./shared-contract.md). The Core SDK discovery APIs are a prerequisite for this task.
+
+## Implementation
+
+- Apply the Core visibility decision to the existing MCP tool candidates on each request. Use the backend that handles calls and the same trusted initiating context. The authenticated principal belongs in `Context.identity`. An external request leaves `caller_id` unset, including over stdio. Let Core derive the prospective caller frame and call depth.
+- In Python, use `_request_identity()` in `mcp/python/src/apcore_mcp/server/factory.py` and the context and executor wiring in `server/router.py`. In TypeScript, use the request's `getCurrentIdentity()` and `createBridgeContext` in `mcp/typescript/src/server`, including the standalone and embedded assembly paths in `index.ts`. In Rust, use the `AUTH_IDENTITY` scope already installed by the HTTP auth middleware. Resolve visibility through `ExecutionRouter` and the typed `ApcoreExecutorAdapter`. Preserve existing synchronous server helpers if the wire path needs an async handler.
+- Apply the adapter's existing export selection before returning visible tools. Preserve each selected registration's complete MCP `inputSchema`, aliases, version checks and negotiated `outputSchema`. Prevent a replacement registration from authorizing metadata cached for an older registration. Standard `tools/list` keeps its existing result shape and enumerates all eligible exports. Use the separate Core query for paginated summaries and schema expansion.
+- Keep approval and async task meta-tools on their current bridge-owned authorization paths. Known-ID calls continue through the normal execution pipeline and retain actual ACL, validation and approval checks.
+- Apply the same visibility policy to `docs://` resources during enumeration and direct reads. Treat an ineligible documentation resource like an absent resource. Preserve existing `apcore://system.*` management resources, including their ACL-protected router calls and manifest wire contracts. The optional Explorer has a separate public browsing audience and remains outside this task.
+
+## Verification
+
+- Drive an initialized MCP client through `tools/list` and `tools/call` with the real Core executor. Check two authenticated principals with different roles on the same server and an anonymous stdio client. Include an argument-conditional rule, a mandatory approval, and a hidden module. Check that changing the subject or its roles changes the list on the next request and that list requests execute no module or approval callbacks.
+- Assert that a visible tool retains its named schema properties and local references. Check older negotiated protocol versions and the default tool version, and verify that a denied known-ID call still fails through the execution pipeline. Reuse the Python versioned-wire session fixture, the TypeScript SDK client with the existing transport fixtures, and the Rust HTTP JSON-RPC test path with the real auth middleware.
+- Verify `resources/list` omits denied documentation and `resources/read` rejects a direct denied URI. Confirm an authorized administrator can still invoke the existing manifest resources with their prior response shapes. Keep the approval resumption and async task meta-tool regressions green.
+- Test against the installed Core wheel, npm tarball and crate for the exact candidate commits. Re-run the established downstream compatibility matrix and Golden Path without publishing packages. See the [verification task](./verification.md).

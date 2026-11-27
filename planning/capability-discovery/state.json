@@ -1,0 +1,45 @@
+{
+  "feature": "capability-discovery",
+  "created": "2026-11-27",
+  "updated": "2026-11-27",
+  "status": "in_progress",
+  "execution_order": ["shared-contract", "core-sdks", "surfaces", "verification"],
+  "progress": {
+    "total_tasks": 4,
+    "completed": 0,
+    "in_progress": 0,
+    "pending": 3,
+    "skipped": 0,
+    "blocked": 1
+  },
+  "tasks": [
+    {
+      "id": "shared-contract",
+      "file": "tasks/shared-contract.md",
+      "title": "Shared contract and conformance",
+      "status": "blocked",
+      "blocker": "Maintainer approval for the proposed draft revision"
+    },
+    {
+      "id": "core-sdks",
+      "file": "tasks/core-sdks.md",
+      "title": "Python, TypeScript, and Rust discovery APIs",
+      "status": "pending",
+      "dependencies": ["shared-contract"]
+    },
+    {
+      "id": "surfaces",
+      "file": "tasks/surfaces.md",
+      "title": "MCP discovery projection",
+      "status": "pending",
+      "dependencies": ["core-sdks"]
+    },
+    {
+      "id": "verification",
+      "file": "tasks/verification.md",
+      "title": "Dual-repository verification",
+      "status": "pending",
+      "dependencies": ["core-sdks", "surfaces"]
+    }
+  ]
+}
