@@ -38,7 +38,14 @@ export class HealthSummaryModule {
   readonly outputSchema = {
     type: 'object' as const,
     properties: {
-      project: { type: 'object' as const, description: 'Project information' },
+      project: {
+        type: 'object' as const,
+        description: 'Project information',
+        properties: {
+          name: { type: 'string' as const, description: 'Project name' },
+          version: { type: 'string' as const, description: 'Configured project version' },
+        },
+      },
       summary: { type: 'object' as const, description: 'Aggregated health counts by status' },
       modules: { type: 'array' as const, description: 'Per-module health entries' },
     },
@@ -92,8 +99,12 @@ export class HealthSummaryModule {
     }
 
     const projectName = this._config?.get('project.name', 'apcore') ?? 'apcore';
+    const projectVersion = this._config?.get('project.version');
     return {
-      project: { name: projectName },
+      project: {
+        name: projectName,
+        ...(typeof projectVersion === 'string' ? { version: projectVersion } : {}),
+      },
       summary: { total_modules: moduleIds.length, ...counts },
       modules,
     };

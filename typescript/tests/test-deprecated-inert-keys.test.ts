@@ -27,7 +27,7 @@ import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } fr
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { ACL } from '../src/acl.js';
+import { ACL } from '../src/full.js';
 import { Config } from '../src/config.js';
 
 /**

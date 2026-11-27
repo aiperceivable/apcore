@@ -54,26 +54,50 @@ describe('dist entry points exist', () => {
     expect(existsSync(typesPath), `${pkg.types} should exist`).toBe(true);
   });
 
-  it('exports "." node entry exists', () => {
-    const nodeEntry = pkg.exports['.'].node;
-    expect(existsSync(resolve(ROOT, nodeEntry)), `${nodeEntry} should exist`).toBe(true);
-  });
+  it('exports the same portable root for Node and browser', async () => {
+    const rootEntry = pkg.exports['.'];
+    expect(pkg.sideEffects).toBe(false);
+    expect(rootEntry.default).toBe(pkg.main);
+    expect(rootEntry.types).toBe(pkg.types);
+    expect(pkg.browser).toBe(rootEntry.default);
+    const root = await import(resolve(ROOT, rootEntry.default));
+    const core = await import(resolve(ROOT, pkg.exports['./core'].default));
+    expect(Object.keys(root)).toEqual(Object.keys(core));
+    expect(root.APCore).toBe(core.APCore);
+    expect(root.Registry).toBe(core.Registry);
+    expect(root.ACL).toBe(core.ACL);
+  }, IMPORT_TIMEOUT_MS);
 
-  it('exports "." browser entry exists', () => {
-    const browserEntry = pkg.exports['.'].browser;
-    expect(existsSync(resolve(ROOT, browserEntry)), `${browserEntry} should exist`).toBe(true);
-  });
+  it('ships declarations and runtime targets for the explicit profiles', async () => {
+    const coreEntry = pkg.exports['./core'];
+    const fullEntry = pkg.exports['./full'];
+    for (const [subpath, condition] of [
+      ['./core', 'default'], ['./full', 'node'], ['./config', 'node'],
+      ['./discovery', 'node'], ['./sys-modules', 'node'], ['./events', 'node'],
+    ]) {
+      const entry = pkg.exports[subpath];
+      expect(existsSync(resolve(ROOT, entry.types)), subpath).toBe(true);
+      expect(existsSync(resolve(ROOT, entry[condition])), subpath).toBe(true);
+    }
+    const core = await import(resolve(ROOT, coreEntry.default));
+    const full = await import(resolve(ROOT, fullEntry.node));
+    expect(core.Context).toBe(full.Context);
+    expect(core.Executor).toBe(full.Executor);
+    expect(core).not.toHaveProperty('Config');
+    expect(full.Config).toBeTypeOf('function');
+    expect(full).not.toHaveProperty('PrometheusExporter');
+    expect(full).not.toHaveProperty('A2ASubscriber');
+    expect(full).not.toHaveProperty('registerSubscriberType');
+  }, IMPORT_TIMEOUT_MS);
 
-  it('exports "." default entry exists', () => {
-    const defaultEntry = pkg.exports['.'].default;
-    expect(existsSync(resolve(ROOT, defaultEntry)), `${defaultEntry} should exist`).toBe(true);
-  });
-
-  it('exports "." types entries exist for both conditions', () => {
-    const types = pkg.exports['.'].types;
-    expect(existsSync(resolve(ROOT, types.browser)), `${types.browser} should exist`).toBe(true);
-    expect(existsSync(resolve(ROOT, types.default)), `${types.default} should exist`).toBe(true);
-  });
+  it('exports the portable observability declarations and runtime', async () => {
+    const entry = pkg.exports['./observability'];
+    expect(existsSync(resolve(ROOT, entry.types))).toBe(true);
+    const observability = await import(resolve(ROOT, entry.default));
+    expect(observability.renderPrometheusMetrics({ exportPrometheus: () => 'sample 1\n' }))
+      .toBe('sample 1\n');
+    expect(observability).not.toHaveProperty('PrometheusExporter');
+  }, IMPORT_TIMEOUT_MS);
 
   it('top-level "browser" field points at the browser build', () => {
     expect(existsSync(resolve(ROOT, pkg.browser)), `${pkg.browser} should exist`).toBe(true);
@@ -93,18 +117,18 @@ describe('dist exports are loadable', () => {
     expect(mod.Registry).toBeDefined();
     expect(mod.Executor).toBeDefined();
     expect(mod.Context).toBeDefined();
-    expect(mod.Config).toBeDefined();
+    expect(mod).not.toHaveProperty('Config');
     expect(mod.ACL).toBeDefined();
     expect(mod.CancelToken).toBeDefined();
     expect(mod.MiddlewareManager).toBeDefined();
-    expect(mod.ExtensionManager).toBeDefined();
-    expect(mod.AsyncTaskManager).toBeDefined();
-    expect(mod.BindingLoader).toBeDefined();
-    expect(mod.SchemaLoader).toBeDefined();
+    expect(mod).not.toHaveProperty('ExtensionManager');
+    expect(mod).not.toHaveProperty('AsyncTaskManager');
+    expect(mod).not.toHaveProperty('BindingLoader');
+    expect(mod).not.toHaveProperty('SchemaLoader');
     expect(mod.SchemaValidator).toBeDefined();
-    expect(mod.TracingMiddleware).toBeDefined();
-    expect(mod.MetricsCollector).toBeDefined();
-    expect(mod.ContextLogger).toBeDefined();
+    expect(mod).not.toHaveProperty('TracingMiddleware');
+    expect(mod).not.toHaveProperty('MetricsCollector');
+    expect(mod).not.toHaveProperty('ContextLogger');
     expect(mod.TraceContext).toBeDefined();
     // Error classes
     expect(mod.ModuleError).toBeDefined();

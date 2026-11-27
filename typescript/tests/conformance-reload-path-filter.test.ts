@@ -26,7 +26,7 @@ import { AutoApproveHandler } from '../src/approval.js';
 import { ModuleError } from '../src/errors.js';
 import { EventEmitter } from '../src/events/emitter.js';
 import { Executor } from '../src/executor.js';
-import { Registry } from '../src/registry/registry.js';
+import { Registry } from '../src/full.js';
 import { jsonSchemaToTypeBox } from '../src/schema/loader.js';
 import { SchemaValidator } from '../src/schema/validator.js';
 import { InMemoryAuditStore } from '../src/sys-modules/audit.js';
@@ -115,6 +115,10 @@ describe('Conformance: reload_module path_filter (reload_path_filter.json)', () 
         expect(error, `case '${tc.id}' expected an error, got result ${JSON.stringify(result)}`)
           .toBeInstanceOf(ModuleError);
         expect((error as ModuleError).code).toBe(expected['error_code']);
+        if (tc.id === 'removed_reload_dependents_is_rejected') {
+          expect(registry.discover).not.toHaveBeenCalled();
+          expect(auditStore.query()).toEqual([]);
+        }
       } else if (error !== null) {
         throw error;
       } else {
@@ -197,8 +201,7 @@ describe('Conformance: reload_module path_filter (reload_path_filter.json)', () 
       'bracket_is_a_literal_and_MUST_NOT_be_rejected',
       'character_class_does_not_expand',
       'double_star_is_two_ordinary_stars',
-      // D-121: the deprecated field is accepted and changes nothing.
-      'reload_dependents_is_accepted_and_inert',
+      'removed_reload_dependents_is_rejected',
       // D-111: per-module audit entries sharing one correlation id.
       'bulk_reload_audits_per_module_with_one_correlation_id',
     ]);

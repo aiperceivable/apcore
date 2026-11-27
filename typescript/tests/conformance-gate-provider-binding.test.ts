@@ -26,7 +26,7 @@ import {
   Executor,
   Registry,
   buildStandardStrategy,
-} from '../src/index.js';
+} from '../src/full.js';
 import { MiddlewareManager } from '../src/middleware/manager.js';
 import { ModuleError } from '../src/errors.js';
 import { findFixturesRoot } from './spec-repo.js';

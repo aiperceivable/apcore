@@ -12,9 +12,6 @@ export enum SchemaStrategy {
 }
 
 export enum ExportProfile {
-  MCP = 'mcp',
-  OPENAI = 'openai',
-  ANTHROPIC = 'anthropic',
   GENERIC = 'generic',
 }
 

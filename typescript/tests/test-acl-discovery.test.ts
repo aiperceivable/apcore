@@ -15,14 +15,14 @@ import { writeFileSync, mkdtempSync, mkdirSync, rmSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { Type } from '@sinclair/typebox';
-import { ACL } from '../src/acl.js';
+import { ACL } from '../src/full.js';
 import { Config } from '../src/config.js';
 import { Executor } from '../src/executor.js';
-import { Registry } from '../src/registry/registry.js';
+import { Registry } from '../src/full.js';
 import { FunctionModule } from '../src/decorator.js';
 import { getDefault } from '../src/config-defaults.js';
 import { ACLDeniedError, ConfigError } from '../src/errors.js';
-import { APCore } from '../src/client.js';
+import { APCore } from '../src/full.js';
 
 function makeModule(id: string): FunctionModule {
   return new FunctionModule({

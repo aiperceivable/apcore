@@ -5,9 +5,10 @@ import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { EventEmitter as NodeEventEmitter } from 'node:events';
 import type { FSWatcher } from 'node:fs';
-import { registryNodeFilesystem } from '../../src/registry/install-filesystem.js';
+import { createRegistryFilesystem } from '../../src/registry/node-filesystem.js';
 import { Type } from '@sinclair/typebox';
-import { Registry, MAX_MODULE_ID_LENGTH } from '../../src/registry/registry.js';
+import { Registry } from '../../src/full.js';
+import { MAX_MODULE_ID_LENGTH } from '../../src/registry/registry.js';
 import { FunctionModule } from '../../src/decorator.js';
 import { DuplicateModuleIdError, InvalidInputError, ModuleNotFoundError, ReloadFailedError } from '../../src/errors.js';
 import { Config } from '../../src/config.js';
@@ -1578,6 +1579,7 @@ describe('Registry discover() with idMapPath', () => {
 
   it('encodes literal path characters for discovery and adds a fresh query for each reload', () => {
     const source = join(tempDir, 'extensions # %', 'module.js');
+    const registryNodeFilesystem = createRegistryFilesystem();
     const initial = new URL(registryNodeFilesystem.entryPointSpecifier(source, false));
     const reloaded = new URL(registryNodeFilesystem.entryPointSpecifier(source, true));
 
@@ -1902,7 +1904,8 @@ describe('Registry hot reload (watch/unwatch)', () => {
         inputSchema: { type: 'object' }, outputSchema: { type: 'object' },
       };`);
     }
-    const registry = new Registry({ extensionsDir: tempDir });
+    const registryNodeFilesystem = createRegistryFilesystem();
+    const registry = new Registry({ filesystem: registryNodeFilesystem, extensionsDir: tempDir });
     await expect(registry.discover()).resolves.toBe(2);
     const onChange = vi.fn();
     registry.on('file_changed', onChange);
@@ -1932,7 +1935,8 @@ describe('Registry hot reload (watch/unwatch)', () => {
       execute() { return {}; }, description: 'Watched source',
       inputSchema: { type: 'object' }, outputSchema: { type: 'object' },
     };`);
-    const registry = new Registry({ extensionsDirs: [{ root: tempDir, namespace: 'ns' }] });
+    const registryNodeFilesystem = createRegistryFilesystem();
+    const registry = new Registry({ filesystem: registryNodeFilesystem, extensionsDirs: [{ root: tempDir, namespace: 'ns' }] });
     await expect(registry.discover()).resolves.toBe(1);
     vi.spyOn(registry, 'discover').mockResolvedValue(0);
     const reload = new ReloadModule(registry, new EventEmitter());
@@ -1966,7 +1970,8 @@ describe('Registry hot reload (watch/unwatch)', () => {
       execute() { return {}; }, description: 'Watched source',
       inputSchema: { type: 'object' }, outputSchema: { type: 'object' },
     };`);
-    const registry = new Registry({ extensionsDirs: [{ root: tempDir, namespace: 'ns' }] });
+    const registryNodeFilesystem = createRegistryFilesystem();
+    const registry = new Registry({ filesystem: registryNodeFilesystem, extensionsDirs: [{ root: tempDir, namespace: 'ns' }] });
     await expect(registry.discover()).resolves.toBe(1);
     const moduleId = 'ns.active_module';
     const module = registry.get(moduleId) as Record<string, unknown>;
@@ -2009,7 +2014,8 @@ describe('Registry hot reload (watch/unwatch)', () => {
       execute() { return {}; }, description: 'Managed watch source',
       inputSchema: { type: 'object' }, outputSchema: { type: 'object' },
     };`);
-    const registry = new Registry({ extensionsDir: tempDir });
+    const registryNodeFilesystem = createRegistryFilesystem();
+    const registry = new Registry({ filesystem: registryNodeFilesystem, extensionsDir: tempDir });
     await expect(registry.discover()).resolves.toBe(1);
     const moduleId = 'managed_watch';
     const old = registry.get(moduleId) as Record<string, unknown>;
@@ -2063,7 +2069,8 @@ describe('Registry hot reload (watch/unwatch)', () => {
   });
 
   it('forgets expired debounce entries and clears current entries on unwatch', async () => {
-    const registry = new Registry({ extensionsDir: tempDir });
+    const registryNodeFilesystem = createRegistryFilesystem();
+    const registry = new Registry({ filesystem: registryNodeFilesystem, extensionsDir: tempDir });
     const onChange = vi.fn();
     registry.on('file_changed', onChange);
     let notify!: (eventType: string, filename: string | null) => void;

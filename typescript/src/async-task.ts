@@ -2,7 +2,7 @@
  * Async task manager for background module execution.
  */
 
-import { v4 as uuidv4 } from 'uuid';
+import { uuidV4 as uuidv4 } from './utils/uuid.js';
 import { CancelToken } from './cancel.js';
 import type { Context } from './context.js';
 import { ErrorCodes, ModuleError, TaskLimitExceededError } from './errors.js';

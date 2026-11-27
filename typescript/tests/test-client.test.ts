@@ -9,7 +9,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { Type } from '@sinclair/typebox';
 import { ACL } from '../src/acl.js';
 import { AutoApproveHandler } from '../src/approval.js';
-import { APCore } from '../src/client.js';
+import { APCore } from '../src/full.js';
 import { Config } from '../src/config.js';
 import { FunctionModule } from '../src/decorator.js';
 import { Executor } from '../src/executor.js';
@@ -17,7 +17,7 @@ import { ACLDeniedError, InvalidInputError, ModuleNotFoundError, SysModuleRegist
 import { EventEmitter, type ApCoreEvent } from '../src/events/emitter.js';
 import { Middleware } from '../src/middleware/index.js';
 import { ExecutionPolicy, PolicyRule } from '../src/policy.js';
-import { Registry } from '../src/registry/registry.js';
+import { Registry } from '../src/full.js';
 import type { Context } from '../src/context.js';
 import type { PipelineState, StepMiddleware } from '../src/pipeline.js';
 
@@ -765,7 +765,7 @@ describe('APCore.on() / off()', () => {
 describe('APCore.enable() / disable()', () => {
   it('updates the state used by the supplied executor when disabling a module', async () => {
     const config = new Config({ sys_modules: { enabled: true, events: { enabled: true } } });
-    const executor = new Executor({ registry: new Registry(), config });
+    const executor = new Executor({ registry: new Registry(), config, approvalHandler: new AutoApproveHandler() });
     const client = new APCore({ config, executor });
     registerAdd(client);
 
@@ -785,6 +785,7 @@ describe('APCore.enable() / disable()', () => {
       sys_modules: { enabled: true, events: { enabled: true } },
     });
     const client = new APCore({ config });
+    client.executor.setApprovalHandler(new AutoApproveHandler());
     registerAdd(client);
 
     const disableResult = await client.disable('math.add', 'testing');
@@ -803,7 +804,7 @@ describe('APCore.enable() / disable()', () => {
 
 describe('APCore exports', () => {
   it('is exported from index', async () => {
-    const mod = await import('../src/index.js');
+    const mod = await import('../src/full.js');
     expect(mod.APCore).toBeDefined();
     expect(typeof mod.APCore).toBe('function');
   });

@@ -2,8 +2,8 @@
  * High-level client for apcore to simplify interaction.
  */
 
+import type { ACL } from './acl.js';
 import type { TSchema } from '@sinclair/typebox';
-import { ACL, _isAclDiscovererInstalled } from './acl.js';
 import type { Config } from './config.js';
 import type { Context } from './context.js';
 import { type FunctionModule, module as createModule } from './decorator.js';
@@ -12,7 +12,7 @@ import { createEvent, type ApCoreEvent, type EventEmitter, type EventSubscriber 
 import { Executor } from './executor.js';
 import {
   freezeLifecycleReport,
-  lifecycleCallbackWaitError,
+  type LifecycleCallbacks,
   lifecycleError,
   lifecycleHandle,
   LifecycleCompletion,
@@ -29,21 +29,10 @@ import type { Middleware } from './middleware/index.js';
 import type { ModuleAnnotations, ModuleExample, PreflightResult, ResourceLimits } from './module.js';
 import type { MetricsCollector } from './observability/metrics.js';
 import type { StreamExecution } from './stream-completion.js';
-import { buildTracingMiddleware } from './observability/tracing-config.js';
 import { Registry } from './registry/registry.js';
 import type { RegisterSysModulesOptions, SysModulesContext } from './sys-modules/registration.js';
 import { ToggleState } from './sys-modules/toggle.js';
 
-/**
- * Optional Node-side hook that auto-registers system modules when an
- * `APCore` is constructed with a non-null `Config`. Installed by the
- * Node entry's side-effect import of `./sys-modules/install.ts`.
- *
- * Browser bundles never import the installer, so `_sysModulesInstaller`
- * stays `null` and the constructor skips auto-registration. Browser
- * callers either pass `config: undefined` (the recommended path) or
- * register sys-modules manually after construction.
- */
 type SysModulesInstaller = (
   registry: Registry,
   executor: Executor,
@@ -51,14 +40,29 @@ type SysModulesInstaller = (
   metricsCollector?: MetricsCollector | null,
   options?: RegisterSysModulesOptions,
 ) => SysModulesContext;
-let _sysModulesInstaller: SysModulesInstaller | null = null;
 
-/** @internal — used by the Node-only `./sys-modules/install.ts` side-effect. */
-export function _setSysModulesInstaller(fn: SysModulesInstaller): void {
-  _sysModulesInstaller = fn;
+/** Optional services used to assemble an APCore instance. */
+export interface APCorePlugin {
+  readonly createRegistry?: (config: Config | null, callbacks?: LifecycleCallbacks) => Registry;
+  readonly createLifecycleCallbacks?: () => LifecycleCallbacks;
+  readonly discoverAcl?: (config: Config) => ACL | null;
+  readonly registerSysModules?: SysModulesInstaller;
+  readonly createTracingMiddleware?: (config: Config) => Middleware | null;
+}
+
+function pluginCapability<K extends keyof APCorePlugin>(
+  plugins: readonly APCorePlugin[] | undefined, key: K,
+): APCorePlugin[K] {
+  const capabilities = (plugins ?? []).map(plugin => plugin[key]).filter(capability => capability !== undefined);
+  if (capabilities.length > 1) {
+    throw new InvalidInputError(`Multiple APCore plugins provide '${key}'`);
+  }
+  return capabilities[0];
 }
 
 export interface APCoreOptions {
+  /** Optional instance-owned services. A supplied executor or registry takes precedence. */
+  plugins?: readonly APCorePlugin[];
   registry?: Registry;
   executor?: Executor;
   config?: Config;
@@ -130,10 +134,18 @@ export class APCore {
   private readonly _sysModulesErrors: Error[] = [];
   private _shutdown: ClientShutdown | undefined;
 
-  constructor(options?: APCoreOptions) {
+  constructor(options?: APCoreOptions);
+  /** @internal Profile-specific defaults that do not consult the legacy adapters. */
+  constructor(options: APCoreOptions | undefined, profile: APCorePlugin);
+  constructor(options?: APCoreOptions, profile?: APCorePlugin) {
     this.config = options?.config ?? null;
     this.metricsCollector = options?.metricsCollector ?? null;
     const prebuiltExecutor = options?.executor;
+    const createRegistry = pluginCapability(options?.plugins, 'createRegistry') ?? profile?.createRegistry;
+    const discoverAcl = pluginCapability(options?.plugins, 'discoverAcl') ?? profile?.discoverAcl;
+    const installSysModules = pluginCapability(options?.plugins, 'registerSysModules') ?? profile?.registerSysModules;
+    const createTracingMiddleware = pluginCapability(options?.plugins, 'createTracingMiddleware')
+      ?? profile?.createTracingMiddleware;
     this._toggleState = prebuiltExecutor?.toggleState ?? options?.toggleState ?? new ToggleState();
 
     // CLI-1: a supplied Executor brings its own Registry, and that is the one
@@ -156,10 +168,13 @@ export class APCore {
     // `discover()` scan the hardcoded `./extensions` default whatever the
     // config said. A Config that declares none of those keys still resolves
     // to exactly the previous default, so this only ever narrows.
-    this.registry =
-      prebuiltExecutor?.registry ??
-      options?.registry ??
-      new Registry({ config: this.config });
+    const suppliedRegistry = prebuiltExecutor?.registry ?? options?.registry;
+    const callbacks = suppliedRegistry === undefined
+      ? (pluginCapability(options?.plugins, 'createLifecycleCallbacks') ?? profile?.createLifecycleCallbacks)?.()
+      : undefined;
+    this.registry = suppliedRegistry
+      ?? createRegistry?.(this.config, callbacks)
+      ?? new Registry({ config: this.config, lifecycleCallbacks: callbacks });
     this.executor =
       prebuiltExecutor ??
       new Executor({
@@ -172,19 +187,13 @@ export class APCore {
         policy: options?.policy ?? null,
       });
 
-    // Activate config-driven ACL discovery (D-64 / issue #74). When a config
-    // is present and we built the Executor ourselves, resolve `acl.root` and
-    // attach the discovered ACL. A missing acl path returns null and attaches
-    // NOTHING — preserving "no enforcement" for projects without an acl file
-    // (never a silent empty default-deny). Skipped when a pre-built Executor
-    // was supplied so the caller's explicit ACL wiring is never clobbered, and
-    // skipped in browser bundles where the Node-only discoverer is never wired
-    // (so ACL.discover's browser-guidance throw is never hit).
-    if (this.config && prebuiltExecutor === undefined && _isAclDiscovererInstalled()) {
-      const discovered = ACL.discover(this.config);
-      if (discovered !== null) {
-        this.executor.setAcl(discovered);
+    // Respect ACLs already configured on a supplied Executor.
+    if (this.config && prebuiltExecutor === undefined) {
+      if (discoverAcl === undefined && this.config.get('acl.root') != null) {
+        throw new InvalidInputError('Configured ACL paths require an ACL discovery plugin or a configured executor');
       }
+      const discovered = discoverAcl?.(this.config);
+      if (discovered) this.executor.setAcl(discovered);
     }
 
     // Config-driven tracing (PROTOCOL_SPEC §10.1.1). `observability.tracing.*`
@@ -199,21 +208,14 @@ export class APCore {
     // here has an empty middleware chain, so configuration can never be the
     // thing that adds a SECOND tracing middleware. A caller who calls
     // `use(new TracingMiddleware(...))` afterwards is adding one deliberately.
-    if (this.config && prebuiltExecutor === undefined) {
-      const tracingMw = buildTracingMiddleware(this.config);
-      if (tracingMw !== null) {
-        this.executor.use(tracingMw);
-      }
+    if (this.config && prebuiltExecutor === undefined && createTracingMiddleware) {
+      const tracingMw = createTracingMiddleware(this.config);
+      if (tracingMw !== null) this.executor.use(tracingMw);
     }
 
-    // Auto-register sys modules if config is provided AND the Node-side
-    // installer is wired up. In browser bundles `_sysModulesInstaller`
-    // remains null, so this branch is skipped — keeping the chain to
-    // `node:fs`/`node:path` (sys-modules/registration.ts and friends)
-    // out of the browser closure.
-    if (this.config && _sysModulesInstaller) {
+    if (this.config && installSysModules) {
       try {
-        this._sysModulesContext = _sysModulesInstaller(
+        this._sysModulesContext = installSysModules(
           this.registry,
           this.executor,
           this.config,
@@ -325,6 +327,8 @@ export class APCore {
     let complete = false;
     const settled = new LifecycleCompletion();
     const callbackOwners = events ? [this.registry, events] : [this.registry];
+    const callbackWaitError = () => this.registry.lifecycleCallbacks.waitError(callbackOwners)
+      ?? events?.lifecycleCallbacks.waitError(callbackOwners);
     const operation = lifecycleHandle(() => {
       const report = registry.snapshot();
       return freezeLifecycleReport({
@@ -332,7 +336,7 @@ export class APCore {
         status: complete ? (eventError ? 'failed' : report.status) : 'pending',
         ...(eventError && report.error === undefined ? { error: eventError } : {}),
       });
-    }, settled, callbackOwners);
+    }, settled, callbackWaitError);
     const completion = registryCompletion.finally(async () => {
       if (!events) return;
       try {
@@ -359,7 +363,7 @@ export class APCore {
     });
     void completion.catch(() => {});
     this._shutdown = { operation, completion, eventFlushTimeoutMs,
-      waitError: () => complete ? undefined : lifecycleCallbackWaitError(callbackOwners),
+      waitError: () => complete ? undefined : callbackWaitError(),
     };
     return this._shutdown;
   }

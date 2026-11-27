@@ -9,14 +9,15 @@ import type { MetricsCollector } from '../observability/metrics.js';
 import type { AuditStore } from './audit.js';
 import type { OverridesStore } from './overrides.js';
 import { FileOverridesStore } from './overrides.js';
+import { readFileOverrides } from './read-overrides-file.js';
 import { TOGGLE_OVERRIDE_PREFIX } from './override-update.js';
-import { SysModuleRegistrationError } from '../errors.js';
+import { ConfigError, SysModuleRegistrationError } from '../errors.js';
 import { ErrorHistory } from '../observability/error-history.js';
 import { ErrorHistoryMiddleware } from '../middleware/error-history.js';
 import { UsageCollector, UsageMiddleware } from '../observability/usage.js';
 import type { EventSubscriber } from '../events/emitter.js';
-import { createEvent, EventEmitter } from '../events/emitter.js';
-import { WebhookSubscriber, A2ASubscriber, FileSubscriber, StdoutSubscriber, FilterSubscriber } from '../events/subscribers.js';
+import { createEvent, EventEmitter } from '../events/entry.js';
+import { WebhookSubscriber, FileSubscriber, StdoutSubscriber, FilterSubscriber } from '../events/subscribers.js';
 import type { RetryConfig } from '../events/retry.js';
 import { CircuitBreakerWrapper } from '../events/circuit-breaker.js';
 import { PlatformNotifyMiddleware } from '../middleware/platform-notify.js';
@@ -67,9 +68,7 @@ function _cfgGet(
 // Subscriber type registry — extensible factory for EventSubscriber types
 // ---------------------------------------------------------------------------
 
-type SubscriberFactory = (config: Record<string, unknown>) => EventSubscriber;
-
-const _subscriberFactories: Map<string, SubscriberFactory> = new Map();
+export type SubscriberFactory = (config: Record<string, unknown>) => EventSubscriber;
 
 /**
  * Parse a subscriber's nested `retry:` block into a RetryConfig.
@@ -100,8 +99,8 @@ function _parseRetryConfig(config: Record<string, unknown>): RetryConfig | undef
   return retry;
 }
 
-function _registerBuiltInFactories(): void {
-  _subscriberFactories.set('webhook', (config: Record<string, unknown>): EventSubscriber => {
+function _registerBuiltInFactories(factories: Map<string, SubscriberFactory>): void {
+  factories.set('webhook', (config: Record<string, unknown>): EventSubscriber => {
     const url = config['url'] as string;
     const headers = config['headers'] as Record<string, string> | undefined;
     const retryCount = config['retry_count'] as number | undefined;
@@ -121,18 +120,7 @@ function _registerBuiltInFactories(): void {
     return new WebhookSubscriber(url, headers, opts);
   });
 
-  _subscriberFactories.set('a2a', (config: Record<string, unknown>): EventSubscriber => {
-    const platformUrl = config['platform_url'] as string;
-    const auth = config['auth'] as string | Record<string, string> | undefined;
-    const timeoutMs = config['timeout_ms'] as number | undefined;
-    const opts: { timeoutMs?: number; retry?: RetryConfig } = {};
-    if (timeoutMs !== undefined) opts.timeoutMs = timeoutMs;
-    const retry = _parseRetryConfig(config);
-    if (retry !== undefined) opts.retry = retry;
-    return new A2ASubscriber(platformUrl, auth, opts);
-  });
-
-  _subscriberFactories.set('file', (config: Record<string, unknown>): EventSubscriber => {
+  factories.set('file', (config: Record<string, unknown>): EventSubscriber => {
     const path = config['path'];
     if (typeof path !== 'string' || path.length === 0) {
       throw new Error(`file subscriber requires a non-empty "path" string field`);
@@ -153,7 +141,7 @@ function _registerBuiltInFactories(): void {
     );
   });
 
-  _subscriberFactories.set('stdout', (config: Record<string, unknown>): EventSubscriber => {
+  factories.set('stdout', (config: Record<string, unknown>): EventSubscriber => {
     const format = config['format'] as string | undefined;
     const levelFilter = config['level_filter'] as string | undefined;
     const retry = _parseRetryConfig(config);
@@ -167,13 +155,13 @@ function _registerBuiltInFactories(): void {
     );
   });
 
-  _subscriberFactories.set('filter', (config: Record<string, unknown>): EventSubscriber => {
+  factories.set('filter', (config: Record<string, unknown>): EventSubscriber => {
     const delegateType = config['delegate_type'];
     if (typeof delegateType !== 'string') {
       throw new Error(`filter subscriber requires a "delegate_type" string field`);
     }
     const delegateConfig = (config['delegate_config'] ?? {}) as Record<string, unknown>;
-    const delegateFactory = _subscriberFactories.get(delegateType);
+    const delegateFactory = factories.get(delegateType);
     if (delegateFactory === undefined) {
       throw new Error(`Unknown delegate subscriber type '${delegateType}' for filter subscriber`);
     }
@@ -190,41 +178,28 @@ function _registerBuiltInFactories(): void {
   });
 }
 
-// Register built-in factories on module load
-_registerBuiltInFactories();
-
-/** Register a custom subscriber type for config-driven instantiation. */
-export function registerSubscriberType(
-  typeName: string,
-  factory: SubscriberFactory,
-): void {
-  _subscriberFactories.set(typeName, factory);
-}
-
-/** Remove a previously registered subscriber type. */
-export function unregisterSubscriberType(typeName: string): void {
-  if (!_subscriberFactories.has(typeName)) {
-    throw new Error(`Subscriber type '${typeName}' is not registered`);
-  }
-  _subscriberFactories.delete(typeName);
-}
-
-/** Reset the registry to built-in types only. Intended for test teardown. */
-export function resetSubscriberRegistry(): void {
-  _subscriberFactories.clear();
-  _registerBuiltInFactories();
+function instanceSubscriberFactories(
+  custom: Readonly<Record<string, SubscriberFactory>>,
+): ReadonlyMap<string, SubscriberFactory> {
+  const factories = new Map<string, SubscriberFactory>();
+  _registerBuiltInFactories(factories);
+  for (const [name, factory] of Object.entries(custom)) factories.set(name, factory);
+  return factories;
 }
 
 /**
  * Instantiate a single subscriber from a config object.
  * The `type` field selects the factory; all other fields are passed as config.
  */
-export function createSubscriberFromConfig(config: Record<string, unknown>): EventSubscriber {
+export function createSubscriberFromConfig(
+  config: Record<string, unknown>,
+  subscriberFactories: Readonly<Record<string, SubscriberFactory>> = {},
+): EventSubscriber {
   const typeName = config['type'] as string | undefined;
   if (typeof typeName !== 'string') {
     throw new Error('Subscriber config missing "type" field');
   }
-  const factory = _subscriberFactories.get(typeName);
+  const factory = instanceSubscriberFactories(subscriberFactories).get(typeName);
   if (factory === undefined) {
     throw new Error(`Unknown subscriber type '${typeName}'`);
   }
@@ -238,6 +213,7 @@ export function _instantiateSubscribers(
   config: Config,
   eventEmitter: EventEmitter,
   sysCfg: Record<string, unknown> | null = null,
+  factories: ReadonlyMap<string, SubscriberFactory> = instanceSubscriberFactories({}),
 ): void {
   const subscriberConfigs = _cfgGet(sysCfg, config, 'events.subscribers', []) as
     ReadonlyArray<Record<string, unknown>>;
@@ -249,7 +225,7 @@ export function _instantiateSubscribers(
       continue;
     }
 
-    const factory = _subscriberFactories.get(typeName);
+    const factory = factories.get(typeName);
     if (factory === undefined) {
       console.warn('[apcore:events]', `Unknown subscriber type '${typeName}', skipping`);
       continue;
@@ -285,6 +261,10 @@ export interface RegisterSysModulesOptions {
   overridesPath?: string;
   /** Pluggable persistent override store (Issue #45.1). */
   overridesStore?: OverridesStore;
+  /** Factories used only by this installation, layered over the built-ins. */
+  subscriberFactories?: Readonly<Record<string, SubscriberFactory>>;
+  /** @internal Reader used when an explicit store is combined with an overrides file. */
+  overridesLoader?: OverridesLoader;
   auditStore?: AuditStore;
   /**
    * Per-instance ToggleState (Issue #71). When provided, the toggle module
@@ -346,13 +326,6 @@ function _applyOverrides(
   }
 }
 
-let _overridesLoader: OverridesLoader | null = null;
-
-/** @internal — used by `./overrides-file.ts` to install the Node-side reader. */
-export function _setOverridesLoader(fn: OverridesLoader): void {
-  _overridesLoader = fn;
-}
-
 /**
  * Auto-register all sys.* modules and middleware based on config.
  */
@@ -366,6 +339,7 @@ export function registerSysModules(
   const result: SysModulesContext = {};
   const failOnError = options?.failOnError ?? false;
   const explicitOverridesStore = options?.overridesStore ?? null;
+  const overridesLoader = options?.overridesLoader ?? readFileOverrides;
   const auditStore = options?.auditStore ?? null;
   // Per-instance ToggleState (Issue #71): undefined here lets
   // ToggleFeatureModule fall back to DEFAULT_TOGGLE_STATE.
@@ -410,22 +384,11 @@ export function registerSysModules(
     explicitOverridesStore ??
     (overridesPath !== null ? new FileOverridesStore(overridesPath) : null);
 
-  // Load overrides file and apply after base config. The actual file
-  // reader is installed by the Node-only side-effect module
-  // `./overrides-file.js` (imported by the package's Node entry). When
-  // running in a browser bundle the loader is unset and overridesPath is
-  // silently ignored.
-  //
-  // Only needed when an explicit store displaced the synthesized file store:
-  // otherwise the `FileOverridesStore` built above reads the same YAML file
-  // in the store branch below, and running both would apply it twice.
-  if (explicitOverridesStore !== null && overridesPath !== null && _overridesLoader !== null) {
-    // Loaders installed via `_setOverridesLoader` already swallow file IO
-    // errors and return null, but we still defend against a future loader
-    // that throws — preserves the v0.21.0 fail-soft semantics.
+  // Read the file separately when a supplied store takes precedence.
+  if (explicitOverridesStore !== null && overridesPath !== null) {
     let parsed: Record<string, unknown> | null = null;
     try {
-      parsed = _overridesLoader(overridesPath);
+      parsed = overridesLoader(overridesPath);
     } catch (err) {
       console.warn('[apcore:sys-modules] Overrides loader threw:', err);
     }
@@ -456,6 +419,14 @@ export function registerSysModules(
     sysCfg = _resolveSysCfg(config);
   }
 
+  const retentionHours = _cfgGet(sysCfg, config, 'usage.retention_hours', 168);
+  if (typeof retentionHours !== 'number' || !Number.isInteger(retentionHours) || retentionHours < 1) {
+    throw new ConfigError('sys_modules.usage.retention_hours must be a positive integer');
+  }
+  if (_cfgGet(sysCfg, config, 'usage.bucketing_strategy', 'hourly') !== 'hourly') {
+    throw new ConfigError("sys_modules.usage.bucketing_strategy must be 'hourly'");
+  }
+
   // Error history
   const maxPerModule = Number(_cfgGet(sysCfg, config, 'error_history.max_entries_per_module', 50));
   const maxTotal = Number(_cfgGet(sysCfg, config, 'error_history.max_total_entries', 1000));
@@ -467,7 +438,7 @@ export function registerSysModules(
   result.errorHistoryMiddleware = ehMiddleware;
 
   // Usage tracking
-  const usageCollector = new UsageCollector();
+  const usageCollector = new UsageCollector({ retentionHours });
   result.usageCollector = usageCollector;
   const usageMiddleware = new UsageMiddleware(usageCollector);
   executor.use(usageMiddleware);
@@ -518,11 +489,12 @@ export function registerSysModules(
 
   // Events system
   if (_cfgGet(sysCfg, config, 'events.enabled', false)) {
-    const eventEmitter = new EventEmitter();
+    const eventEmitter = new EventEmitter(undefined, registry.lifecycleCallbacks);
     result.eventEmitter = eventEmitter;
 
     // Config-driven subscribers
-    _instantiateSubscribers(config, eventEmitter, sysCfg);
+    const factories = instanceSubscriberFactories(options?.subscriberFactories ?? {});
+    _instantiateSubscribers(config, eventEmitter, sysCfg, factories);
 
     // PlatformNotifyMiddleware
     const errorRateThreshold = Number(_cfgGet(sysCfg, config, 'events.thresholds.error_rate', 0.1));

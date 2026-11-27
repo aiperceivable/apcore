@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Add portable observability, explicit runtime profiles, and instance-owned Node discovery, lifecycle, and system module assembly.
+
+### Changed
+
+- Use in-memory Core at the package root. Import `apcore-js/full` for the Node profile and `apcore-js/config` for YAML configuration.
+- Default approval and destructive execution policy to fail closed. Use explicit policy settings for opt-outs.
+
+### Removed
+
+- Move the Prometheus network listener to Toolkit, A2A event delivery to Surfaces, and provider schema projections to MCP. Core retains Prometheus text rendering and generic schema transformations.
+
 ## [1.0.0-alpha.1]
 
 ### Added

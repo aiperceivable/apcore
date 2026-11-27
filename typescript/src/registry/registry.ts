@@ -20,7 +20,7 @@ import {
 } from '../errors.js';
 import {
   type DrainAbortReason,
-  lifecycleCallback,
+  LifecycleCallbacks,
   LifecycleCompletion,
   lifecycleError,
   LifecycleProgress,
@@ -39,7 +39,7 @@ import { resolveEntryPoint } from './entry-point.js';
 import { mergeModuleMetadata, parseDependencies, snapshotRegistryData } from './metadata-pure.js';
 import { governanceUnion } from '../schema/annotations.js';
 import { _discoverMultiClass } from './multi-class.js';
-import { getSchema } from './schema-export.js';
+import { getSchema } from './schema-query.js';
 import { toStrictSchema } from '../schema/strict.js';
 import type { DependencyInfo, DiscoveredModule, ModuleDescriptor } from './types.js';
 import { validateModule } from './validation.js';
@@ -55,17 +55,42 @@ export interface RegistrationSnapshot {
   readonly generation: ExecutionGeneration;
 }
 
-type RegistryFilesystem = {
-  fs: Pick<typeof import('node:fs'), 'accessSync' | 'realpathSync'> & {
-    watch(path: string, options: { recursive: boolean }, listener: (event: string, filename: string | null) => void): import('node:fs').FSWatcher;
+/** Filesystem services supplied by a discovery extension. */
+export interface RegistryFilesystem {
+  fs: {
+    accessSync(path: string): void;
+    realpathSync: { native(path: string): string };
+    watch(
+      path: string,
+      options: { recursive: boolean },
+      listener: (event: string, filename: string | null) => void,
+    ): { close(): void; on(event: 'error', listener: (error: Error) => void): unknown };
   };
-  path: typeof import('node:path');
+  path: {
+    isAbsolute(path: string): boolean;
+    resolve(...paths: string[]): string;
+    join(...paths: string[]): string;
+    basename(path: string, suffix?: string): string;
+    extname(path: string): string;
+  };
   entryPointSpecifier(filePath: string, reload: boolean): string;
-  loadIdMap: typeof import('./metadata.js').loadIdMap;
-  loadMetadata: typeof import('./metadata.js').loadMetadata;
-  scanExtensions: typeof import('./scanner.js').scanExtensions;
-  scanMultiRoot: typeof import('./scanner.js').scanMultiRoot;
-};
+  loadIdMap(idMapPath: string): Record<string, Record<string, unknown>>;
+  loadMetadata(metaPath: string): Record<string, unknown>;
+  scanExtensions(root: string, maxDepth?: number, followSymlinks?: boolean, ignorePatterns?: readonly string[]): DiscoveredModule[];
+  scanMultiRoot(
+    roots: Array<Record<string, unknown>>, maxDepth?: number, followSymlinks?: boolean, ignorePatterns?: readonly string[],
+  ): DiscoveredModule[];
+}
+
+export interface RegistryOptions {
+  config?: Config | null;
+  extensionsDir?: string | null;
+  extensionsDirs?: Array<string | Record<string, unknown>> | null;
+  idMapPath?: string | null;
+  /** Pass a capability to enable discovery explicitly, or null to use only in-memory operations. */
+  filesystem?: RegistryFilesystem | null;
+  lifecycleCallbacks?: LifecycleCallbacks;
+}
 
 interface DiscoveredRegistration {
   readonly sourceFile: string;
@@ -113,20 +138,6 @@ interface ReloadReservation {
   readonly sourceFile?: string;
   readonly settled: LifecycleCompletion;
   publishedVersion?: string;
-}
-
-let registryFilesystem: RegistryFilesystem | null = null;
-
-/** @internal Installed by the Node entry point. */
-export function _setRegistryFilesystem(filesystem: RegistryFilesystem): void {
-  registryFilesystem = filesystem;
-}
-
-function requireRegistryFilesystem(): RegistryFilesystem {
-  if (registryFilesystem === null) {
-    throw new Error('Filesystem registry operations require the Node entry point. Register modules programmatically in browsers.');
-  }
-  return registryFilesystem;
 }
 
 /**
@@ -456,12 +467,13 @@ export class Registry {
    */
   private _eventEmitter: EventEmitter | null = null;
 
-  constructor(options?: {
-    config?: Config | null;
-    extensionsDir?: string | null;
-    extensionsDirs?: Array<string | Record<string, unknown>> | null;
-    idMapPath?: string | null;
-  }) {
+  private readonly _filesystem: RegistryFilesystem | null;
+  /** @internal Used by components that share this registry's lifecycle. */
+  readonly lifecycleCallbacks: LifecycleCallbacks;
+
+  constructor(options?: RegistryOptions) {
+    this._filesystem = options?.filesystem ?? null;
+    this.lifecycleCallbacks = options?.lifecycleCallbacks ?? new LifecycleCallbacks();
     const config = options?.config ?? null;
     const extensionsDir = options?.extensionsDir ?? null;
     const extensionsDirs = options?.extensionsDirs ?? null;
@@ -506,10 +518,18 @@ export class Registry {
     this._idMapPath = options?.idMapPath ?? idMapFromConfig(config);
   }
 
+  private _requireFilesystem(): RegistryFilesystem {
+    const filesystem = this._filesystem;
+    if (filesystem === null) {
+      throw new Error('Filesystem registry operations require a discovery extension. Register modules programmatically without it.');
+    }
+    return filesystem;
+  }
+
   /** Lazily load the ID map from disk on first discover(). */
   private async _ensureIdMap(): Promise<void> {
     if (this._idMapLoaded || this._idMapPath === null) return;
-    this._idMap = requireRegistryFilesystem().loadIdMap(this._idMapPath);
+    this._idMap = this._requireFilesystem().loadIdMap(this._idMapPath);
     this._idMapLoaded = true;
   }
 
@@ -652,9 +672,9 @@ export class Registry {
 
     const hasNamespace = this._extensionRoots.some((r) => 'namespace' in r);
     if (this._extensionRoots.length > 1 || hasNamespace) {
-      return requireRegistryFilesystem().scanMultiRoot(this._extensionRoots, maxDepth, followSymlinks, ignorePatterns);
+      return this._requireFilesystem().scanMultiRoot(this._extensionRoots, maxDepth, followSymlinks, ignorePatterns);
     }
-    return requireRegistryFilesystem().scanExtensions(
+    return this._requireFilesystem().scanExtensions(
       this._extensionRoots[0]['root'] as string,
       maxDepth,
       followSymlinks,
@@ -695,7 +715,7 @@ export class Registry {
   private async _applyIdMapOverrides(discovered: import('./types.js').DiscoveredModule[]): Promise<void> {
     if (Object.keys(this._idMap).length === 0) return;
 
-    const { fs: nodeFs, path: nodePath } = requireRegistryFilesystem();
+    const { fs: nodeFs, path: nodePath } = this._requireFilesystem();
     const resolvedRoots = this._extensionRoots.map((entry) => {
       const root = entry['root'] as string;
       return nodePath.isAbsolute(root) ? root : nodePath.resolve(root);
@@ -711,10 +731,6 @@ export class Registry {
           // A silently-skipped override is the worst shape for this surface:
           // the map loads, the discovery succeeds, and the IDs are simply not
           // the ones the operator declared.
-          // Loaded through `ensureNodeModules`, never a top-level `node:fs`
-          // import: this module is in the browser entry's dependency graph and
-          // a static import pulls Node-only code into it. The import-graph
-          // guard catches that, which is how this comment came to exist.
           let rootReal: string;
           try {
             rootReal = nodeFs.realpathSync.native(root);
@@ -746,7 +762,7 @@ export class Registry {
   ): Promise<Map<DiscoveredModule, Record<string, unknown>>> {
     const rawMetadata = new Map<DiscoveredModule, Record<string, unknown>>();
     for (const dm of discovered) {
-      rawMetadata.set(dm, dm.metaPath ? requireRegistryFilesystem().loadMetadata(dm.metaPath) : {});
+      rawMetadata.set(dm, dm.metaPath ? this._requireFilesystem().loadMetadata(dm.metaPath) : {});
     }
     return rawMetadata;
   }
@@ -760,7 +776,7 @@ export class Registry {
     for (const dm of discovered) {
       const metadata = rawMetadata.get(dm) ?? {};
       try {
-        const specifier = requireRegistryFilesystem().entryPointSpecifier(dm.filePath, reloadFiles.has(dm.filePath));
+        const specifier = this._requireFilesystem().entryPointSpecifier(dm.filePath, reloadFiles.has(dm.filePath));
         const module = await resolveEntryPoint(dm.filePath, metadata, specifier);
         resolvedModules.push([dm.canonicalId, { module, metadata, sourceFile: dm.filePath }]);
       } catch (e) {
@@ -1125,7 +1141,7 @@ export class Registry {
         throw error;
       };
       const cleanup = typeof onLoad === 'function' || options?.managed && options.beforePublish
-        ? lifecycleCallback([this], () => this._runOnUnload(moduleId, module)) : undefined;
+        ? this.lifecycleCallbacks.run([this], () => this._runOnUnload(moduleId, module)) : undefined;
       if (cleanup === undefined) return fail();
       const failedPublication = cleanup.then(fail);
       this._inFlight.set(moduleId, failedPublication);
@@ -1138,7 +1154,7 @@ export class Registry {
         if (error) throw error;
         if (options?.beforePublish) {
           if (!this._inFlight.has(moduleId)) this._inFlight.set(moduleId, Promise.resolve());
-          const before = lifecycleCallback([this], () => options.beforePublish!(moduleId, module));
+          const before = this.lifecycleCallbacks.run([this], () => options.beforePublish!(moduleId, module));
           if (before !== undefined) {
             const publication = Promise.resolve(before).then(commit).catch(failPublication);
             this._inFlight.set(moduleId, publication);
@@ -1154,7 +1170,7 @@ export class Registry {
     if (typeof onLoad === 'function') {
       this._inFlight.set(moduleId, Promise.resolve());
       try {
-        const result: unknown = lifecycleCallback([this], () => onLoad.call(module));
+        const result: unknown = this.lifecycleCallbacks.run([this], () => onLoad.call(module));
         if (result != null && typeof (result as PromiseLike<unknown>).then === 'function') {
           const promise = Promise.resolve(result).then(publish, (error: unknown) => {
             failLoad(error);
@@ -1209,7 +1225,7 @@ export class Registry {
     this._assertOpen();
     const generations = ids.map(id => this._executionGenerations.get(id) ?? this._latestRemoval(id)?.generation);
     const rows = ids.map((moduleId): ModuleLifecycleProgress => ({ moduleId, phase: 'pending' }));
-    const lifecycle = new LifecycleProgress('unregister_many', rows, []);
+    const lifecycle = new LifecycleProgress('unregister_many', rows, [], this.lifecycleCallbacks);
     const { drainTimeoutMs = 5_000, operationTimeoutMs, onDrainTimeout = 'continue_waiting', cancelGraceMs } = options;
     const policy: ManagedDrainPolicy = { timeoutMs: drainTimeoutMs, action: onDrainTimeout, cancelGraceMs };
     const deadline = operationTimeoutMs === undefined ? Infinity : performance.now() + operationTimeoutMs;
@@ -1749,7 +1765,7 @@ export class Registry {
 
     const generation = this._watchGeneration;
     const drainOptions = options === undefined ? undefined : { ...options };
-    const { fs, path: nodePath } = requireRegistryFilesystem();
+    const { fs, path: nodePath } = this._requireFilesystem();
     const { join } = nodePath;
 
     this._watchers = [];
@@ -1817,7 +1833,7 @@ export class Registry {
 
   private async _handleFileChange(filePath: string, options?: WatchOptions): Promise<void> {
     const watchGeneration = this._watchGeneration;
-    const { path: nodePath } = requireRegistryFilesystem();
+    const { path: nodePath } = this._requireFilesystem();
     const { basename, extname } = nodePath;
     const removal = this._unregisterWatchedFile(filePath, options);
     if (removal !== null) await removal.completion;
@@ -1988,7 +2004,7 @@ export class Registry {
     try {
       if (typeof module.onDrain === 'function' && typeof module.onDrainAborted === 'function') {
         row.activeHook = 'on_drain_aborted';
-        await lifecycleCallback([this, owner], () => module.onDrainAborted!({
+        await this.lifecycleCallbacks.run([this, owner], () => module.onDrainAborted!({
           operationId: owner.report.operationId, moduleId, signal: new AbortController().signal, abortReason,
         }));
       }
@@ -2034,7 +2050,7 @@ export class Registry {
       row.phase = 'resuming';
       row.activeHook = 'on_resume';
       try {
-        await lifecycleCallback([this, owner], () => instance.onResume!(state!));
+        await this.lifecycleCallbacks.run([this, owner], () => instance.onResume!(state!));
       } catch (error) {
         console.warn(`[apcore:registry] onResume failed for ${moduleId}:`, error);
       } finally {
@@ -2101,7 +2117,7 @@ export class Registry {
   ): void {
     if (!emitter) return;
     try {
-      lifecycleCallback([this, owner], () => emitter.emit(createEvent(`apcore.registry.${name}`, row.moduleId, severity, {
+      this.lifecycleCallbacks.run([this, owner], () => emitter.emit(createEvent(`apcore.registry.${name}`, row.moduleId, severity, {
         operation_id: owner.report.operationId, ...data,
       })));
     } catch (error) {
@@ -2604,7 +2620,7 @@ export class Registry {
     };
     const completeUnload = (): void => {
       delete progress.activeHook;
-      lifecycleCallback(owners, () => this._notifyUnregister(moduleId, module, options.context));
+      this.lifecycleCallbacks.run(owners, () => this._notifyUnregister(moduleId, module, options.context));
       progress.outcome = progress.error ? 'failed' : forcedAfterMs === undefined ? 'removed' : 'forced_removed';
       if (forcedAfterMs !== undefined && generation.references > 0) {
         progress.cleanupPending = true;
@@ -2623,7 +2639,7 @@ export class Registry {
     };
     const unload = (): void => {
       progress.activeHook = 'on_unload';
-      const cleanup = lifecycleCallback(owners, () => this._runOnUnload(moduleId, module, error => {
+      const cleanup = this.lifecycleCallbacks.run(owners, () => this._runOnUnload(moduleId, module, error => {
         progress.error ??= lifecycleError(error, 'unloading');
       }));
       if (cleanup === undefined) completeUnload();
@@ -2633,7 +2649,7 @@ export class Registry {
     if (forcedAfterMs === undefined && options.beforeUnload) {
       const warn = (error: unknown): void => { console.warn(`[apcore:registry] Pre-unload hook failed for ${moduleId}:`, error); };
       try {
-        const before = lifecycleCallback(owners, () => options.beforeUnload!(module));
+        const before = this.lifecycleCallbacks.run(owners, () => options.beforeUnload!(module));
         if (before !== undefined) {
           void before.catch(warn).then(unload);
           return;
@@ -2675,7 +2691,7 @@ export class Registry {
     for (const [moduleId, generation] of this._executionGenerations) rows.set(generation, { moduleId, phase: 'pending' });
     const removals = new Set(Array.from(this._removals.values()).flatMap(entries => [...entries]));
     for (const removal of removals) rows.set(removal.generation, removal.progress);
-    const lifecycle = new LifecycleProgress('shutdown', [...rows.values()], [this]);
+    const lifecycle = new LifecycleProgress('shutdown', [...rows.values()], [this], this.lifecycleCallbacks);
     const completion = lifecycle.run(async () => {
       this.unwatch();
       this._scheduleShutdownRemovals(lifecycle, rows, removals, timeoutMs, policy);

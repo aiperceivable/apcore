@@ -34,8 +34,8 @@ import { DEFAULT_TOGGLE_STATE, type ToggleState } from './sys-modules/toggle.js'
 import { redactSensitive } from './executor.js';
 import { auditSpan } from './execution-lifetime.js';
 import { type EventEmitter, createEvent } from './events/emitter.js';
+import { applyDecisionToAnnotations, DEFAULT_EXECUTION_POLICY } from './policy.js';
 import type { ExecutionPolicy, PolicyDecision } from './policy.js';
-import { applyDecisionToAnnotations } from './policy.js';
 import { MiddlewareChainError, type MiddlewareManager } from './middleware/manager.js';
 import type { Module, ModuleAnnotations } from './module.js';
 import { DEFAULT_ANNOTATIONS, isModuleIdempotent } from './module.js';
@@ -430,11 +430,9 @@ export class BuiltinACLCheck implements Step {
  * audit event (tracing span event + optional event-bus event), and translates
  * the result into either continued execution or the appropriate ApprovalError.
  *
- * Fail-loud governance (apcore#76): when a module needs approval but no handler
- * is configured, the gate keeps the PROTOCOL_SPEC §7.4 skip behavior but warns
- * once per module. With `ExecutionPolicy(strict=true)` it fails closed instead.
- * A module whose effective `destructive` annotation is true but that no approval
- * gate covers is also warned about once per module.
+ * The default policy requires approval for destructive modules and denies
+ * approval-required calls that lack a handler. Explicit policy opt-outs
+ * emit a warning once per affected module.
  */
 export class BuiltinApprovalGate implements Step {
   readonly name = 'approval_gate';
@@ -447,7 +445,7 @@ export class BuiltinApprovalGate implements Step {
   readonly [GOVERNANCE_GATE]: GovernanceGateMarker = { pureIsDefault: false };
 
   private _handler: ApprovalHandler | null;
-  private _policy: ExecutionPolicy | null;
+  private _policy: ExecutionPolicy;
   private _eventEmitter: EventEmitter | null;
   private readonly _warned = new Set<string>();
 
@@ -457,7 +455,7 @@ export class BuiltinApprovalGate implements Step {
     eventEmitter: EventEmitter | null = null,
   ) {
     this._handler = handler;
-    this._policy = policy;
+    this._policy = policy ?? DEFAULT_EXECUTION_POLICY;
     this._eventEmitter = eventEmitter;
   }
 
@@ -477,7 +475,7 @@ export class BuiltinApprovalGate implements Step {
 
   /** Update the execution policy at runtime. */
   setPolicy(policy: ExecutionPolicy | null): void {
-    this._policy = policy;
+    this._policy = policy ?? DEFAULT_EXECUTION_POLICY;
   }
 
   /** Set the event emitter for approval decisions and policy overrides. */
@@ -491,7 +489,7 @@ export class BuiltinApprovalGate implements Step {
   }
 
   /** The execution policy this gate applies (PROTOCOL_SPEC 6.6.5.5, D-129). */
-  get policy(): ExecutionPolicy | null {
+  get policy(): ExecutionPolicy {
     return this._policy;
   }
 
@@ -505,8 +503,7 @@ export class BuiltinApprovalGate implements Step {
     // a module-scoped override cancel a caller-scoped decision is a privilege
     // escalation: a policy rule written for `orders.*` would silently strip a
     // requirement an ACL author attached to one untrusted caller. Union is the
-    // only safe composition, which is why this term is OR-ed into both
-    // branches below rather than folded into the policy's own resolution.
+    // only safe composition, so this term is OR-ed with the policy's resolution.
     const aclApprovalRequired = ctx.aclApprovalRequired === true;
 
     // PROTOCOL_SPEC §7.4 (D-96): governance is the UNION of the live module
@@ -519,33 +516,18 @@ export class BuiltinApprovalGate implements Step {
     // fail-OPEN.
     const governance = governanceUnion(mod?.['annotations'], ctx.declaredAnnotations);
 
-    let decision: PolicyDecision | null = null;
-    let needs: boolean;
-    let effectiveDestructive: boolean;
-    if (this._policy !== null) {
-      // §7.9.6: policy resolution receives the call site — the invocation
-      // arguments and the Context — alongside the module ID and annotations.
-      // These arguments have NOT been schema-validated: this gate is Step 5
-      // and input validation is Step 7 (§12.8).
-      //
-      // The executor isolates the credential before the pipeline starts.
-      decision = this._policy.resolve(ctx.moduleId, governance, {
-        arguments: ctx.inputs ?? null,
-        context: ctx.context ?? null,
-      });
-      needs = decision.needsApproval || aclApprovalRequired;
-      effectiveDestructive = decision.destructive;
-      if (decision.overridden) {
-        this._emitPolicyAudit(decision, ctx.context);
-      }
-    } else {
-      // §6.9 rows 3 and 5: governance union ∪ ACL decision ∪ gate_destructive.
-      needs = Boolean(governance?.requiresApproval) || aclApprovalRequired;
-      effectiveDestructive = Boolean(governance?.destructive);
+    // §7.9.6: policy resolution receives arguments before schema validation.
+    // The executor isolates the credential before the pipeline starts.
+    const decision = this._policy.resolve(ctx.moduleId, governance, {
+      arguments: ctx.inputs ?? null,
+      context: ctx.context ?? null,
+    });
+    if (decision.overridden) {
+      this._emitPolicyAudit(decision, ctx.context);
     }
 
-    if (!needs) {
-      if (effectiveDestructive) {
+    if (!decision.needsApproval && !aclApprovalRequired) {
+      if (decision.destructive) {
         this._warnOnce(
           `destructive_ungated:${ctx.moduleId}`,
           `[apcore:approval] Module '${ctx.moduleId}' is annotated destructive=true but is not ` +
@@ -558,7 +540,7 @@ export class BuiltinApprovalGate implements Step {
     }
 
     if (this._handler === null) {
-      if (this._policy !== null && this._policy.strict) {
+      if (this._policy.strict) {
         const result = createApprovalResult({
           status: 'rejected',
           reason:
@@ -571,14 +553,13 @@ export class BuiltinApprovalGate implements Step {
       this._warnOnce(
         `no_handler:${ctx.moduleId}`,
         `[apcore:approval] Module '${ctx.moduleId}' requires approval but no ApprovalHandler ` +
-          'is configured; the approval gate is skipped per PROTOCOL_SPEC §7.4. Configure an ' +
-          'approval handler, or ExecutionPolicy(strict=true) to fail closed. (apcore#76)',
+          'is configured; explicit ExecutionPolicy(strict=false) lets the call continue ' +
+          'per PROTOCOL_SPEC §7.4.',
       );
       return { action: 'continue' };
     }
 
-    let annotations: ModuleAnnotations = governance ?? DEFAULT_ANNOTATIONS;
-    if (decision !== null) annotations = applyDecisionToAnnotations(annotations, decision);
+    let annotations = applyDecisionToAnnotations(governance ?? DEFAULT_ANNOTATIONS, decision);
     if (!annotations.requiresApproval) annotations = Object.freeze({ ...annotations, requiresApproval: true });
 
     const request = createApprovalRequest({

@@ -16,11 +16,10 @@ import { describe, it, expect } from 'vitest';
 import { writeFileSync, mkdtempSync, rmSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { ACL } from '../src/acl.js';
+import { ACL } from '../src/full.js';
 import type { ACLRule, AuditEntry } from '../src/acl.js';
 import { ACLRuleError, ConfigNotFoundError } from '../src/errors.js';
 // Side-effect import installs the Node-side YAML loader onto ACL.load.
-import '../src/acl-file.js';
 
 // ---------------------------------------------------------------------------
 // Helpers

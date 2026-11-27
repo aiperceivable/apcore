@@ -53,24 +53,32 @@ npm install apcore-js
 
 > **Note:** The npm package is published as `apcore-js` (the `apcore` name is reserved on npm). Python uses `apcore`, Rust uses the `apcore` crate.
 
+## Runtime profiles
+
+- `apcore-js/core` exposes the portable runtime with an in-memory registry and explicit plugin assembly.
+- `apcore-js/full` assembles Node filesystem discovery, configuration-driven ACLs, lifecycle callback tracking, and the configured system modules.
+- `apcore-js/observability` exports `renderPrometheusMetrics` and its portable collectors, middleware, and storage.
+
+The package root and the core subpath expose the same portable runtime. Import the full profile when your application needs Node capabilities.
+
+```typescript
+import { APCore } from "apcore-js/full";
+import { Config } from "apcore-js/config";
+
+const app = new APCore({ config: Config.load() });
+await app.discover();
+```
+
+The `config`, `discovery`, `sys-modules`, and `events` subpaths expose the individual Node extensions. Pass `createSysModulesPlugin({ subscriberFactories })` in a client's `plugins` array to supply its own config-driven event subscriber factories.
+
+The portable lifecycle tracks synchronous callback scopes. Node applications can use the full profile or pass `createNodeLifecyclePlugin()` from `apcore-js/full` to retain callback ownership across an `await`.
+
 ## Browser support
 
-`apcore-js` ships dual entry points via `package.json` conditional exports:
-
-- **Node (default):** `./dist/index.js` — the full surface.
-- **Browser:** `./dist/browser/index.js` — auto-selected by tree-shaking bundlers (Vite, Webpack, esbuild, Rollup) through the `"browser"` exports condition.
-
-The browser bundle **excludes** Node-only surfaces:
-
-- `Config` class, `BindingLoader`, `SchemaLoader` (filesystem-bound)
-- All `system.*` sys-modules (control, manifest, health, usage, audit)
-- Events runtime: `EventEmitter`, all built-in subscribers, `AsyncTaskManager`, `TaskStatus`
-- Observability runtime: `TracingMiddleware`, `MetricsCollector`, exporters, `PrometheusExporter`
-- `RESERVED_NAMESPACES`, `StreamingInterfaceError`, `DuplicateModuleIdError`
-
-`ACL.load(yamlPath)` throws `ACLRuleError` in the browser because the filesystem is unavailable; ACL programmatic construction still works.
-
-**Available in the browser:** `Registry` programmatic `register`/`get`/`list`/`iter`/`unregister`, `Executor`, `ACL` programmatic, `Context`, middleware pipeline, schema validation, all error classes, and the utility helpers.
+The root takes the same portable path in Node and browser builds. It exposes
+in-memory registration and invocation, programmatic ACLs, approval, and schema
+validation. Use the Node subpaths for configuration files, filesystem discovery,
+optional event subscribers, and system modules.
 
 ## Canonicalizing a bare name
 
@@ -142,7 +150,8 @@ optional system-modules subsystem. They require a `Config` instance with
 otherwise the calls throw with a clear "sys_modules must be enabled" message.
 
 ```typescript
-import { APCore, Config } from 'apcore-js';
+import { APCore } from 'apcore-js/full';
+import { Config } from 'apcore-js/config';
 
 // Inline config (equivalent to writing the same YAML and calling Config.load):
 const config = new Config({
@@ -208,7 +217,7 @@ const result = await executor.call('example.greet', { name: 'World' });
 | `EventEmitter` | Event system — subscribe, emit, flush |
 | `CircuitBreakerWrapper` | Subscriber-level circuit breaker — protects `EventEmitter` subscribers from cascading failures |
 | `AsyncTaskManager` | Background task execution — injectable store, retry with backoff, opt-in reaper |
-| `PrometheusExporter` | HTTP metrics server — `/metrics`, `/healthz`, `/readyz`; optional `usageCollector` for usage gauges |
+| `renderPrometheusMetrics` | Renders Prometheus text from metrics and optional usage data |
 | `InMemoryAuditStore` | Control module audit log — records actor, action, before/after change for every control call |
 
 ## Configuration
@@ -218,7 +227,7 @@ const result = await executor.call('example.greet', { name: 'World' });
 `Config` acts as an ecosystem-level Config Bus. Any package can register a namespace with optional JSON Schema validation, environment variable prefix, and defaults.
 
 ```typescript
-import { Config } from 'apcore-js';
+import { Config } from 'apcore-js/config';
 
 // Register a namespace (class-level, shared across all Config instances).
 // registerNamespace takes a single options object; `name` is a field on it.
@@ -369,7 +378,7 @@ too. Only the `audit:` block is called out: every other unrecognised root key in
 still ignored in silence, exactly as before.
 
 Observability and audit logging **do** work — they are wired programmatically, with
-`TracingMiddleware` (see **API Overview**), `PrometheusExporter` (see **System Modules**) and the
+`TracingMiddleware` and the
 `ACL` constructor's audit logger. Tracking:
 [apcore#118](https://github.com/aiperceivable/apcore/issues/118), PROTOCOL_SPEC
 §9.2.4 / §9.2.4.1.
@@ -380,8 +389,8 @@ ignored:
 
 | Not a key | Notes |
 |-----------|-------|
-| `observability.prometheus.*` | The Prometheus exporter's port and paths are constructor arguments — see the `PrometheusExporter` example under **System Modules**. Measured: `Unknown key 'observability.prometheus' (strict mode enabled)`. |
-| `observability.health.*` | `/healthz` and `/readyz` are served by that same exporter, not configured in YAML. |
+| `observability.prometheus.*` | Configure HTTP listener options with `createPrometheusServer` from `apcore-toolkit`. |
+| `observability.health.*` | Toolkit's Prometheus listener serves `/healthz` and `/readyz`. |
 | `observability.redaction.*` | The **legacy** spelling. This SDK still reads `field_patterns` / `value_patterns` / `replacement` under it as a fallback, with a deprecation warning — but the key is undeclared, so strict mode rejects the document before the fallback can run. Write the canonical `obs.redaction.sensitive_keys` / `regex_patterns` / `replacement` instead; apcore-python does not honour the legacy spelling at all. |
 
 ### System Modules
@@ -389,7 +398,8 @@ ignored:
 `registerSysModules()` auto-registers the built-in `system.*` modules that let AI agents query, monitor, and control the apcore runtime. Enable them via `sys_modules.enabled: true` in config, and pass the optional hardening options for production use:
 
 ```typescript
-import { registerSysModules, InMemoryAuditStore } from 'apcore-js';
+import { InMemoryAuditStore } from 'apcore-js/full';
+import { registerSysModules } from 'apcore-js/sys-modules';
 
 const auditStore = new InMemoryAuditStore();
 
@@ -412,22 +422,18 @@ const entries = auditStore.query({ moduleId: 'system.control.update_config' });
 // entries[0] = { timestamp, action, targetModuleId, actorId, actorType, traceId, change }
 ```
 
-**Prometheus usage metrics** — wire `PrometheusExporter` with the `UsageCollector` returned by `registerSysModules`:
+**Prometheus usage metrics** — use the portable renderer for text output or `createPrometheusServer` from `apcore-toolkit` for HTTP metrics and health endpoints.
 
 ```typescript
-import { PrometheusExporter, MetricsCollector } from 'apcore-js';
+import { MetricsCollector, renderPrometheusMetrics } from 'apcore-js/observability';
+import { registerSysModules } from 'apcore-js/sys-modules';
 
-const ctx = registerSysModules(registry, executor, config);
-const exporter = new PrometheusExporter({
-  collector: new MetricsCollector(),
-  usageCollector: ctx.usageCollector,  // adds apcore_usage_* metrics to /metrics
-});
-exporter.start({ port: 9090 });
-// GET /metrics now includes:
-//   apcore_usage_calls_total{module_id="math.add",status="success"} 5000
-//   apcore_usage_error_rate{module_id="math.add"} 0.0004
-//   apcore_usage_p99_latency_ms{module_id="math.add"} 45.0
+const collector = new MetricsCollector();
+const { usageCollector } = registerSysModules(registry, executor, config, collector);
+const prometheusText = renderPrometheusMetrics(collector, usageCollector);
 ```
+
+Use `createSysModulesPlugin({ subscriberFactories })` from `apcore-js/sys-modules` to supply subscriber factories to an individual client. A2A subscribers use `createA2AEventSubscriber` from `apcore-a2a`.
 
 ### Bindings
 
@@ -449,7 +455,8 @@ bindings:
 ```
 
 ```typescript
-import { BindingLoader, Executor, Registry } from 'apcore-js';
+import { Executor, Registry } from 'apcore-js';
+import { BindingLoader } from 'apcore-js/full';
 
 const registry = new Registry();
 const loader = new BindingLoader();
@@ -687,7 +694,8 @@ Demonstrates destructive annotations, `ModuleExample` for AI-perceivable documen
 
 ```typescript
 import { Type } from '@sinclair/typebox';
-import { FunctionModule, ContextLogger, createAnnotations } from 'apcore-js';
+import { FunctionModule, createAnnotations } from 'apcore-js';
+import { ContextLogger } from 'apcore-js/observability';
 import type { Context } from 'apcore-js';
 
 export const sendEmailModule = new FunctionModule({

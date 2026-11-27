@@ -35,11 +35,10 @@ import { describe, expect, it } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { ACL } from '../src/acl.js';
+import { ACL } from '../src/full.js';
 import type { ACLApproval, ACLRule, AuditEntry } from '../src/acl.js';
 import { ACLRuleError } from '../src/errors.js';
 // Side-effect import installs the Node-side YAML loader onto ACL.load.
-import '../src/acl-file.js';
 
 interface RuleSpec {
   readonly callers: string[];

@@ -40,10 +40,10 @@ const RULE_KEYS = new Set(['pattern', 'requires_approval', 'destructive', 'reaso
  * decision made by accident. `fromObject` already fails loud on unknown keys
  * for the same reason; this extends that discipline to the values.
  *
- * `undefined` / `null` mean "unset" and take the documented default of `false`.
+ * `undefined` / `null` mean "unset" and take the documented default of `true`.
  */
 function _requireBoolean(value: unknown, key: string): boolean {
-  if (value === undefined || value === null) return false;
+  if (value === undefined || value === null) return true;
   if (typeof value !== 'boolean') {
     const kind = Array.isArray(value) ? 'array' : typeof value;
     throw new Error(
@@ -197,14 +197,13 @@ export class ExecutionPolicy {
   private readonly _rules: readonly PolicyRule[];
   /**
    * When true, modules whose effective `destructive` annotation is true require
-   * approval even if `requiresApproval` is false — the opt-in resolution of the
-   * destructive↔approval gap described in apcore#76.
+   * approval even if `requiresApproval` is false. Defaults to true.
    */
   readonly gateDestructive: boolean;
   /**
    * When true, the approval gate fails closed (denies) when a module needs
-   * approval but no ApprovalHandler is configured. When false (default), the
-   * gate keeps the PROTOCOL_SPEC §7.4 skip behavior but logs a warning.
+   * approval but no ApprovalHandler is configured. Defaults to true.
+   * Set false to warn and continue (PROTOCOL_SPEC §7.4).
    */
   readonly strict: boolean;
 
@@ -219,8 +218,8 @@ export class ExecutionPolicy {
       }
     }
     this._rules = frozen;
-    this.gateDestructive = Boolean(options.gateDestructive);
-    this.strict = Boolean(options.strict);
+    this.gateDestructive = _requireBoolean(options.gateDestructive, 'gateDestructive');
+    this.strict = _requireBoolean(options.strict, 'strict');
   }
 
   /** The policy's rules as an immutable array. */
@@ -386,3 +385,7 @@ export function applyDecisionToAnnotations(
     destructive: decision.destructive,
   });
 }
+
+/** @internal Effective policy when no explicit execution policy was supplied. */
+export const DEFAULT_EXECUTION_POLICY = new ExecutionPolicy();
+Object.freeze(DEFAULT_EXECUTION_POLICY);

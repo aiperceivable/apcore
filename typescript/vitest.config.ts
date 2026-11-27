@@ -10,12 +10,6 @@ export default defineConfig({
     // against the implicit default, close enough that a loaded CI runner could
     // trip it and report a transform cost as a test failure.
     testTimeout: 20000,
-    // Side-effect setup: wire Node-only file readers onto the
-    // browser-safe runtime modules (ACL.load, registerSysModules, the
-    // sys-modules overrides loader). Tests that import individual source
-    // files directly (e.g. `from '../src/acl.js'`)
-    // bypass the package's Node entry, so we install them here instead.
-    setupFiles: ['./tests/setup-node-installers.ts'],
     coverage: {
       provider: 'v8',
       include: ['src/**/*.ts'],

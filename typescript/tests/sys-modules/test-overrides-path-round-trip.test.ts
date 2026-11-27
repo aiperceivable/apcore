@@ -1,3 +1,4 @@
+import { AutoApproveHandler } from '../../src/approval.js';
 /**
  * SYS-2 — `sys_modules.control.overrides_path` must persist a toggle, not
  * only restore one.
@@ -35,7 +36,7 @@ const DUMMY = {
 
 function boot(overridesPath: string, toggleState: ToggleState) {
   const registry = new Registry();
-  const executor = new Executor({ registry });
+  const executor = new Executor({ registry, approvalHandler: new AutoApproveHandler() });
   const config = new Config({
     sys_modules: {
       enabled: true,
@@ -121,7 +122,7 @@ describe('sys_modules.control.overrides_path round trip (SYS-2)', () => {
     };
 
     const registry = new Registry();
-    const executor = new Executor({ registry });
+    const executor = new Executor({ registry, approvalHandler: new AutoApproveHandler() });
     const config = new Config({
       sys_modules: {
         enabled: true,

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { APCore, AutoApproveHandler, CancelToken, Config, Context, Executor, Middleware, Registry, registerSysModules } from '../../src/index.js';
+import { APCore, AutoApproveHandler, CancelToken, Config, Context, Executor, Middleware, Registry, registerSysModules } from '../../src/full.js';
 
 function gate() {
   let open!: () => void;

@@ -236,19 +236,10 @@ export class ReloadModule {
   readonly annotations = { readonly: false, destructive: false, idempotent: false, requiresApproval: true, openWorld: false, streaming: false, cacheable: false, cacheTtl: 0, cacheKeyFields: null, paginated: false, paginationStyle: 'cursor' as const };
   readonly inputSchema = {
     type: 'object' as const,
+    additionalProperties: false,
     properties: {
       module_id: { type: 'string' as const, description: 'ID of the module to reload (mutually exclusive with path_filter)' },
       path_filter: { type: 'string' as const, description: 'Glob pattern to bulk-reload matching modules (mutually exclusive with module_id)' },
-      reload_dependents: {
-        type: 'boolean' as const,
-        deprecated: true,
-        description:
-          'DEPRECATED (spec v1.51.0, D-121) — ignored, and removed at 2.0. Declared in all '
-          + 'three SDKs and implemented by none, so no caller could ever rely on it. Use an '
-          + 'explicit path_filter that also matches the dependents. At 2.0 this field is '
-          + 'REMOVED and, because this schema sets additionalProperties: false, passing it '
-          + 'becomes a validation error rather than a silent no-op.',
-      },
       reason: { type: 'string' as const, description: 'Audit reason for the reload' },
       lifecycle: reloadLifecycleOptionsSchema,
     },
@@ -293,43 +284,7 @@ export class ReloadModule {
     this._auditStore = auditStore ?? null;
   }
 
-  /**
-   * Once per INSTANCE, not per process. `reload` is called by hot-reload loops
-   * and watchers, so an advisory whose volume is proportional to traffic is one
-   * operators learn to filter out — the cadence reasoning D-89 settled. Per
-   * instance rather than per process for the reason D-90's notice is per token:
-   * a process-wide one-shot tells the first caller and leaves every later one to
-   * discover it in production.
-   */
-  private _reloadDependentsWarned = false;
-
-  /**
-   * Warn once that `reload_dependents` is ignored and will be removed (D-121).
-   *
-   * The field was declared in all three SDKs' input schemas and read by none — a
-   * spec MUST that no implementation satisfied, which is the §9.1.3 "declared
-   * surface reaches no mechanism" shape applied to a module input field. Three
-   * independent implementations skipping it is the evidence the maintainer
-   * decision rests on.
-   *
-   * Deprecated rather than removed now, because the input schema sets
-   * `additionalProperties: false`: at 2.0 the same call stops being a silent
-   * no-op and becomes a validation error, so a caller passing it today needs a
-   * release in which they are told.
-   */
-  private _warnReloadDependents(inputs: Record<string, unknown>): void {
-    if (!inputs['reload_dependents']) return;
-    if (this._reloadDependentsWarned) return;
-    this._reloadDependentsWarned = true;
-    console.warn(
-      "[apcore:sys-modules] system.control.reload: 'reload_dependents' is ignored and will be " +
-        'removed at 2.0 (spec D-121). No SDK has ever implemented it. Use a path_filter that also ' +
-        'matches the dependents; after removal this field becomes a validation error, not a no-op.',
-    );
-  }
-
   async execute(inputs: Record<string, unknown>, context: unknown): Promise<Record<string, unknown>> {
-    this._warnReloadDependents(inputs);
     const { moduleId, pathFilter, reason } = this._validateInputs(inputs);
     const ctx = context as Context | null;
     const lifecycle = inputs['lifecycle'];
@@ -383,7 +338,7 @@ export class ReloadModule {
       return [snapshot];
     });
     const rows = snapshots.map(({ moduleId }): ModuleLifecycleProgress => ({ moduleId, phase: 'pending' }));
-    const lifecycle = new LifecycleProgress('reload', rows, [this._registry]);
+    const lifecycle = new LifecycleProgress('reload', rows, [this._registry], this._registry.lifecycleCallbacks);
     const versions = new Map<string, string>();
     const done = await lifecycle.run(async () => {
       for (const [index, snapshot] of snapshots.entries()) {

@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { Type } from '@sinclair/typebox';
 import { describe, expect, it, vi } from 'vitest';
-import { APCore } from '../src/client.js';
+import { APCore } from '../src/full.js';
 import { CancelToken, ExecutionCancelledError } from '../src/cancel.js';
 import { Config } from '../src/config.js';
 import { Context } from '../src/context.js';

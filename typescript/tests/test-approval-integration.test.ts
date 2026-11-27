@@ -1,3 +1,4 @@
+import { ExecutionPolicy } from '../src/policy.js';
 /**
  * Integration tests for the approval system through the full executor pipeline.
  */
@@ -327,7 +328,7 @@ describe('ApprovalExtensionManager', () => {
 
 describe('ApprovalImports', () => {
   it('all types importable from apcore package', async () => {
-    const apcore = await import('../src/index.js');
+    const apcore = await import('../src/full.js');
     expect(apcore.AlwaysDenyHandler).toBeDefined();
     expect(apcore.AutoApproveHandler).toBeDefined();
     expect(apcore.CallbackApprovalHandler).toBeDefined();
@@ -397,7 +398,7 @@ describe('_approval_token versus additionalProperties: false', () => {
   it('is stripped when approval is required but no handler is configured', async () => {
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const seen: Record<string, unknown>[] = [];
-    const executor = new Executor({ registry: await buildRegistry(true, seen) });
+    const executor = new Executor({ registry: await buildRegistry(true, seen), policy: new ExecutionPolicy([], { strict: false }) });
     const result = await executor.call('probe.strict', { a: 'x', _approval_token: 'tok' });
     warnSpy.mockRestore();
     expect(result['ok']).toBe('x');

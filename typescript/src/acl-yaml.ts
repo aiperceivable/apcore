@@ -1,14 +1,3 @@
-/**
- * Side-effect module: installs the Node-side YAML loader on `ACL.load`.
- *
- * Imported by the package's Node entry (`src/index.ts`). The browser
- * entry intentionally does NOT import this file — `ACL.load(...)` then
- * throws a clear runtime error directing the caller to construct ACL
- * programmatically.
- *
- * `node:fs` lives only on this leaf so the browser closure stays clean.
- */
-
 import { existsSync, lstatSync, readFileSync, statSync, type Stats } from 'node:fs';
 import { appendFilesystemPath } from './utils/filesystem-path.js';
 import yaml from 'js-yaml';
@@ -17,8 +6,6 @@ import {
   AUDIT_FIELDS,
   _parseAclRule,
   _rejectInvalidDefaultEffect,
-  _setAclFileLoader,
-  _setAclDiscoverer,
 } from './acl.js';
 import type { AclConfigLike, AuditConfig, AuditLogger } from './acl.js';
 import { getDefault } from './config-defaults.js';
@@ -99,7 +86,9 @@ function parseAuditBlock(data: Record<string, unknown>, yamlPath: string): Audit
 }
 
 
-_setAclFileLoader((yamlPath: string, auditLogger?: AuditLogger | null): ACL => {
+export function loadAclFile(
+  yamlPath: string, auditLogger?: AuditLogger | null, AclClass: typeof ACL = ACL,
+): ACL {
   if (!existsSync(yamlPath)) {
     throw new ConfigNotFoundError(yamlPath);
   }
@@ -172,10 +161,10 @@ _setAclFileLoader((yamlPath: string, auditLogger?: AuditLogger | null): ACL => {
   // refuse a later rule for a fault a lower-indexed rule already had.
   const rules = rawRules.map((raw, i) => _parseAclRule(raw, i));
 
-  const acl = new ACL(rules, defaultEffect, auditLogger ?? null, auditConfig);
-  acl._setYamlPath(yamlPath);
+  const acl = new AclClass(rules, defaultEffect, auditLogger ?? null, auditConfig);
+  acl._setFileReload(() => loadAclFile(yamlPath, undefined, AclClass));
   return acl;
-});
+}
 
 // ---------------------------------------------------------------------------
 // Config-driven ACL discovery (D-64, Recommendation A — issue #74)
@@ -192,7 +181,7 @@ function discoveryStats(path: string): Stats | undefined {
   }
 }
 
-_setAclDiscoverer((config: AclConfigLike): ACL | null => {
+export function discoverAcl(config: AclConfigLike, load: (path: string) => ACL = loadAclFile): ACL | null {
   // Read `acl.root`, falling back to the canonical default ("./acl").
   const rawRoot = config.get('acl.root', getDefault('acl.root'));
   if (rawRoot === null || rawRoot === undefined) {
@@ -225,5 +214,5 @@ _setAclDiscoverer((config: AclConfigLike): ACL | null => {
     throw new ConfigError(`ACL path '${policyPath}' is not a regular file`);
   }
 
-  return ACL.load(policyPath);
-});
+  return load(policyPath);
+}

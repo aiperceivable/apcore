@@ -1,4 +1,5 @@
-import { describe, it, expect, afterEach, afterAll } from 'vitest';
+import { APCore } from '../src/full.js';
+import { describe, it, expect, afterAll, vi } from 'vitest';
 import { writeFileSync, mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -8,9 +9,7 @@ import { Registry } from '../src/registry/registry.js';
 import { Executor } from '../src/executor.js';
 import {
   registerSysModules,
-  registerSubscriberType,
-  unregisterSubscriberType,
-  resetSubscriberRegistry,
+  createSubscriberFromConfig,
 } from '../src/sys-modules/registration.js';
 import { ToggleState } from '../src/sys-modules/toggle.js';
 
@@ -98,45 +97,65 @@ describe('registerSysModules', () => {
     expect(result['summary']).toBeDefined();
     expect((result['summary'] as Record<string, unknown>)['total_modules']).toBeGreaterThan(0);
   });
+  it.each([undefined, '2.3.4'])('reports configured project version %s in health summary', async (version) => {
+    const project = { name: 'sample', ...(version === undefined ? {} : { version }) };
+    const client = new APCore({
+      config: new Config({ project, sys_modules: { enabled: true } }),
+      failOnError: true,
+    });
+    expect((await client.call('system.health.summary', {}))['project']).toEqual(project);
+  });
+
+  it('honors usage retention and reports hourly buckets from normal calls', async () => {
+    const config = new Config({
+      sys_modules: { enabled: true, usage: { retention_hours: 1, bucketing_strategy: 'hourly' } },
+    });
+    const client = new APCore({ config, failOnError: true });
+    await client.register('sample.item', {
+      description: 'Return a sample',
+      inputSchema: Type.Object({}),
+      outputSchema: Type.Object({}),
+      execute: () => ({}),
+    });
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      vi.setSystemTime(new Date('2026-01-12T10:20:00Z'));
+      await client.call('sample.item', {});
+      vi.setSystemTime(new Date('2026-01-12T12:20:00Z'));
+      await client.call('sample.item', {});
+      const detail = await client.call('system.usage.module', { module_id: 'sample.item' });
+      expect(detail['call_count']).toBe(1);
+      expect((detail['hourly_distribution'] as Record<string, unknown>[]).filter((hour) => hour['call_count']))
+        .toEqual([{ hour: '2026-01-12T12', call_count: 1, error_count: 0 }]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it.each([
+    { key: 'bucketing_strategy', value: 'daily' },
+    { key: 'retention_hours', value: 0 },
+  ])('rejects invalid $key before registering system modules', ({ key, value }) => {
+    const registry = new Registry();
+    const config = new Config({ sys_modules: { enabled: true, usage: { [key]: value } } });
+    expect(() => new APCore({ registry, config, failOnError: true })).toThrow('sys_modules.usage.' + key);
+    expect(registry.list()).toEqual([]);
+  });
 });
 
-describe('subscriber registry', () => {
-  afterEach(() => {
-    resetSubscriberRegistry();
+describe('configured subscriber factories', () => {
+  it('instantiates custom subscriber types only when provided to this call', () => {
+    const config = { type: 'custom' };
+    const subscriber = { onEvent() {} };
+
+    expect(createSubscriberFromConfig(config, { custom: () => subscriber })).toBe(subscriber);
+    expect(() => createSubscriberFromConfig(config)).toThrow("Unknown subscriber type 'custom'");
   });
 
-  it('registers and uses a subscriber type', () => {
-    const factory = (cfg: Record<string, unknown>) => ({
-      onEvent: () => { void cfg; },
-    });
-    registerSubscriberType('custom', factory);
-    // No error means registration succeeded
-  });
-
-  it('unregisters a subscriber type', () => {
-    registerSubscriberType('temp', () => ({ onEvent: () => {} }));
-    unregisterSubscriberType('temp');
-    expect(() => unregisterSubscriberType('temp')).toThrow('not registered');
-  });
-
-  it('throws when unregistering unknown type', () => {
-    expect(() => unregisterSubscriberType('unknown')).toThrow('not registered');
-  });
-
-  it('resets custom types but preserves built-in types', () => {
-    registerSubscriberType('custom1', () => ({ onEvent: () => {} }));
-    registerSubscriberType('custom2', () => ({ onEvent: () => {} }));
-    resetSubscriberRegistry();
-    expect(() => unregisterSubscriberType('custom1')).toThrow('not registered');
-    // Built-in types should survive reset
-    unregisterSubscriberType('webhook');
-    unregisterSubscriberType('a2a');
-  });
-
-  it('has built-in webhook and a2a types', () => {
-    // Should not throw — they are pre-registered
-    unregisterSubscriberType('webhook');
-    unregisterSubscriberType('a2a');
+  it('has built-in webhook and requires a factory for a2a', () => {
+    const webhook = createSubscriberFromConfig({ type: 'webhook', url: 'https://example.com' });
+    expect(webhook.subscriberType).toBe('webhook');
+    expect(() => createSubscriberFromConfig({ type: 'a2a' })).toThrow("Unknown subscriber type 'a2a'");
   });
 });
 

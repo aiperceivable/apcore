@@ -21,11 +21,10 @@ import { describe, expect, it } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { ACL } from '../src/acl.js';
+import { ACL } from '../src/full.js';
 import type { ACLRule } from '../src/acl.js';
 import { ACLRuleError } from '../src/errors.js';
 // Side-effect import installs the Node-side YAML loader onto ACL.load.
-import '../src/acl-file.js';
 
 function writeAcl(body: string): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'acl-effect-'));

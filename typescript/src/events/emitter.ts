@@ -5,7 +5,7 @@
 import { resolveRetry, computeDelayMs } from './retry.js';
 import type { RetryConfig } from './retry.js';
 import { matchGlob } from '../utils/pattern.js';
-import { lifecycleCallback, LifecycleCompletion } from '../lifecycle.js';
+import { LifecycleCallbacks, LifecycleCompletion } from '../lifecycle.js';
 
 export interface ApCoreEvent {
   readonly eventType: string;
@@ -111,8 +111,12 @@ export class EventEmitter {
   private readonly _maxPending: number;
   private _shutdown = false;
 
-  constructor(maxPending: number = DEFAULT_MAX_PENDING) {
+  /** @internal Used by the owner when waiting for its own event delivery. */
+  readonly lifecycleCallbacks: LifecycleCallbacks;
+
+  constructor(maxPending: number = DEFAULT_MAX_PENDING, lifecycleCallbacks?: LifecycleCallbacks) {
     this._maxPending = Math.max(0, Math.floor(maxPending));
+    this.lifecycleCallbacks = lifecycleCallbacks ?? new LifecycleCallbacks();
   }
 
   subscribe(subscriber: EventSubscriber): void {
@@ -192,7 +196,7 @@ export class EventEmitter {
       settle();
     };
     return () => {
-      void lifecycleCallback([this], deliver).then(release, error => {
+      void this.lifecycleCallbacks.run([this], deliver).then(release, error => {
         release();
         console.error('[apcore:events] Delivery task failed:', error);
       });

@@ -18,7 +18,8 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import yaml from 'js-yaml';
-import { BindingLoader, Executor, Registry } from 'apcore-js';
+import { Executor, Registry } from 'apcore-js';
+import { BindingLoader } from 'apcore-js/full';
 
 const here = dirname(fileURLToPath(import.meta.url));
 

@@ -1,3 +1,4 @@
+import { AutoApproveHandler } from '../src/approval.js';
 /**
  * CLI-1 / CLI-3 — the client's Registry must be the executor's, and must be
  * built from the Config.
@@ -20,9 +21,9 @@ import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { Type } from '@sinclair/typebox';
-import { APCore } from '../src/client.js';
+import { APCore } from '../src/full.js';
 import { Config } from '../src/config.js';
-import { Registry } from '../src/registry/registry.js';
+import { Registry } from '../src/full.js';
 import { Executor } from '../src/executor.js';
 
 const DUMMY = {
@@ -62,7 +63,7 @@ describe('APCore adopts a supplied Executor’s Registry (CLI-1)', () => {
 
   it('client.disable() reaches the sys module when an executor was supplied', async () => {
     const registry = new Registry();
-    const executor = new Executor({ registry });
+    const executor = new Executor({ registry, approvalHandler: new AutoApproveHandler() });
     const config = new Config({
       sys_modules: { enabled: true, events: { enabled: true }, control: { enabled: true } },
     });

@@ -29,7 +29,9 @@
  */
 
 import { Type } from '@sinclair/typebox';
-import { APCore, Config, ModuleDisabledError } from 'apcore-js';
+import { AutoApproveHandler, ModuleDisabledError } from 'apcore-js';
+import { Config } from 'apcore-js/config';
+import { APCore } from 'apcore-js/full';
 
 // ---------------------------------------------------------------------------
 // Config with sys_modules + events enabled — required for toggle control.
@@ -41,6 +43,7 @@ function sysConfig(): Config {
 /** Build a client with two real CRM tools registered. */
 function buildClient(): APCore {
   const client = new APCore({ config: sysConfig() });
+  client.executor.setApprovalHandler(new AutoApproveHandler());
   client.module({
     id: 'executor.crm.read',
     description: 'Read a single CRM record',

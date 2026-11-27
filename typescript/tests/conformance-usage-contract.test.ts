@@ -14,7 +14,7 @@ import { describe, expect, it } from 'vitest';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
-import { APCore, Registry } from '../src/index.js';
+import { APCore, Registry } from '../src/full.js';
 import { Config } from '../src/config.js';
 import { UsageCollector, UsageMiddleware } from '../src/observability/usage.js';
 import { UsageModule, UsageSummaryModule } from '../src/sys-modules/usage.js';

@@ -1,6 +1,6 @@
 import { Type } from '@sinclair/typebox';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { APCore } from '../../src/client.js';
+import { APCore } from '../../src/full.js';
 import { Context } from '../../src/context.js';
 import { MetricsCollector, MetricsMiddleware } from '../../src/observability/metrics.js';
 import { InMemoryExporter, TracingMiddleware } from '../../src/observability/tracing.js';

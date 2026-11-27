@@ -19,10 +19,10 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import yaml from 'js-yaml';
 
-import { ACL, AUDIT_EVENT_NAME } from '../src/acl.js';
+import { ACL } from '../src/full.js';
+import { AUDIT_EVENT_NAME } from '../src/acl.js';
 import type { ACLRule, AuditEntry } from '../src/acl.js';
 import { ConfigError } from '../src/errors.js';
-import '../src/acl-file.js';
 
 const RULES = [{ callers: ['api.*'], targets: ['executor.*'], effect: 'allow' }];
 

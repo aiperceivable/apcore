@@ -1,3 +1,4 @@
+import { AutoApproveHandler } from '../src/approval.js';
 /**
  * Spec-traced contract tests for the APCore unified client (TypeScript SDK).
  *
@@ -19,7 +20,7 @@
 
 import { describe, it, expect } from 'vitest';
 import { Type } from '@sinclair/typebox';
-import { APCore } from '../src/client.js';
+import { APCore } from '../src/full.js';
 import { Config } from '../src/config.js';
 import { FunctionModule } from '../src/decorator.js';
 import {
@@ -529,6 +530,7 @@ describe('APCoreClient.disable', () => {
 
   it('apcore_client.disable.input.reason.default: returns disabled result with default reason', async () => {
     const client = new APCore({ config: sysConfig() });
+    client.executor.setApprovalHandler(new AutoApproveHandler());
     client.module({
       id: 'risky.module',
       inputSchema: Type.Object({}),
@@ -544,6 +546,7 @@ describe('APCoreClient.disable', () => {
 
   it('apcore_client.disable.property.idempotent_true: disabling twice stays disabled', async () => {
     const client = new APCore({ config: sysConfig() });
+    client.executor.setApprovalHandler(new AutoApproveHandler());
     client.module({
       id: 'risky.dup',
       inputSchema: Type.Object({}),
@@ -579,6 +582,7 @@ describe('APCoreClient.enable', () => {
 
   it('apcore_client.enable.input.reason.default: returns enabled result with default reason', async () => {
     const client = new APCore({ config: sysConfig() });
+    client.executor.setApprovalHandler(new AutoApproveHandler());
     client.module({
       id: 'risky.enable',
       inputSchema: Type.Object({}),
@@ -595,6 +599,7 @@ describe('APCoreClient.enable', () => {
 
   it('apcore_client.enable.property.idempotent_true: enabling twice stays enabled', async () => {
     const client = new APCore({ config: sysConfig() });
+    client.executor.setApprovalHandler(new AutoApproveHandler());
     client.module({
       id: 'risky.reenable',
       inputSchema: Type.Object({}),

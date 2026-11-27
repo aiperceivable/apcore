@@ -12,17 +12,15 @@ import { describe, expect, it, vi } from 'vitest';
 import { ACL, type ACLRule } from '../src/acl.js';
 import { BindingLoader } from '../src/bindings.js';
 import { CancelToken, ExecutionCancelledError } from '../src/cancel.js';
-import { APCore } from '../src/client.js';
+import { APCore } from '../src/full.js';
 import { Config } from '../src/config.js';
 import { Context, Identity } from '../src/context.js';
 import { ModuleError } from '../src/errors.js';
 import type { ApCoreEvent } from '../src/events/emitter.js';
 import { Executor } from '../src/executor.js';
-import { annotationsFromJSON, type Change, type PreviewResult } from '../src/module.js';
-import { Registry } from '../src/registry/registry.js';
-import { SchemaExporter } from '../src/schema/exporter.js';
+import { type Change, type PreviewResult } from '../src/module.js';
+import { Registry } from '../src/full.js';
 import { jsonSchemaToTypeBox } from '../src/schema/loader-pure.js';
-import type { ExportProfile } from '../src/schema/types.js';
 import { findFixturesRoot } from './spec-repo.js';
 
 type JsonObject = Record<string, unknown>;
@@ -231,49 +229,6 @@ describe('error_details_shape.json', () => {
       if ('error_count' in testCase.expected) expect(details['errors']).toHaveLength(testCase.expected['error_count'] as number);
       for (const key of (testCase.expected['detail_keys_present'] ?? []) as string[]) expect(details).toHaveProperty(key);
       for (const key of (testCase.expected['detail_keys_absent'] ?? []) as string[]) expect(details).not.toHaveProperty(key);
-    });
-  }
-});
-
-function pointer(value: unknown, path: string): unknown {
-  let current = value;
-  for (const key of path.slice(1).split('/').map((part) => part.replace(/~1/g, '/').replace(/~0/g, '~'))) {
-    if (current == null || typeof current !== 'object' || !(key in current)) return undefined;
-    current = (current as JsonObject)[key];
-  }
-  return current;
-}
-
-function assertNoExtensionKeywords(value: unknown, propertyNames = false): void {
-  if (Array.isArray(value)) { for (const item of value) assertNoExtensionKeywords(item); return; }
-  if (value == null || typeof value !== 'object') return;
-  for (const [key, child] of Object.entries(value)) {
-    if (!propertyNames) expect(key.startsWith('x-'), `Unexpected extension keyword ${key}`).toBe(false);
-    assertNoExtensionKeywords(child, key === 'properties');
-  }
-}
-
-// D-140, PROTOCOL_SPEC §4.17/Appendix D.1: exercise the public profile exporter.
-describe('export_profiles.json', () => {
-  const data = fixture<{ profile: ExportProfile; annotations: JsonObject }>('export_profiles');
-  it('handles every canonical case and expected field', () => guardCases(data, 5, ['paths', 'absent_paths', 'no_x_keywords_under']));
-  for (const testCase of data.test_cases) {
-    it(testCase.id, async () => {
-      const contract = data.module_contract;
-      const registry = new Registry();
-      const module = contractedModule(contract);
-      module['annotations'] = annotationsFromJSON(testCase.input.annotations);
-      // Streaming declarations must represent real streaming modules.
-      if (testCase.input.annotations['streaming']) module['stream'] = async function* () { yield { sent: true }; };
-      await registry.register(contract['module_id'] as string, module);
-      const output = new SchemaExporter().export({
-        moduleId: contract['module_id'] as string, description: contract['description'] as string,
-        inputSchema: contract['input_schema'] as JsonObject, outputSchema: contract['output_schema'] as JsonObject,
-        definitions: {}, version: '1.0.0',
-      }, testCase.input.profile, annotationsFromJSON(testCase.input.annotations));
-      for (const [path, value] of Object.entries((testCase.expected['paths'] ?? {}) as JsonObject)) expect(pointer(output, path), path).toEqual(value);
-      for (const path of (testCase.expected['absent_paths'] ?? []) as string[]) expect(pointer(output, path), path).toBeUndefined();
-      if ('no_x_keywords_under' in testCase.expected) assertNoExtensionKeywords(pointer(output, testCase.expected['no_x_keywords_under'] as string));
     });
   }
 });

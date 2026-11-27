@@ -12,11 +12,8 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { Type } from '@sinclair/typebox';
-import {
-  Registry,
-  EPHEMERAL_NAMESPACE_PREFIX,
-  isEphemeralModuleId,
-} from '../../src/registry/registry.js';
+import { Registry } from '../../src/full.js';
+import { EPHEMERAL_NAMESPACE_PREFIX, isEphemeralModuleId } from '../../src/registry/registry.js';
 import { FunctionModule } from '../../src/decorator.js';
 import { InvalidInputError } from '../../src/errors.js';
 import { createAnnotations } from '../../src/module.js';

@@ -37,12 +37,11 @@ import { describe, it, expect } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { ACL } from '../src/acl.js';
+import { ACL } from '../src/full.js';
 import type { ACLRule, AuditEntry } from '../src/acl.js';
 import { ACLRuleError } from '../src/errors.js';
 import { findFixturesRoot } from './spec-repo.js';
 // Side-effect import installs the Node-side YAML loader onto ACL.load.
-import '../src/acl-file.js';
 
 const FIXTURE = 'acl_pattern_arity.json';
 const FIXTURE_PATH = path.join(findFixturesRoot(), FIXTURE);

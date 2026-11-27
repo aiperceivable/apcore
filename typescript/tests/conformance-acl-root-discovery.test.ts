@@ -11,10 +11,7 @@
  * `acl.default_effect` is `deny`. Auto-discovery is skipped entirely when the
  * caller supplies their own Executor.
  *
- * `ACL.load` / `ACL.discover` are Node-only: the filesystem discoverer lives on
- * the side-effect module `src/acl-file.ts`, which `tests/setup-node-installers.ts`
- * imports for every suite (see vitest.config.ts `setupFiles`). No extra wiring
- * is needed here.
+ * The full profile owns Node file loading and discovery.
  *
  * `acl_attached` and `enforcement` are asserted BEHAVIOURALLY rather than by
  * reading a field: `Executor` keeps its ACL private (src/executor.ts:235), and
@@ -31,14 +28,14 @@ import * as path from 'node:path';
 import yaml from 'js-yaml';
 import { Type } from '@sinclair/typebox';
 
-import { ACL } from '../src/acl.js';
-import { APCore } from '../src/client.js';
+import { ACL } from '../src/full.js';
+import { APCore } from '../src/full.js';
 import { Config } from '../src/config.js';
 import { getDefault } from '../src/config-defaults.js';
 import { FunctionModule } from '../src/decorator.js';
 import { ACLDeniedError } from '../src/errors.js';
 import { Executor } from '../src/executor.js';
-import { Registry } from '../src/registry/registry.js';
+import { Registry } from '../src/full.js';
 import { findFixturesRoot } from './spec-repo.js';
 
 // ---------------------------------------------------------------------------

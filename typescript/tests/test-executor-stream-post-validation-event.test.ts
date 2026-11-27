@@ -10,7 +10,7 @@ import { join } from 'node:path';
 import { describe, it, expect, vi } from 'vitest';
 import { Type } from '@sinclair/typebox';
 import { CancelToken, ExecutionCancelledError } from '../src/cancel.js';
-import { APCore } from '../src/client.js';
+import { APCore } from '../src/full.js';
 import { Config } from '../src/config.js';
 import { Context } from '../src/context.js';
 import { ModuleError, ModuleExecuteError } from '../src/errors.js';

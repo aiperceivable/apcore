@@ -17,7 +17,7 @@
  * modules are registered in dependency order.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { Registry } from '../../src/registry/registry.js';
+import { Registry } from '../../src/full.js';
 import { detectIdConflicts } from '../../src/registry/conflicts.js';
 
 describe('_discoverDefault 8-stage decomposition (D-32)', () => {

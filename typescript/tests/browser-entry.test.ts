@@ -24,7 +24,6 @@ import ts from 'typescript';
 import { describe, expect, it } from 'vitest';
 
 import * as browser from '../src/browser/index.js';
-import { _setAclFileLoader } from '../src/acl.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -105,10 +104,10 @@ interface StaticCheckFinding {
   reason: string;
 }
 
-function walkBrowserGraph(): StaticCheckFinding[] {
+function walkBrowserGraph(entry = BROWSER_ENTRY, forbiddenModules: readonly string[] = []): StaticCheckFinding[] {
   const findings: StaticCheckFinding[] = [];
   const visited = new Set<string>();
-  const stack: string[] = [BROWSER_ENTRY];
+  const stack: string[] = [entry];
 
   while (stack.length > 0) {
     const file = stack.pop()!;
@@ -139,6 +138,8 @@ function walkBrowserGraph(): StaticCheckFinding[] {
     for (const spec of collectImportSpecifiers(file, src)) {
       if (isNodeSpecifier(spec)) {
         findings.push({ file: rel, reason: `imports Node builtin "${spec}"` });
+      } else if (forbiddenModules.includes(spec)) {
+        findings.push({ file: rel, reason: `imports optional dependency "${spec}"` });
       } else {
         const resolved = resolveRelative(file, spec);
         if (resolved) stack.push(resolved);
@@ -197,32 +198,24 @@ describe('browser entry point', () => {
     expect(findings, `Browser entry drags in Node-only code:\n${formatted}`).toEqual([]);
   });
 
+  it('package root has no Node, YAML, or Node-conditioned UUID dependencies', () => {
+    expect(walkBrowserGraph(resolve(SRC_ROOT, 'index.ts'), ['js-yaml', 'uuid'])).toEqual([]);
+  });
+
+  it('observability subpath has no Node-only imports or globals', () => {
+    const entry = resolve(SRC_ROOT, 'observability', 'portable.ts');
+    expect(walkBrowserGraph(entry)).toEqual([]);
+  });
+
   // ── Runtime contracts ─────────────────────────────────────────────
   // The static guards above keep `node:*` out of the bundle; these
   // tests pin the behavioural contract that the browser surface has
   // to maintain so apwebsite (and any future browser consumer) keeps
   // working through future refactors.
 
-  it('ACL.load throws a guidance error when the Node loader is absent', async () => {
-    // Vitest setupFiles installs every Node-side loader so the rest of the
-    // test suite (which imports source files directly) keeps working.
-    // To assert the actual browser-bundle behaviour we temporarily
-    // un-install the ACL file loader, run the call, then restore.
-    const aclModule = await import('../src/acl.js');
-    // Save the current loader by re-importing the installer side effect
-    // — `acl-file.ts` runs once at module load and is idempotent on re-run.
-    _setAclFileLoader(null);
-    try {
-      expect(() => browser.ACL.load('/whatever.yaml')).toThrow(
-        /requires the Node entry of apcore-js/,
-      );
-    } finally {
-      // Reinstall the Node loader so subsequent tests in the suite
-      // (e.g. `tests/test-acl.test.ts`) see normal `ACL.load` behaviour.
-      // `acl-file.ts` registers the loader as a side-effect of import.
-      void aclModule;
-      await import('../src/acl-file.js');
-    }
+  it('ACL file load gives portable callers the explicit configuration path', async () => {
+    await import('../src/full.js');
+    expect(() => browser.ACL.load('/whatever.yaml')).toThrow(/apcore-js\/config/);
   });
 
   it('Registry + FunctionModule + Executor + AutoApproveHandler runs end-to-end', async () => {
@@ -254,7 +247,7 @@ describe('browser entry point', () => {
     // sha256 of canonical-form JSON. WebCrypto must agree byte-for-byte
     // with `node:crypto` — any divergence breaks Node↔browser↔Python↔Rust
     // cache-key alignment.
-    const node = await import('../src/index.js');
+    const node = await import('../src/full.js');
     const fixtures: unknown[] = [
       { a: 1, b: 2 },
       { z: 'last', a: 'first', m: [3, 1, 2] },
