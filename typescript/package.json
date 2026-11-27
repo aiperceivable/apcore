@@ -1,6 +1,6 @@
 {
   "name": "apcore-js",
-  "version": "0.33.0",
+  "version": "1.0.0-alpha.1",
   "description": "Build once, invoke by code or AI — with schema, ACL, approval, and audit enforced at every call",
   "type": "module",
   "main": "./dist/index.js",

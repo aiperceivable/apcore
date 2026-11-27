@@ -7,8 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0a1]
+
 ### Added
 
+- Add the `stream_with_completion()` handle for a single invocation's chunks, validated output, and terminal outcome.
+- Add owned shutdown and removal operations, managed drain and recovery hooks, and opt-in governed reload reports.
+- Expose Prometheus text rendering without starting an HTTP listener.
 - Expose `APCore(fail_on_error=True)` and `sys_modules_errors` for system-module startup, and `Executor.ungated_approval_modules()` for approval readiness. ([#230](https://github.com/aiperceivable/apcore/issues/230), [#231](https://github.com/aiperceivable/apcore/issues/231))
 
 ### Changed

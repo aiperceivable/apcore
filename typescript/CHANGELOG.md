@@ -7,8 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-alpha.1]
+
 ### Added
 
+- Add the `streamWithCompletion()` handle for a single invocation's chunks, validated output, and terminal outcome.
+- Add owned shutdown and removal operations, managed drain and recovery hooks, and opt-in governed reload reports.
 - Expose `APCore({ failOnError: true })` and `sysModulesErrors` for system-module startup, and `Executor.ungatedApprovalModules()` for approval readiness. ([#230](https://github.com/aiperceivable/apcore/issues/230), [#231](https://github.com/aiperceivable/apcore/issues/231))
 
 ### Changed
