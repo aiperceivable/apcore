@@ -1065,6 +1065,17 @@
         "module_lifecycle.json#module_lifecycle.phase_b.approval_denied_preserves_generation"
       ],
       "discriminates": "Requires a drain signal and native stream completion before state capture, bars calls during recovery and replacement, distinguishes retention from compensation and an empty selector match, limits forced cancellation to the retiring invocation, correlates the shutdown event with its operation, and preserves callable state without lifecycle events on approval denial."
+    },
+    "D-154": {
+      "title": "capability discovery proves ACL visibility",
+      "kind": "behavioural",
+      "cases": [
+        "capability_discovery.json#possible_deny_prevents_disclosure",
+        "capability_discovery.json#possible_approval_does_not_prevent_proven_visibility",
+        "capability_discovery.json#authenticated_role_grant",
+        "capability_discovery.json#prospective_nested_context_depth"
+      ],
+      "discriminates": "Rejects disclosure through an unresolved deny or missing role, preserves a valid conditional approval hint without execution, and checks the prospective target caller frame."
     }
   }
 }

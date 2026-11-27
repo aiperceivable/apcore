@@ -12,6 +12,7 @@ use async_trait::async_trait;
 use futures_util::{stream, StreamExt};
 use serde_json::{json, Value};
 
+mod capability_discovery;
 #[path = "conformance_env.rs"]
 mod conformance_env;
 mod post_validation_policy;

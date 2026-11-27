@@ -937,6 +937,16 @@ impl RuleValidationFinding {
     }
 }
 
+/// Discovery distinguishes an unknown but structurally valid rule from a
+/// malformed rule that must follow the existing fail-closed semantics.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum DiscoveryRule {
+    Match,
+    NoMatch,
+    Unknown,
+    Malformed,
+}
+
 /// Outcome of matching one ACL rule against a call (PROTOCOL_SPEC §6.3).
 ///
 /// Three variants rather than a `bool`, because a rule whose conditions could
@@ -1749,6 +1759,82 @@ impl ACL {
             || self.check_inner(caller_id, target_id, ctx),
         );
         decision
+    }
+
+    /// Prove a target visible for the given caller without evaluating custom
+    /// conditions, writing an audit entry, or reading submitted arguments.
+    ///
+    /// The context, when supplied, is the prospective invocation frame.
+    /// Returns no hint when any reachable rule could deny access.
+    #[must_use]
+    pub fn evaluate_visibility(
+        &self,
+        caller_id: Option<&str>,
+        target_id: &str,
+        ctx: Option<&Context<serde_json::Value>>,
+    ) -> Option<crate::capability::AccessHint> {
+        use crate::capability::AccessHint;
+        let caller = caller_id.unwrap_or(EXTERNAL_CALLER);
+        let mut pending_approval = false;
+        let mut possible_without_approval = false;
+        let mut possible_with_approval = false;
+        for rule in &self.rules {
+            let decision = Self::discovery_rule(rule, caller, target_id, ctx);
+            let requires_approval = rule.approval_required();
+            match decision {
+                DiscoveryRule::NoMatch => continue,
+                DiscoveryRule::Malformed if rule.effect == "allow" => {
+                    pending_approval |= requires_approval;
+                    continue;
+                }
+                _ if rule.effect != "allow" => return None,
+                _ => {}
+            }
+            possible_with_approval |= requires_approval || pending_approval;
+            possible_without_approval |= !(requires_approval || pending_approval);
+            if decision == DiscoveryRule::Match {
+                return Some(AccessHint::from_approval_outcomes(
+                    possible_with_approval,
+                    possible_without_approval,
+                ));
+            }
+        }
+        (self.default_effect == "allow").then(|| {
+            AccessHint::from_approval_outcomes(
+                possible_with_approval || pending_approval,
+                possible_without_approval || !pending_approval,
+            )
+        })
+    }
+
+    fn discovery_rule(
+        rule: &ACLRule,
+        caller: &str,
+        target: &str,
+        ctx: Option<&Context<serde_json::Value>>,
+    ) -> DiscoveryRule {
+        if !Self::precheck_pattern_faults(rule).is_empty() {
+            return DiscoveryRule::Malformed;
+        }
+        if !Self::match_patterns(&rule.callers, caller, ctx)
+            || !Self::match_patterns(&rule.targets, target, ctx)
+        {
+            return DiscoveryRule::NoMatch;
+        }
+        let Some(conditions) = &rule.conditions else {
+            return DiscoveryRule::Match;
+        };
+        if !precheck_conditions(conditions, PrecheckPath::Async).is_empty() {
+            return DiscoveryRule::Malformed;
+        }
+        let Some(ctx) = ctx else {
+            return DiscoveryRule::NoMatch;
+        };
+        match crate::acl_handlers::discovery_conditions(conditions, ctx) {
+            ConditionOutcome::Satisfied => DiscoveryRule::Match,
+            ConditionOutcome::Unsatisfied => DiscoveryRule::NoMatch,
+            ConditionOutcome::Unevaluable => DiscoveryRule::Unknown,
+        }
     }
 
     fn check_inner(

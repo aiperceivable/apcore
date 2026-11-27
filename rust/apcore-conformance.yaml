@@ -1,6 +1,6 @@
 implementation:
   name: apcore-rust
-  version: 1.0.0-alpha.3
+  version: 1.0.0-alpha.4
   language: rust
   spec_version: 1.65.0
   maintainer: AI Perceivable

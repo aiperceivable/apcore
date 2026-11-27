@@ -29,6 +29,7 @@ One page per apcore subsystem: what it does, the contract the SDKs implement, an
 ### Security & Governance
 *Guardrails, identity, and access control.*
 - [ACL System](./acl-system.md) — Pattern-based permission rules.
+- [ACL-aware Capability Discovery](./capability-discovery.md) — Caller-scoped summaries and full-schema lookup.
 - [Identity System](./identity-system.md) — Caller representation and roles.
 - [Approval System](./approval-system.md) — Human-in-the-loop gates.
 - [Call Chain Guard](./call-chain-guard.md) — Recursion and depth protection.

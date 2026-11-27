@@ -3,6 +3,7 @@
  */
 
 import type { ACL } from './acl.js';
+import type { CallableDefinition, CapabilityPage, CapabilitySearchOptions, CapabilitySearchProvider } from './capability-discovery.js';
 import type { TSchema } from '@sinclair/typebox';
 import type { Config } from './config.js';
 import type { Context } from './context.js';
@@ -30,6 +31,7 @@ import type { ModuleAnnotations, ModuleExample, PreflightResult, ResourceLimits 
 import type { MetricsCollector } from './observability/metrics.js';
 import type { StreamExecution } from './stream-completion.js';
 import { Registry } from './registry/registry.js';
+import type { ModuleDescriptor } from './registry/types.js';
 import type { RegisterSysModulesOptions, SysModulesContext } from './sys-modules/registration.js';
 import { ToggleState } from './sys-modules/toggle.js';
 
@@ -82,6 +84,8 @@ export interface APCoreOptions {
    * policy on that Executor directly (parity with config-driven ACL discovery).
    */
   policy?: ExecutionPolicy;
+  /** Optional candidate ranker for a client-owned executor. */
+  capabilitySearchProvider?: CapabilitySearchProvider;
   /** Throw on system-module registration failures during startup. Defaults to false. */
   failOnError?: boolean;
 }
@@ -185,6 +189,7 @@ export class APCore {
         toggleState: this._toggleState,
         // Execution-time governance overrides for the approval gate (apcore#76).
         policy: options?.policy ?? null,
+        capabilitySearchProvider: options?.capabilitySearchProvider,
       });
 
     // Respect ACLs already configured on a supplied Executor.
@@ -424,6 +429,26 @@ export class APCore {
     context?: Context | null,
   ): Promise<PreflightResult> {
     return this.executor.validate(moduleId, inputs, context);
+  }
+
+  listCallable(context: Context | null = null, options: CapabilitySearchOptions = {}): CapabilityPage {
+    return this.executor.listCallable(context, options);
+  }
+
+  getCallableDefinitions(moduleIds: readonly string[], context: Context | null = null): CallableDefinition[] {
+    return this.executor.getCallableDefinitions(moduleIds, context);
+  }
+
+  getCallableDefinition(
+    moduleId: string, context: Context | null = null, versionHint: string | null = null,
+  ): CallableDefinition | null {
+    return this.executor.getCallableDefinition(moduleId, context, versionHint);
+  }
+
+  getCallableDescriptor(
+    moduleId: string, context: Context | null = null, versionHint: string | null = null,
+  ): ModuleDescriptor | null {
+    return this.executor.getCallableDescriptor(moduleId, context, versionHint);
   }
 
   /**

@@ -1295,11 +1295,81 @@ fn collect_argument_faults(value: &Value, key_path: &str, out: &mut Vec<RuleFaul
     }
 }
 
+// Identity is significant here: a host can replace even a built-in key in
+// either registry. Discovery only evaluates framework-owned pure handlers.
+static DISCOVERY_IDENTITY_TYPES: LazyLock<Arc<dyn ACLConditionHandler>> =
+    LazyLock::new(|| Arc::new(IdentityTypesHandler));
+static DISCOVERY_ROLES: LazyLock<Arc<dyn ACLConditionHandler>> =
+    LazyLock::new(|| Arc::new(RolesHandler));
+static DISCOVERY_MAX_CALL_DEPTH: LazyLock<Arc<dyn ACLConditionHandler>> =
+    LazyLock::new(|| Arc::new(MaxCallDepthHandler));
+static DISCOVERY_OR: LazyLock<Arc<dyn ACLConditionHandler>> =
+    LazyLock::new(|| Arc::new(OrHandler::new(CompoundMode::Async)));
+static DISCOVERY_NOT: LazyLock<Arc<dyn ACLConditionHandler>> =
+    LazyLock::new(|| Arc::new(NotHandler::new(CompoundMode::Async)));
+
+fn stock_discovery_handler(key: &str) -> Option<&'static Arc<dyn ACLConditionHandler>> {
+    let stock = match key {
+        "identity_types" => &*DISCOVERY_IDENTITY_TYPES,
+        "roles" => &*DISCOVERY_ROLES,
+        "max_call_depth" => &*DISCOVERY_MAX_CALL_DEPTH,
+        "$or" => &*DISCOVERY_OR,
+        "$not" => &*DISCOVERY_NOT,
+        _ => return None,
+    };
+    let async_handlers = ASYNC_CONDITION_HANDLERS.read();
+    let handlers = CONDITION_HANDLERS.read();
+    async_handlers
+        .get(key)
+        .or_else(|| handlers.get(key))
+        .is_some_and(|handler| Arc::ptr_eq(handler, stock))
+        .then_some(stock)
+}
+
+/// Evaluate a prechecked condition tree with no business arguments. Here
+/// Unevaluable means a well-formed condition with an unknown call-time result.
+pub(crate) fn discovery_conditions(conditions: &Value, ctx: &Context<Value>) -> ConditionOutcome {
+    let Some(conditions) = conditions.as_object() else {
+        return ConditionOutcome::Unevaluable;
+    };
+    conditions
+        .iter()
+        .fold(ConditionOutcome::Satisfied, |result, (key, value)| {
+            result.and(discovery_condition(key, value, ctx))
+        })
+}
+
+fn discovery_condition(key: &str, value: &Value, ctx: &Context<Value>) -> ConditionOutcome {
+    let Some(handler) = stock_discovery_handler(key) else {
+        return ConditionOutcome::Unevaluable;
+    };
+    match key {
+        "$or" => {
+            let Some(branches) = value.as_array() else {
+                return ConditionOutcome::Unevaluable;
+            };
+            branches
+                .iter()
+                .fold(ConditionOutcome::Unsatisfied, |result, branch| {
+                    result.or(discovery_conditions(branch, ctx))
+                })
+        }
+        "$not" => discovery_conditions(value, ctx).negate(),
+        _ => {
+            use futures_util::FutureExt;
+            handler
+                .evaluate_outcome(value, ctx)
+                .now_or_never()
+                .unwrap_or(ConditionOutcome::Unevaluable)
+        }
+    }
+}
+
 /// Register all built-in handlers. Called once during initialization.
 pub fn register_builtin_handlers() {
-    seed_condition("identity_types", || Arc::new(IdentityTypesHandler));
-    seed_condition("roles", || Arc::new(RolesHandler));
-    seed_condition("max_call_depth", || Arc::new(MaxCallDepthHandler));
+    seed_condition("identity_types", || Arc::clone(&DISCOVERY_IDENTITY_TYPES));
+    seed_condition("roles", || Arc::clone(&DISCOVERY_ROLES));
+    seed_condition("max_call_depth", || Arc::clone(&DISCOVERY_MAX_CALL_DEPTH));
     // §6.1.7: `arguments` is part of the language §6.1 already defines, not a
     // mechanism beside it, so it is seeded here with the other built-ins and
     // has no registration point of its own.
@@ -1307,8 +1377,8 @@ pub fn register_builtin_handlers() {
     // Mode-matched pairs — see `CompoundMode`.
     seed_condition("$or", || Arc::new(OrHandler::new(CompoundMode::Sync)));
     seed_condition("$not", || Arc::new(NotHandler::new(CompoundMode::Sync)));
-    seed_async_condition("$or", || Arc::new(OrHandler::new(CompoundMode::Async)));
-    seed_async_condition("$not", || Arc::new(NotHandler::new(CompoundMode::Async)));
+    seed_async_condition("$or", || Arc::clone(&DISCOVERY_OR));
+    seed_async_condition("$not", || Arc::clone(&DISCOVERY_NOT));
 }
 
 /// Install a built-in handler ONLY if `key` is unclaimed.

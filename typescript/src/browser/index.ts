@@ -9,6 +9,9 @@ export type { APCoreOptions, APCorePlugin, ModuleOptions } from '../client.js';
 export type { DrainAbortedContext, DrainAbortReason, DrainContext, LifecycleError, LifecycleEventFlush, LifecycleModuleReport, LifecycleOperation, LifecycleReport, LifecycleStatus, ShutdownOptions, UnregisterOptions, WatchOptions } from '../lifecycle.js';
 
 export { Executor, REDACTED_VALUE } from '../executor.js';
+export type {
+  CallableDefinition, CapabilityAccessHint, CapabilityPage, CapabilitySearchOptions, CapabilitySearchProvider, ModuleSummary,
+} from '../capability-discovery.js';
 export type { StreamCompletion, StreamCompletionReason, StreamExecution, StreamStepOutcome } from '../stream-completion.js';
 
 export {
@@ -85,6 +88,7 @@ export type {
   ConditionOutcome,
   GovernanceProjection,
   RuleValidationFinding,
+  VisibilityDecision,
 } from '../acl.js';
 
 // ---- Errors --------------------------------------------------------------

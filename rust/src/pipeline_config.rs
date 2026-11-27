@@ -126,6 +126,18 @@ impl Step for ConfiguredStep {
     fn builtin_gate(&self) -> Option<crate::pipeline::BuiltinGate> {
         self.inner.builtin_gate()
     }
+    fn builtin_module_is_enabled(&self, module_id: &str) -> Option<bool> {
+        self.inner
+            .builtin_module_is_enabled(module_id)
+            .map(|enabled| {
+                enabled
+                    && self.match_modules().is_none_or(|patterns| {
+                        patterns
+                            .iter()
+                            .any(|pattern| crate::utils::helpers::match_pattern(pattern, module_id))
+                    })
+            })
+    }
     fn requires(&self) -> &[&str] {
         self.inner.requires()
     }

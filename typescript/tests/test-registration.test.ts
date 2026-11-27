@@ -40,6 +40,7 @@ describe('registerSysModules', () => {
     registerSysModules(registry, executor, config);
     expect(registry.has('system.manifest.module')).toBe(true);
     expect(registry.has('system.manifest.full')).toBe(true);
+    expect(registry.has('system.manifest.search')).toBe(true);
   });
 
   it('registers usage modules when enabled', () => {
@@ -279,11 +280,11 @@ describe('sys_modules activation is opt-in in namespace mode (sync finding B-012
     expect(registry.moduleIds).toEqual([]);
   });
 
-  it('registers the six read modules when explicitly enabled', () => {
+  it('registers the seven read modules when explicitly enabled', () => {
     const cfg = loadNamespaceConfig('apcore:\n  version: "1.0.0"\nsys_modules:\n  enabled: true\n');
     const registry = new Registry();
     registerSysModules(registry, new Executor({ registry }), cfg);
-    expect(registry.moduleIds).toHaveLength(6);
+    expect(registry.moduleIds).toHaveLength(7);
     expect(registry.moduleIds.some((id) => id.startsWith('system.control.'))).toBe(false);
   });
 
@@ -293,7 +294,7 @@ describe('sys_modules activation is opt-in in namespace mode (sync finding B-012
     );
     const registry = new Registry();
     registerSysModules(registry, new Executor({ registry }), cfg);
-    expect(registry.moduleIds).toHaveLength(9);
+    expect(registry.moduleIds).toHaveLength(10);
     expect(registry.moduleIds.filter((id) => id.startsWith('system.control.'))).toHaveLength(3);
   });
 });

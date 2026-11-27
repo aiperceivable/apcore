@@ -22,6 +22,7 @@ from collections.abc import AsyncGenerator, Callable as CallableABC, Iterable
 from contextlib import aclosing
 from typing import Any, Callable
 
+from apcore.capabilities import CallableDefinition, CapabilityPage, CapabilitySearchProvider
 from apcore.config import Config
 from apcore.context import Context
 from apcore.errors import InvalidInputError, SysModulesDisabledError
@@ -43,6 +44,7 @@ from apcore.module import PreflightResult
 from apcore.policy import ExecutionPolicy
 from apcore.observability.metrics import MetricsCollector
 from apcore.registry import Registry
+from apcore.registry.types import ModuleDescriptor
 from apcore.streaming import StreamExecution
 from apcore.sys_modules.control import ToggleState
 
@@ -67,6 +69,7 @@ class APCore:
         *,
         fail_on_error: bool = False,
         subscriber_registry: SubscriberRegistry | None = None,
+        capability_search_provider: CapabilitySearchProvider | None = None,
     ) -> None:
         """Initialize the APCore client.
 
@@ -86,6 +89,8 @@ class APCore:
                 ``sys_modules_errors``.
             subscriber_registry: Factories for this client's configured event
                 subscribers. Omitting this uses the built-in factories.
+            capability_search_provider: Optional ranker for discoverable module IDs.
+                Configure it on the supplied Executor when one is provided.
         """
         self.config = config
         self._shutdown_lock = threading.Lock()
@@ -126,6 +131,7 @@ class APCore:
                 config=config,
                 policy=policy,
                 toggle_state=self.toggle_state,
+                capability_search_provider=capability_search_provider,
             )
 
         # Config-driven ACL discovery (D-64, Recommendation A). Resolve
@@ -415,6 +421,48 @@ class APCore:
             Human-readable description of the module.
         """
         return self.registry.describe(module_id)
+
+    def list_callable(
+        self,
+        context: Context | None = None,
+        *,
+        query: str | None = None,
+        prefix: str | None = None,
+        tags: Iterable[str] | None = None,
+        readonly: bool | None = None,
+        limit: int = 20,
+        cursor: str | None = None,
+        include_approval_required: bool = True,
+    ) -> CapabilityPage:
+        """List public modules whose ACL proves visibility for this caller frame."""
+        return self.executor.list_callable(
+            context,
+            query=query,
+            prefix=prefix,
+            tags=tags,
+            readonly=readonly,
+            limit=limit,
+            cursor=cursor,
+            include_approval_required=include_approval_required,
+        )
+
+    def get_callable_definition(
+        self, module_id: str, context: Context | None = None, *, version_hint: str | None = None
+    ) -> CallableDefinition | None:
+        """Expand one visible module to its complete schemas."""
+        return self.executor.get_callable_definition(module_id, context, version_hint=version_hint)
+
+    def get_callable_definitions(
+        self, module_ids: Iterable[str], context: Context | None = None
+    ) -> list[CallableDefinition]:
+        """Expand visible module IDs in request order."""
+        return self.executor.get_callable_definitions(module_ids, context)
+
+    def get_callable_descriptor(
+        self, module_id: str, context: Context | None = None, *, version_hint: str | None = None
+    ) -> ModuleDescriptor | None:
+        """Return a detached, authorized descriptor for trusted host projections."""
+        return self.executor.get_callable_descriptor(module_id, context, version_hint=version_hint)
 
     def use(self, middleware: Any) -> APCore:
         """Add class-based middleware. Returns self for chaining."""

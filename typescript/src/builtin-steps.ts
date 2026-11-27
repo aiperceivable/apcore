@@ -241,6 +241,11 @@ export class BuiltinModuleLookup implements Step {
     return this._toggleState;
   }
 
+  /** @internal Discovery must use the same registry as module lookup. */
+  usesRegistry(registry: Registry): boolean {
+    return this._registry === registry;
+  }
+
   async execute(ctx: PipelineContext): Promise<StepResult> {
     const invocation = policyInvocationOf(ctx);
     if (invocation) assertPolicyBinding(ctx, invocation);

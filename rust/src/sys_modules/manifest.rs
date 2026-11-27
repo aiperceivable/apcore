@@ -363,3 +363,106 @@ impl Module for ManifestFullModule {
         }))
     }
 }
+
+/// Read-only governed discovery facade. The Executor is resolved from the
+/// actual call context, so registry ownership does not form a reference cycle.
+pub(crate) struct ManifestSearchModule;
+
+impl ManifestSearchModule {
+    pub(crate) const ID: &str = "system.manifest.search";
+
+    fn originating_frame(
+        context: &Context<serde_json::Value>,
+    ) -> Result<Context<serde_json::Value>, ModuleError> {
+        let mut parent = context.clone();
+        if parent.call_chain.last().map(String::as_str) != Some(Self::ID) {
+            return Err(ModuleError::invalid_input(
+                "Manifest search requires its invocation context",
+            ));
+        }
+        parent.call_chain.pop();
+        parent.caller_id = parent.call_chain.iter().rev().nth(1).cloned();
+        Ok(parent)
+    }
+}
+
+#[async_trait]
+impl Module for ManifestSearchModule {
+    fn description(&self) -> &'static str {
+        "Find public capabilities visible to the current caller"
+    }
+
+    fn annotations(&self) -> crate::ModuleAnnotations {
+        crate::ModuleAnnotations {
+            readonly: true,
+            idempotent: true,
+            open_world: false,
+            ..Default::default()
+        }
+    }
+
+    fn input_schema(&self) -> serde_json::Value {
+        json!({
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+                "query": {"type": "string"},
+                "prefix": {"type": "string"},
+                "tags": {"type": "array", "items": {"type": "string"}, "default": []},
+                "readonly": {"type": "boolean"},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 20},
+                "cursor": {"type": "string"},
+                "include_approval_required": {"type": "boolean", "default": true}
+            }
+        })
+    }
+
+    fn output_schema(&self) -> serde_json::Value {
+        json!({
+            "type": "object",
+            "required": ["items", "next_cursor"],
+            "additionalProperties": false,
+            "properties": {
+                "items": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "required": ["module_id", "version", "description", "tags", "readonly", "access_hint"],
+                        "additionalProperties": false,
+                        "properties": {
+                            "module_id": {"type": "string"},
+                            "version": {"type": "string"},
+                            "description": {"type": "string"},
+                            "tags": {"type": "array", "items": {"type": "string"}},
+                            "readonly": {"type": "boolean"},
+                            "access_hint": {"enum": ["allowed", "requires_approval", "conditional"]}
+                        }
+                    }
+                },
+                "next_cursor": {"type": ["string", "null"]}
+            }
+        })
+    }
+
+    async fn execute(
+        &self,
+        inputs: serde_json::Value,
+        ctx: &Context<serde_json::Value>,
+    ) -> Result<serde_json::Value, ModuleError> {
+        let executor = ctx.executor().ok_or_else(|| {
+            ModuleError::new(
+                crate::ErrorCode::ConfigInvalid,
+                "Manifest search requires a shared Executor",
+            )
+        })?;
+        let parent = Self::originating_frame(ctx)?;
+        let query = serde_json::from_value(inputs)
+            .map_err(|_| ModuleError::invalid_input("Invalid capability query"))?;
+        serde_json::to_value(executor.list_callable(Some(&parent), query)?).map_err(|_| {
+            ModuleError::new(
+                crate::ErrorCode::GeneralInternalError,
+                "Capability summary could not be encoded",
+            )
+        })
+    }
+}

@@ -5,20 +5,32 @@
  * Timeout uses Promise.race instead of threading.
  */
 
-import type { ACL } from './acl.js';
+import type { ACL, VisibilityDecision } from './acl.js';
 import {
   createRedactionReferenceContext,
   resolveRedactionReference,
   type RedactionReferenceContext,
 } from './utils/redaction-references.js';
 import { type ApprovalHandler, discardApprovalToken, prepareApprovalInputs, stripApprovalToken } from './approval.js';
-import { DEFAULT_EXECUTION_POLICY, type ExecutionPolicy } from './policy.js';
+import { DEFAULT_EXECUTION_POLICY, ExecutionPolicy } from './policy.js';
+import {
+  CapabilityCursorStore,
+  matchesCapability,
+  normalizeCapabilitySearch,
+  type CallableDefinition,
+  type CapabilityAccessHint,
+  type CapabilityPage,
+  type CapabilitySearchOptions,
+  type CapabilitySearchProvider,
+  type ModuleSummary,
+} from './capability-discovery.js';
 import {
   assertPolicyBinding, beginPolicyInvocation, endPolicyInvocation, policyIngressInputs, policyInvocationOf, type PolicyEvaluator,
 } from './policy-evaluation.js';
 import {
   BuiltinACLCheck,
   BuiltinApprovalGate,
+  BuiltinContextCreation,
   BuiltinModuleLookup,
   buildInternalStrategy,
   buildMinimalStrategy,
@@ -80,6 +92,8 @@ import {
 } from './pipeline.js';
 import { MAX_MODULE_ID_LENGTH, MODULE_ID_PATTERN } from './registry/registry.js';
 import type { Registry } from './registry/registry.js';
+import type { ModuleDescriptor } from './registry/types.js';
+import { matchesVersionHint } from './registry/version.js';
 import { createStreamExecution, StreamCompletionTracker, type StreamExecution } from './stream-completion.js';
 import { DEFAULT_TOGGLE_STATE, type ToggleState } from './sys-modules/toggle.js';
 import { propagateError } from './utils/error-propagation.js';
@@ -89,6 +103,19 @@ export const REDACTED_VALUE: string = '***REDACTED***';
 
 /** Steps whose removal withdraws a protection (PROTOCOL_SPEC §5.16 req 7). */
 const SECURITY_STEPS = ['acl_check', 'approval_gate'] as const;
+
+function matchesDiscoveryVersion(version: string, hint: string | null): boolean {
+  if (hint === null || hint === '') return true;
+  const requested = hint.trim();
+  if (/^=?\d+\.\d+\.\d+(?:[-+][\w.+-]+)?$/.test(requested)) {
+    return requested.replace(/^=/, '') === version;
+  }
+  try {
+    return matchesVersionHint(version, requested);
+  } catch {
+    return false;
+  }
+}
 
 /** The `pipeline:` block of a loaded configuration, or `null`. */
 /**
@@ -540,6 +567,8 @@ export class Executor {
   private _approvalHandler: ApprovalHandler | null;
   private _policy: ExecutionPolicy | null;
   private _policyEvaluator: PolicyEvaluator | null = null;
+  private _capabilitySearchProvider: CapabilitySearchProvider | null = null;
+  private readonly _capabilityCursors = new CapabilityCursorStore();
   private readonly _toggleState: ToggleState;
   private _eventEmitter: EventEmitter | null;
   private _eventEmitterConfigured: boolean;
@@ -558,6 +587,7 @@ export class Executor {
     approvalHandler?: ApprovalHandler | null;
     policy?: ExecutionPolicy | null;
     policyEvaluator?: PolicyEvaluator | null;
+    capabilitySearchProvider?: CapabilitySearchProvider | null;
     toggleState?: ToggleState | null;
     eventEmitter?: EventEmitter | null;
   }) {
@@ -641,6 +671,7 @@ export class Executor {
     // reported the gate as configured and wired.
     this._strategy = this._bindProviders(this._strategy);
     this.setPolicyEvaluator(options.policyEvaluator ?? null);
+    this.setCapabilitySearchProvider(options.capabilitySearchProvider ?? null);
 
     this._pipelineEngine = new PipelineEngine();
   }
@@ -773,6 +804,138 @@ export class Executor {
       (this._registry.get(moduleId) as Record<string, unknown> | null)?.['annotations'],
       this._registry.getDeclaredAnnotations(moduleId),
     );
+  }
+
+  /**
+   * Summarize currently callable public registrations without executing a module.
+   * A continuation uses its original ordering and rechecks visibility on each page.
+   */
+  listCallable(context: Context | null = null, options: CapabilitySearchOptions = {}): CapabilityPage {
+    const filters = normalizeCapabilitySearch(options);
+    const parent = (context ?? Context.create()).withExecutor(this);
+    const provider = this._capabilitySearchProvider;
+    const position = options.cursor == null
+      ? { candidates: this._capabilityCandidates(parent, provider, filters.query), offset: 0 }
+      : this._capabilityCursors.read(options.cursor, context, filters);
+    const items: ModuleSummary[] = [];
+    let nextCursor: string | null = null;
+    for (let offset = position.offset; offset < position.candidates.length; offset++) {
+      const summary = this._capabilitySummary(position.candidates[offset], parent);
+      if (summary === null || !matchesCapability(summary, filters, provider === null)) continue;
+      if (items.length === filters.limit) {
+        nextCursor = this._capabilityCursors.issue({ candidates: position.candidates, offset }, context, filters);
+        break;
+      }
+      items.push(summary);
+    }
+    return { items, nextCursor };
+  }
+
+  /** Return complete schemas for visible IDs, in first-seen request order. */
+  getCallableDefinitions(moduleIds: readonly string[], context: Context | null = null): CallableDefinition[] {
+    if (!Array.isArray(moduleIds) || moduleIds.some(id => typeof id !== 'string')) {
+      throw new InvalidInputError('Capability module IDs must be a list of strings');
+    }
+    const definitions: CallableDefinition[] = [];
+    for (const moduleId of new Set(moduleIds)) {
+      const definition = this.getCallableDefinition(moduleId, context);
+      if (definition !== null) definitions.push(definition);
+    }
+    return definitions;
+  }
+
+  /** Return complete schemas for one live, visible registration. */
+  getCallableDefinition(
+    moduleId: string, context: Context | null = null, versionHint: string | null = null,
+  ): CallableDefinition | null {
+    const descriptor = this.getCallableDescriptor(moduleId, context, versionHint);
+    if (descriptor === null) return null;
+    const { version, inputSchema, outputSchema } = descriptor;
+    return { moduleId, version, inputSchema, outputSchema };
+  }
+
+  /** Obtain the authorized live descriptor for a host's protocol projection. */
+  getCallableDescriptor(
+    moduleId: string, context: Context | null = null, versionHint: string | null = null,
+  ): ModuleDescriptor | null {
+    const parent = (context ?? Context.create()).withExecutor(this);
+    const candidate = this._discoverCapability(moduleId, parent);
+    if (candidate === null) return null;
+    const descriptor = this._registry.publicDefinition(moduleId, candidate.generation);
+    return descriptor !== null && matchesDiscoveryVersion(descriptor.version, versionHint) ? descriptor : null;
+  }
+
+  private _capabilityCandidates(
+    parent: Context, provider: CapabilitySearchProvider | null, query: string,
+  ): string[] {
+    const ids = this._registry.list();
+    if (provider === null) return ids;
+    const eligible = new Set(ids.filter(id => this._discoverCapability(id, parent) !== null));
+    const ranked = provider.search(query || undefined, [...eligible]);
+    if (!Array.isArray(ranked)) throw new InvalidInputError('Capability search must return a list of module IDs');
+    return [...new Set(ranked)].filter(id => eligible.has(id));
+  }
+
+  private _discoverCapability(
+    moduleId: string, parent: Context,
+  ): { generation: object; approvalRequired: boolean; approvalConditional: boolean } | null {
+    const steps = this._strategy.steps;
+    const lookup = steps.find(step => step.name === 'module_lookup');
+    if (!(lookup instanceof BuiltinModuleLookup) || !lookup.usesRegistry(this._registry) ||
+        lookup.toggleState.isDisabled(moduleId) ||
+        !steps.some(step => step instanceof BuiltinContextCreation)) return null;
+    const generation = this._registry.publicGeneration(moduleId);
+    if (generation === null) return null;
+    const gates = steps.filter(step => step.name === 'acl_check' || step instanceof BuiltinACLCheck);
+    if (gates.length === 0) return null;
+    const target = parent.child(moduleId);
+    let approvalRequired = false;
+    let approvalConditional = false;
+    for (const gate of gates) {
+      if (!(gate instanceof BuiltinACLCheck) || gate.execute !== BuiltinACLCheck.prototype.execute) return null;
+      if (gate.acl === null) continue;
+      const result: VisibilityDecision | undefined = gate.acl.evaluateVisibility?.(target.callerId, moduleId, target);
+      if (result?.visible !== true) return null;
+      approvalRequired ||= result.approvalRequired;
+      approvalConditional ||= result.approvalConditional;
+    }
+    return this._registry.publicGeneration(moduleId) === generation
+      ? { generation, approvalRequired, approvalConditional } : null;
+  }
+
+  private _capabilitySummary(moduleId: string, parent: Context): ModuleSummary | null {
+    const proof = this._discoverCapability(moduleId, parent);
+    if (proof === null) return null;
+    const metadata = this._registry.getModuleMetadata(moduleId);
+    const annotations = this._registry.getDeclaredAnnotations(moduleId);
+    const accessHint = this._capabilityAccessHint(moduleId, proof);
+    return this._registry.publicGeneration(moduleId) === proof.generation ? {
+      moduleId,
+      version: typeof metadata.version === 'string' ? metadata.version : '1.0.0',
+      description: typeof metadata.description === 'string' ? metadata.description : '',
+      tags: Array.isArray(metadata.tags) ? metadata.tags.filter((tag): tag is string => typeof tag === 'string') : [],
+      readonly: annotations?.readonly === true,
+      accessHint,
+    } : null;
+  }
+
+  private _capabilityAccessHint(
+    moduleId: string, proof: Pick<VisibilityDecision, 'approvalRequired' | 'approvalConditional'>,
+  ): CapabilityAccessHint {
+    const gate = this._strategy.steps.find((step): step is BuiltinApprovalGate =>
+      Object.getPrototypeOf(step) === BuiltinApprovalGate.prototype &&
+      step.execute === BuiltinApprovalGate.prototype.execute);
+    const evaluatorActive = this._policyEvaluator !== null;
+    if (gate !== undefined) {
+      const enforces = gate.policy.strict || gate.approvalHandler !== null || evaluatorActive;
+      const knownPolicy = Object.getPrototypeOf(gate.policy) === ExecutionPolicy.prototype &&
+        gate.policy.resolve === ExecutionPolicy.prototype.resolve;
+      const staticApproval = enforces && knownPolicy &&
+        gate.policy.resolve(moduleId, this._moduleGovernanceAnnotations(moduleId)).needsApproval;
+      if (enforces && (proof.approvalRequired || staticApproval)) return 'requires_approval';
+      if (!knownPolicy || (enforces && proof.approvalConditional)) return 'conditional';
+    }
+    return evaluatorActive ? 'conditional' : 'allowed';
   }
 
   /**
@@ -978,6 +1141,15 @@ export class Executor {
       withPostValidationPolicy(this._strategy, evaluator, this._eventEmitter);
     }
     this._policyEvaluator = evaluator;
+  }
+
+  /** Install or clear the optional capability ranking extension. */
+  setCapabilitySearchProvider(provider: CapabilitySearchProvider | null): void {
+    if (provider !== null && typeof provider.search !== 'function') {
+      throw new TypeError('A capability search provider must provide a search method');
+    }
+    this._capabilitySearchProvider = provider;
+    this._capabilityCursors.clear();
   }
 
   private _strategyForInvocation(strategy = this._strategy): ExecutionStrategy {

@@ -1897,7 +1897,10 @@ class Registry:
         Anything other than an explicit ``False`` keeps the module visible —
         the default ``True`` preserves backward compatibility.
         """
-        meta = module_meta.get(module_id)
+        return Registry._registration_is_discoverable(modules.get(module_id), module_meta.get(module_id))
+
+    @staticmethod
+    def _registration_is_discoverable(module: Any, meta: dict[str, Any] | None) -> bool:
         if meta is not None:
             ann = meta.get("annotations")
             if ann is not None:
@@ -1908,7 +1911,6 @@ class Registry:
                     return False
                 if discoverable is not None:
                     return True
-        module = modules.get(module_id)
         if module is None:
             return True
         ann = getattr(module, "annotations", None)
@@ -1917,6 +1919,23 @@ class Registry:
         if isinstance(ann, dict):
             return ann.get("discoverable", True) is not False
         return getattr(ann, "discoverable", True) is not False
+
+    def _discovery_registration(
+        self, module_id: str, version_hint: str | None
+    ) -> tuple[_ModuleRegistration, object | None] | None:
+        """Snapshot a public registration that can accept new calls, without holding a lease."""
+        with self._lock:
+            if self._closed or module_id in self._draining or module_id in self._unavailable:
+                return None
+            try:
+                registration = self._resolve_registration(module_id, version_hint)
+            except ModuleNotFoundError:
+                return None
+            if registration is None or not self._registration_is_discoverable(
+                registration.module, registration.metadata
+            ):
+                return None
+            return registration, self._lease_generations.get(module_id)
 
     def get_definition(self, module_id: str, version_hint: str | None = None) -> ModuleDescriptor | None:
         """Get a ModuleDescriptor for a registered module. Returns None if not found.
@@ -1928,6 +1947,11 @@ class Registry:
         registration = self._resolve_registration(module_id, version_hint)
         if registration is None:
             return None
+        return self._describe_registration(module_id, registration)
+
+    def _describe_registration(
+        self, module_id: str, registration: _ModuleRegistration, *, warn_deprecation: bool = True
+    ) -> ModuleDescriptor:
         module = registration.module
         meta = registration.metadata
         version_str = meta.get("version") or getattr(module, "version", None) or DEFAULT_MODULE_VERSION
@@ -1963,7 +1987,7 @@ class Registry:
 
         # Log deprecation warning if x-deprecation is present
         deprecation = effective_metadata.get("x-deprecation")
-        if deprecation:
+        if deprecation and warn_deprecation:
             self._log_deprecation_warning(module_id, version_str, deprecation)
 
         sunset_date: str | None = None

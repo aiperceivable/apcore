@@ -22,6 +22,7 @@ from apcore.approval import (
     ScopedApprovalHandler,
 )
 from apcore.cancel import CancelToken, ExecutionCancelledError
+from apcore.capabilities import AccessHint, CallableDefinition, CapabilityPage, CapabilitySearchProvider, ModuleSummary
 from apcore.context import Context, ContextFactory, GovernanceProjection, Identity
 from apcore.context_key import ContextKey
 from apcore.context_keys import (
@@ -168,6 +169,7 @@ from apcore.acl import (
     AuditEntry,
     ConditionOutcome,
     RuleValidationFinding,
+    VisibilityDecision,
 )
 
 # Execution-time governance policy (apcore#76 RFC pilot)
@@ -602,6 +604,12 @@ __all__ = [
     "ApprovalResult",
     "AutoApproveHandler",
     "CancelToken",
+    "AccessHint",
+    "CallableDefinition",
+    "CapabilityPage",
+    "CapabilitySearchProvider",
+    "ModuleSummary",
+    "VisibilityDecision",
     "Context",
     "ErrorCodes",
     "ExecutionPolicy",

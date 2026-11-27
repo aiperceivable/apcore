@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "system.manifest.search Output",
+  "description": "Page of active public module summaries authorized for the requesting caller.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["items", "next_cursor"],
+  "properties": {
+    "items": {
+      "description": "Visible summaries in result order.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["module_id", "version", "description", "tags", "readonly", "access_hint"],
+        "properties": {
+          "module_id": {"type": "string", "description": "Canonical module ID."},
+          "version": {"type": "string", "description": "Resolved module version."},
+          "description": {"type": "string", "description": "Short, plain-text module description."},
+          "tags": {
+            "type": "array",
+            "description": "Tags declared by the module.",
+            "items": {"type": "string"}
+          },
+          "readonly": {"type": "boolean", "description": "Whether the module declares read-only behavior."},
+          "access_hint": {
+            "enum": ["allowed", "requires_approval", "conditional"],
+            "description": "Advisory approval status for the current caller."
+          }
+        }
+      }
+    },
+    "next_cursor": {
+      "type": ["string", "null"],
+      "description": "Opaque continuation for the same caller and filters, or null at the end."
+    }
+  }
+}

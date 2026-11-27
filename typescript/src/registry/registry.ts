@@ -99,6 +99,7 @@ interface DiscoveredRegistration {
 }
 
 interface ExecutionGeneration {
+  readonly discoveryToken: object;
   references: number;
   readonly drainWaiters: Set<() => void>;
   executions?: Map<CancelToken, number>;
@@ -1125,7 +1126,9 @@ export class Registry {
       }
       this._inFlight.delete(moduleId);
       this._modules.set(moduleId, module);
-      this._executionGenerations.set(moduleId, { references: 0, drainWaiters: new Set() });
+      this._executionGenerations.set(moduleId, {
+        discoveryToken: Object.freeze({}), references: 0, drainWaiters: new Set(),
+      });
       this._moduleMeta.set(moduleId, merged);
       this._lowercaseMap.set(moduleId.toLowerCase(), moduleId);
       if (options?.sourceFile !== undefined) this._sourceFiles.set(moduleId, options.sourceFile);
@@ -1526,6 +1529,13 @@ export class Registry {
     return (meta['annotations'] as ModuleAnnotations | null) ?? null;
   }
 
+  /** @internal Read the generation eligible for public discovery without acquiring it. */
+  publicGeneration(moduleId: string): object | null {
+    if (this._shutdown || this._inFlight.has(moduleId) || this._draining.has(moduleId) ||
+        !this._isDiscoverable(moduleId)) return null;
+    return this._executionGenerations.get(moduleId)?.discoveryToken ?? null;
+  }
+
   /** Return the module descriptor with detached schemas and metadata records. */
   getDefinition(moduleId: string, versionHint?: string | null): ModuleDescriptor | null {
     // Keep the same invalid-ID error as the instance lookup.
@@ -1533,6 +1543,17 @@ export class Registry {
       throw new ModuleNotFoundError('');
     }
     this._warnIgnoredVersionHint('getDefinition', moduleId, versionHint);
+    return this._definition(moduleId, true);
+  }
+
+  /** @internal Build a detached descriptor for a generation authorized by the executor. */
+  publicDefinition(moduleId: string, generation: object): ModuleDescriptor | null {
+    if (this.publicGeneration(moduleId) !== generation) return null;
+    const definition = this._definition(moduleId, false);
+    return this.publicGeneration(moduleId) === generation ? definition : null;
+  }
+
+  private _definition(moduleId: string, warnDeprecated: boolean): ModuleDescriptor | null {
     const module = this._modules.get(moduleId);
     if (module == null) return null;
     // INVARIANT: every registration site (`register`, `registerInternal`,
@@ -1558,7 +1579,7 @@ export class Registry {
       const dep = deprecation as Record<string, unknown>;
       const declared = dep['sunset_date'];
       sunsetDate = typeof declared === 'string' ? declared : null;
-      this._warnModuleDeprecated(moduleId, version, dep);
+      if (warnDeprecated) this._warnModuleDeprecated(moduleId, version, dep);
     }
 
     return snapshotRegistryData({

@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any
 
 from apcore.acl import ACL
 from apcore.approval import ApprovalHandler
+from apcore.capabilities import CapabilitySearchProvider
 from apcore.errors import InvalidInputError
 from apcore.middleware import Middleware
 from apcore.observability.tracing import Span, SpanExporter, TracingMiddleware
@@ -93,6 +94,12 @@ def _built_in_points() -> dict[str, ExtensionPoint]:
             name="policy_evaluator",
             extension_type=PolicyEvaluator,
             description="Policy evaluator for validated invocations",
+            multiple=False,
+        ),
+        "capability_search_provider": ExtensionPoint(
+            name="capability_search_provider",
+            extension_type=CapabilitySearchProvider,
+            description="Rank eligible module IDs for capability discovery",
             multiple=False,
         ),
     }
@@ -218,6 +225,7 @@ class ExtensionManager:
             - acl -> executor.set_acl()
             - approval_handler -> executor.set_approval_handler()
             - policy_evaluator -> executor.set_policy_evaluator()
+            - capability_search_provider -> executor.set_capability_search_provider()
             - middleware -> executor.use() for each
             - span_exporter -> find TracingMiddleware, set exporter (composite if multiple)
 
@@ -248,6 +256,10 @@ class ExtensionManager:
         evaluator = self.get("policy_evaluator")
         if evaluator is not None:
             executor.set_policy_evaluator(evaluator)
+
+        search_provider = self.get("capability_search_provider")
+        if search_provider is not None:
+            executor.set_capability_search_provider(search_provider)
 
         # Middleware
         for mw in self.get_all("middleware"):

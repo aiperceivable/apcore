@@ -314,6 +314,10 @@ impl Step for BuiltinCallChainGuard {
 
 #[async_trait]
 impl Step for BuiltinModuleLookup {
+    fn builtin_module_is_enabled(&self, module_id: &str) -> Option<bool> {
+        Some(!self.toggle_state.is_disabled(module_id))
+    }
+
     fn name(&self) -> &'static str {
         "module_lookup"
     }

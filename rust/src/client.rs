@@ -651,6 +651,45 @@ impl APCore {
         )
     }
 
+    /// Install or remove a provider for capability search.
+    pub fn set_capability_search_provider(
+        &self,
+        provider: Option<Arc<dyn crate::CapabilitySearchProvider>>,
+    ) {
+        self.executor.set_capability_search_provider(provider);
+    }
+
+    /// List public capability summaries for the supplied caller.
+    pub fn list_callable(
+        &self,
+        context: Option<&Context<Value>>,
+        query: crate::CapabilityQuery,
+    ) -> Result<crate::CapabilityPage, ModuleError> {
+        self.executor.list_callable(context, query)
+    }
+
+    /// Expand selected callable definitions for this caller.
+    #[must_use]
+    pub fn get_callable_definitions<S: AsRef<str>>(
+        &self,
+        module_ids: &[S],
+        context: Option<&Context<Value>>,
+    ) -> Vec<crate::CallableDefinition> {
+        self.executor.get_callable_definitions(module_ids, context)
+    }
+
+    /// Read the current governed descriptor for an adapter projection.
+    #[must_use]
+    pub fn get_callable_descriptor(
+        &self,
+        module_id: &str,
+        expected_version: Option<&str>,
+        context: Option<&Context<Value>>,
+    ) -> Option<ModuleDescriptor> {
+        self.executor
+            .get_callable_descriptor(module_id, expected_version, context)
+    }
+
     /// Call (execute) a module by ID with the given inputs.
     ///
     /// `inputs` accepts either a `serde_json::Value` directly or `None`.

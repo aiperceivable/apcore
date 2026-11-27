@@ -18,6 +18,7 @@ pub mod async_task;
 pub mod bindings;
 pub mod builtin_steps;
 pub mod cancel;
+pub mod capability;
 pub mod client;
 pub mod config;
 pub mod context;
@@ -54,6 +55,10 @@ pub use acl_handlers::{ACLConditionHandler, ConditionOutcome};
 pub use approval::{
     AlwaysDenyHandler, ApprovalHandler, ApprovalRequest, ApprovalResult, AutoApproveHandler,
     CallbackApprovalHandler,
+};
+pub use capability::{
+    AccessHint, CallableDefinition, CapabilityPage, CapabilityQuery, CapabilitySearchProvider,
+    ModuleSummary,
 };
 // Note: `async_task::RetryConfig` is re-exported at the crate root as
 // `AsyncRetryConfig` to avoid colliding with `middleware::RetryConfig`,

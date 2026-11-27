@@ -1,18 +1,19 @@
-"""system.manifest.module and system.manifest.full sys modules."""
+"""System modules for manifests and capability discovery."""
 
 from __future__ import annotations
 
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from typing import Any
 
 from apcore.config import Config
+from apcore.context import Context
 from apcore.errors import InvalidInputError, ModuleNotFoundError
 from apcore.module import ModuleAnnotations
 from apcore.registry.registry import Registry
 from apcore.registry.types import DependencyInfo
 from apcore.schema.annotations import governance_union
 
-__all__ = ["ManifestFullModule", "ManifestModule", "ManifestModuleModule"]
+__all__ = ["ManifestFullModule", "ManifestModule", "ManifestModuleModule", "ManifestSearchModule"]
 
 
 def _compute_source_path(config: Config | None, module_id: str) -> str | None:
@@ -332,3 +333,62 @@ class ManifestFullModule:
         if self._config is None:
             return self.DEFAULT_PROJECT_NAME
         return self._config.get("project.name", "") or self.DEFAULT_PROJECT_NAME
+
+
+class ManifestSearchModule:
+    """Return ACL-authorized summaries using the original caller's context."""
+
+    description = "Search public modules visible to the requesting caller"
+    annotations = ModuleAnnotations(readonly=True, idempotent=True, open_world=False)
+    input_schema: dict[str, Any] = {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "query": {"type": "string"},
+            "prefix": {"type": "string"},
+            "tags": {"type": "array", "items": {"type": "string"}},
+            "readonly": {"type": "boolean"},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 100},
+            "cursor": {"type": "string"},
+            "include_approval_required": {"type": "boolean"},
+        },
+    }
+    output_schema: dict[str, Any] = {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["items", "next_cursor"],
+        "properties": {
+            "items": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["module_id", "version", "description", "tags", "readonly", "access_hint"],
+                    "properties": {
+                        "module_id": {"type": "string"},
+                        "version": {"type": "string"},
+                        "description": {"type": "string"},
+                        "tags": {"type": "array", "items": {"type": "string"}},
+                        "readonly": {"type": "boolean"},
+                        "access_hint": {"enum": ["allowed", "requires_approval", "conditional"]},
+                    },
+                },
+            },
+            "next_cursor": {"type": ["string", "null"]},
+        },
+    }
+
+    def execute(self, inputs: dict[str, Any], context: Context) -> dict[str, Any]:
+        from apcore.executor import Executor
+
+        if not isinstance(context.executor, Executor) or context.call_chain[-1:] != ["system.manifest.search"]:
+            raise InvalidInputError("Manifest search requires a bound invocation context")
+        if any(value is None for value in inputs.values()):
+            raise InvalidInputError("Manifest search filters must not be null")
+        callers = context.call_chain[:-1]
+        original = replace(context, call_chain=callers, caller_id=callers[-2] if len(callers) > 1 else None)
+        page = context.executor.list_callable(original, **inputs)
+        return {
+            "items": [{**asdict(item), "tags": list(item.tags)} for item in page.items],
+            "next_cursor": page.next_cursor,
+        }

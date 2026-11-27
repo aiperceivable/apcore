@@ -22,7 +22,7 @@ import type { RetryConfig } from '../events/retry.js';
 import { CircuitBreakerWrapper } from '../events/circuit-breaker.js';
 import { PlatformNotifyMiddleware } from '../middleware/platform-notify.js';
 import { HealthSummaryModule, HealthModule } from './health.js';
-import { ManifestFullModule, ManifestModule } from './manifest.js';
+import { ManifestFullModule, ManifestModule, ManifestSearchModule } from './manifest.js';
 import { ToggleFeatureModule, DEFAULT_TOGGLE_STATE } from './toggle.js';
 import type { ToggleState } from './toggle.js';
 import { UpdateConfigModule, ReloadModule } from './control.js';
@@ -480,6 +480,7 @@ export function registerSysModules(
   if (_cfgGet(sysCfg, config, 'manifest.enabled', true)) {
     reg('system.manifest.module', new ManifestModule(registry, config));
     reg('system.manifest.full', new ManifestFullModule(registry, config));
+    reg(ManifestSearchModule.moduleId, new ManifestSearchModule(executor));
   }
 
   if (_cfgGet(sysCfg, config, 'usage.enabled', true)) {
