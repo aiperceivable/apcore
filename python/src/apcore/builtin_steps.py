@@ -1358,7 +1358,7 @@ class BuiltinExecute(BaseStep):
                 coro = execute(inputs, ctx.context)
             else:
                 loop = asyncio.get_event_loop()
-                coro = loop.run_in_executor(None, execute, inputs, ctx.context)
+                coro = loop.run_in_executor(None, _execute_sync_module, execute, inputs, ctx.context)
 
             task = ctx.module_task = asyncio.ensure_future(coro)
             # Consume late failures even when the call was cancelled while
@@ -1380,6 +1380,8 @@ class BuiltinExecute(BaseStep):
             else:
                 # Cancelling the asyncio wrapper does not stop a worker thread.
                 output = await task if is_async else await asyncio.shield(task)
+            if not is_async and isinstance(output, _SyncExecutionFailure):
+                raise output.error
             output = normalize_module_output(output)
             if output is None:
                 raise ModuleExecuteError(module_id=ctx.module_id, message="Return value cannot be None")
@@ -1395,6 +1397,23 @@ class BuiltinExecute(BaseStep):
             ) from None
 
         return StepResult(action="continue")
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class _SyncExecutionFailure:
+    error: BaseException
+
+
+def _execute_sync_module(
+    execute: Callable[[dict[str, Any], Context], Any], inputs: dict[str, Any], context: Context
+) -> Any:
+    try:
+        return execute(inputs, context)
+    except BaseException as error:
+        # The sync bridge can park or close the loop before its next-turn
+        # callbacks run. Transfer a value so a late worker failure can be
+        # discarded while an active waiter still receives the original error.
+        return _SyncExecutionFailure(error)
 
 
 def _discard_late_execution(task: asyncio.Future[Any]) -> None:

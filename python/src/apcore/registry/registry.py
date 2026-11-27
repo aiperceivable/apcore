@@ -6,7 +6,6 @@ import asyncio
 import inspect
 import json
 import logging
-import os
 import re
 import threading
 import time
@@ -54,7 +53,7 @@ from apcore.registry.metadata import (
     merge_module_metadata,
     parse_dependencies,
 )
-from apcore.registry.scanner import _companion_metadata_path, _watched_source, scan_extensions, scan_multi_root
+from apcore.registry.scanner import scan_extensions, scan_multi_root, scan_watched_source
 from apcore.registry.types import DependencyInfo, DiscoveredModule, ModuleDescriptor
 from apcore.registry.validation import validate_module
 from apcore.registry.version import VersionedStore, matches_version_hint
@@ -417,64 +416,6 @@ def _validate_module_id(module_id: str, *, allow_reserved: bool = False) -> None
                 f"Module ID contains reserved word: '{first_segment}'",
                 code=ErrorCodes.INVALID_MODULE_ID,
             )
-
-
-class _ModuleChangeHandler:
-    """Watchdog event handler for file-system events on extension roots.
-
-    Hoisted to module scope (from an inline class inside ``Registry.watch``)
-    so it can be unit-tested directly and so the debounce dict stays on a
-    long-lived object with bounded memory. Registry is held via a weakref to
-    avoid extending its lifetime beyond the caller's expectation.
-    """
-
-    _DEBOUNCE_WINDOW_SEC: float = 0.3
-    _MAX_DEBOUNCE_ENTRIES: int = 1024
-    _DEBOUNCE_PRUNE_KEEP: int = 256
-
-    def __init__(self, registry: "Registry") -> None:
-        import weakref
-
-        self._registry_ref: Any = weakref.ref(registry)
-        self._debounce_timer: dict[str, float] = {}
-
-    def _registry(self) -> "Registry | None":
-        return self._registry_ref()
-
-    def _should_process(self, path: str) -> bool:
-        if not path.endswith(".py"):
-            return False
-        now = time.time()
-        last = self._debounce_timer.get(path, 0.0)
-        if now - last < self._DEBOUNCE_WINDOW_SEC:
-            return False
-        self._debounce_timer[path] = now
-        # Bounded memory: prune oldest entries when the dict grows too large.
-        if len(self._debounce_timer) > self._MAX_DEBOUNCE_ENTRIES:
-            sorted_by_age = sorted(self._debounce_timer.items(), key=lambda kv: kv[1])
-            self._debounce_timer = dict(sorted_by_age[-self._DEBOUNCE_PRUNE_KEEP :])
-        return True
-
-    def on_modified(self, event: Any) -> None:
-        if event.is_directory:
-            return
-        path = str(event.src_path)
-        reg = self._registry()
-        if reg is not None and not reg._defer_watched_change(path) and self._should_process(path):
-            reg._handle_file_change(path)
-
-    def on_created(self, event: Any) -> None:
-        self.on_modified(event)
-
-    def on_deleted(self, event: Any) -> None:
-        if event.is_directory:
-            return
-        path = str(event.src_path)
-        if not path.endswith(".py"):
-            return
-        reg = self._registry()
-        if reg is not None:
-            reg._handle_file_deletion(path)
 
 
 def _run_on_load(module: Any, module_id: str) -> None:
@@ -3439,25 +3380,15 @@ class Registry:
                 raise InvalidInputError(message="Invalid watch lifecycle policy")
             if _has_running_loop():
                 hook_loop = asyncio.get_running_loop()
-        try:
-            from watchdog.events import FileSystemEventHandler
-            from watchdog.observers import Observer  # type: ignore[import-not-found]
-        except ImportError:
-            raise ImportError("watchdog is required for hot reload. Install it with: pip install watchdog")
+        from apcore.registry.watcher import load_observer_factory
 
-        class WatchdogHandler(_ModuleChangeHandler, FileSystemEventHandler):
-            pass
+        create_observer = load_observer_factory()
 
         with self._lock:
             self._require_open()
             if hasattr(self, "_observer") and self._observer is not None:
                 return
-            observer = Observer()
-            handler = WatchdogHandler(self)
-            for root_config in self._extension_roots:
-                root_path = root_config.get("root", "")
-                if root_path and os.path.isdir(root_path):
-                    observer.schedule(handler, root_path, recursive=True)
+            observer = create_observer(self, self._extension_roots)
             self._watch_lifecycle = lifecycle
             self._watch_hook_loop = hook_loop
             observer.start()
@@ -3563,28 +3494,12 @@ class Registry:
 
     def _watched_candidate(self, path: Path) -> DiscoveredModule | None:
         max_depth, follow_symlinks, ignore_patterns = self._scan_params()
-        prefixed = len(self._extension_roots) > 1 or any("namespace" in r for r in self._extension_roots)
-        for root_config in self._extension_roots:
-            root = Path(root_config["root"])
-            source = _watched_source(path, root, max_depth, follow_symlinks, ignore_patterns)
-            if source is None:
-                continue
-            real_root = root.resolve()
-            canonical_id = str(source.relative_to(real_root).with_suffix("")).replace(os.sep, ".")
-            namespace = (root_config.get("namespace") or root.name) if prefixed else None
-            if namespace is not None:
-                canonical_id = f"{namespace}.{canonical_id}"
-            candidate = DiscoveredModule(
-                file_path=source,
-                canonical_id=canonical_id,
-                meta_path=_companion_metadata_path(source, real_root, follow_symlinks),
-                namespace=namespace,
-            )
+        candidate = scan_watched_source(path, self._extension_roots, max_depth, follow_symlinks, ignore_patterns)
+        if candidate is not None:
             self._reject_ephemeral_discoveries([candidate])
             self._apply_id_map_overrides([candidate])
             _validate_module_id(candidate.canonical_id)
-            return candidate
-        return None
+        return candidate
 
     def _handle_file_change(self, path: str) -> None:
         """Handle a file modification or creation event.

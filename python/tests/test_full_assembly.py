@@ -23,13 +23,17 @@ def test_root_runs_in_memory_without_importing_optional_dependencies() -> None:
 
                 class BlockOptionalImports(MetaPathFinder):
                     def find_spec(self, fullname, path=None, target=None):
-                        if fullname == 'http.server' or fullname.split('.')[0] in {
-                            'yaml', 'watchdog', 'aiohttp', 'opentelemetry'
-                        }:
+                        optional_modules = {'http.server', 'apcore.acl_loader', 'apcore.registry.watcher'}
+                        optional_packages = {'yaml', 'watchdog', 'aiohttp', 'opentelemetry'}
+                        if fullname in optional_modules or fullname.split('.')[0] in optional_packages:
                             raise AssertionError(f'Kernel imported optional dependency {fullname}')
 
                 sys.meta_path.insert(0, BlockOptionalImports())
                 from apcore import APCore
+                from apcore.acl import ACL, ACLRule
+
+                acl = ACL([ACLRule(callers=['app.*'], targets=['example.add'], effect='allow')])
+                assert acl.check('app.worker', 'example.add')
 
                 app = APCore()
 

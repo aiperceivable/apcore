@@ -133,7 +133,7 @@ class TestApprovalRuleField:
 
     def test_approval_is_in_the_closed_rule_key_set(self) -> None:
         """§6.1.6 rule 3: adding the field was only safe once §6.1.5 closed the set."""
-        from apcore.acl import _RULE_KEYS
+        from apcore.acl_loader import _RULE_KEYS
 
         assert "approval" in _RULE_KEYS
 
