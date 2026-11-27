@@ -6,7 +6,7 @@ description: "The canonical apcore protocol specification (RFC 2119): module, sc
 
 > **Canonical specification.** This document is the single normative source for the apcore protocol. Where any other document disagrees with it, this document wins.
 
-> Version: 3.0.0
+> Version: 2.0.0
 > Status: Draft
 > Last Updated: 2026-11-27
 
@@ -10306,9 +10306,7 @@ The specification and the SDK have independent version numbers. `CHANGELOG.md` r
 
 | Version | Date | Summary | Records |
 |---|---|---|---|
-| 3.0.0 | Unreleased | Define the in-memory Core Profile and opt-in extension profiles (§1.8, §12). Require the default approval gate to reject calls that need a missing handler and require approval for destructive modules by default (§6.6.3.1, §7.4, §7.9). Move provider projections to Surfaces (§4.17 and Appendix D). | [Changelog](https://github.com/aiperceivable/apcore/blob/main/CHANGELOG.md) |
-| 2.1.0 | Unreleased | Add managed drain and recovery hooks, scoped forced removal, opt-in governed reload reports, and lifecycle events (§6.7, §9.16.2, §12.7.9). | D-153 |
-| 2.0.0 | Unreleased | Resolve every path-typed configuration value against one project root (§9.2.2). Clarify configured redaction for schema-less calls (§6.1.8, §10.6.1). Require invocation-scoped approval resumption and use a non-secret correlation ID in approval telemetry (§7, §9.16.2). Clarify pipeline configuration, preflight, and approval argument scope (§5.16.1, §7.3–7.4, §12.8). Align schema examples with Draft 2020-12 and the unified validation error format (§4.2, §4.14, §8.1). Clarify the APCore trace ID reservation (§10.5). | [#113](https://github.com/aiperceivable/apcore/issues/113) |
+| 2.0.0 | Unreleased | Define an in-memory Core Profile and opt-in extensions (§1.8, §12). Deny calls requiring approval when the handler is absent, and require approval for destructive modules by default (§6.6.3.1, §7.4, §7.9). Require invocation-scoped approval resumption and use a non-secret correlation ID in telemetry (§7, §9.16.2). Specify managed drain, recovery, scoped forced removal, reload reports and lifecycle events (§6.7, §9.16.2, §12.7.9). Assign provider projections to Surfaces (§4.17 and Appendix D). Resolve path-typed configuration against one project root (§9.2.2). Clarify pipeline configuration, preflight and approval argument scope (§5.16.1, §7.3–7.4, §12.8), configured redaction (§6.1.8, §10.6.1) and trace IDs (§10.5). Align schema examples with Draft 2020-12 and the validation error format (§4.2, §4.14, §8.1). | D-153, [#113](https://github.com/aiperceivable/apcore/issues/113), [Changelog](https://github.com/aiperceivable/apcore/blob/main/CHANGELOG.md) |
 | 1.66.0 | 2026-10-19 | A23 preserves optional enum, const, reference and applicator constraints inside an anyOf-null wrapper; required fields remain unchanged. | [#124](https://github.com/aiperceivable/apcore/issues/124) |
 | 1.65.0 | 2026-10-08 | Add public bare-name canonicalization with structured, non-throwing results in all SDKs; preserve A02, ASCII-only case conversion and existing underscores, and reject non-ASCII, invalid starts and overlong output (§2.2.1). | [Rust #40](https://github.com/aiperceivable/apcore-rust/issues/40) |
 | 1.64.0 | 2026-10-08 | Algorithm A02 is exhaustive and ASCII-scoped: it preserves existing underscores and non-ASCII characters through case conversion, then rejects a result outside the Canonical ID grammar; it never repairs arbitrary identifiers (§2.2). The repairing class-name conversion is named `snake_case_name` and is distinct from A02's `snake_case_identifier` (§2.1.1). | #122 |
