@@ -26,6 +26,7 @@ from typing import Any
 import pytest
 import yaml
 
+from apcore.approval import AutoApproveHandler
 from apcore import APCore
 from apcore.sys_modules import overrides as overrides_module
 
@@ -187,7 +188,7 @@ class TestFileStoreLoadDegradation:
         def _raise_yaml(*args: object, **kwargs: object) -> object:
             raise yaml.YAMLError("synthetic")
 
-        monkeypatch.setattr(overrides_module.yaml, "safe_load", _raise_yaml)
+        monkeypatch.setattr(yaml, "safe_load", _raise_yaml)
         assert FileOverridesStore(path).load() == {"a.b": 1}
 
     def test_load_returns_empty_and_warns_when_neither_yaml_nor_json(
@@ -337,6 +338,7 @@ class TestRegisterSysModulesWithStore:
         _enable_sys_modules(config)
         config.set("sys_modules.control.overrides_path", str(path))
         client = APCore(config=config)
+        client.executor.set_approval_handler(AutoApproveHandler())
         try:
             result = client.call(
                 "system.control.update_config",
@@ -368,7 +370,7 @@ class TestRegisterSysModulesWithStore:
         config = Config.from_defaults()
         _enable_sys_modules(config)
         registry = Registry()
-        executor = Executor(registry=registry)
+        executor = Executor(registry=registry, approval_handler=AutoApproveHandler())
         register_sys_modules(registry, executor, config, overrides_store=store)
         store.active = True
         with ThreadPoolExecutor(max_workers=2) as pool:

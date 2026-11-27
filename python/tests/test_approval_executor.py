@@ -22,6 +22,7 @@ from apcore.errors import ApprovalDeniedError, ApprovalPendingError, ApprovalTim
 from apcore.executor import Executor
 from apcore.module import ModuleAnnotations
 from apcore.pipeline import PipelineState
+from apcore.policy import ExecutionPolicy
 from apcore.registry import Registry
 
 
@@ -212,8 +213,8 @@ def registry() -> Registry:
 
 class TestApprovalGateSync:
     def test_gate_skipped_no_handler(self, registry: Registry) -> None:
-        """Gate is skipped when no approval_handler is configured."""
-        executor = Executor(registry=registry)
+        """An explicit non-strict policy can continue without a handler."""
+        executor = Executor(registry=registry, policy=ExecutionPolicy(strict=False))
         result = executor.call("test.approval_required")
         assert result["status"] == "executed"
 
@@ -282,9 +283,11 @@ class TestApprovalGateSync:
     def test_set_approval_handler(self, registry: Registry) -> None:
         """set_approval_handler() updates the handler."""
         executor = Executor(registry=registry)
-        # No handler → executes
-        result = executor.call("test.approval_required")
-        assert result["status"] == "executed"
+        with pytest.raises(ApprovalDeniedError):
+            executor.call("test.approval_required")
+
+        executor.set_approval_handler(AutoApproveHandler())
+        assert executor.call("test.approval_required")["status"] == "executed"
 
         # Set deny handler → raises
         executor.set_approval_handler(AlwaysDenyHandler())
@@ -438,7 +441,7 @@ class TestApprovalGateSync:
 class TestApprovalGateAsync:
     @pytest.mark.asyncio
     async def test_gate_skipped_no_handler(self, registry: Registry) -> None:
-        executor = Executor(registry=registry)
+        executor = Executor(registry=registry, policy=ExecutionPolicy(strict=False))
         result = await executor.call_async("test.approval_required")
         assert result["status"] == "executed"
 
@@ -591,7 +594,7 @@ class TestApprovalAuditEvents:
 
     def test_no_audit_log_when_gate_skipped(self, registry: Registry, caplog: pytest.LogCaptureFixture) -> None:
         """No audit log when gate is skipped (no handler or no requires_approval)."""
-        executor = Executor(registry=registry)
+        executor = Executor(registry=registry, policy=ExecutionPolicy(strict=False))
         with caplog.at_level(logging.INFO, logger="apcore.builtin_steps"):
             executor.call("test.approval_required")
 

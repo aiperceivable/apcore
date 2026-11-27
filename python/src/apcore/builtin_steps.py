@@ -704,12 +704,9 @@ class BuiltinApprovalGate(_GovernanceGateFields):
     translates the result into either continued execution or the appropriate
     ``ApprovalError`` subclass.
 
-    Fail-loud governance (apcore#76): when a module needs approval but no
-    handler is configured, the gate keeps the PROTOCOL_SPEC §7.4 skip
-    behavior but logs a warning (once per module). With
-    ``ExecutionPolicy(strict=True)`` it fails closed instead. A module whose
-    effective ``destructive`` annotation is true but that no approval gate
-    covers is also warned about once per module.
+    Without an approval handler, the default policy rejects calls that need
+    approval. An explicit non-strict policy continues and logs a warning once
+    per module. The default policy also gates destructive modules.
     """
 
     def __init__(
@@ -728,7 +725,7 @@ class BuiltinApprovalGate(_GovernanceGateFields):
             requires=("context", "module"),
         )
         self._handler = handler
-        self._policy = policy
+        self._policy = policy if policy is not None else ExecutionPolicy()
         self._event_emitter = event_emitter
         self._warned: set[str] = set()
 
@@ -737,8 +734,8 @@ class BuiltinApprovalGate(_GovernanceGateFields):
         self._handler = handler
 
     def set_policy(self, policy: ExecutionPolicy | None) -> None:
-        """Replace the execution policy used by this step at runtime."""
-        self._policy = policy
+        """Replace the execution policy or restore its defaults with None."""
+        self._policy = policy if policy is not None else ExecutionPolicy()
 
     def set_event_emitter(self, event_emitter: Any | None) -> None:
         """Set the event emitter for approval decisions and policy overrides."""
@@ -750,7 +747,7 @@ class BuiltinApprovalGate(_GovernanceGateFields):
         return self._handler
 
     @property
-    def policy(self) -> ExecutionPolicy | None:
+    def policy(self) -> ExecutionPolicy:
         """The ExecutionPolicy this gate applies (read by ``governance_state()``, §6.6.5.5)."""
         return self._policy
 
@@ -778,36 +775,31 @@ class BuiltinApprovalGate(_GovernanceGateFields):
             getattr(ctx, "declared_annotations", None),
         )
 
-        decision: PolicyDecision | None = None
-        if self._policy is not None:
-            # PROTOCOL_SPEC §7.9.6: policy resolution receives the call site.
-            # The arguments have NOT been schema-validated at this point — this
-            # gate is Step 5 and input validation is Step 7 (§12.8) — and the
-            # built-in pattern rules do not consult them, so the verdict of an
-            # existing policy is unchanged. A host-supplied policy can decide
-            # on them, and an implementation can carry them into the audit
-            # trail. The pipeline separates the resume credential at entry.
-            decision = self._policy.resolve(
-                ctx.module_id,
-                governance,
-                arguments=ctx.inputs,
-                context=ctx.context,
-            )
-            # §6.9 row 4: a policy may ADD an approval requirement and MUST NOT
-            # remove one the ACL set. The ACL is a caller-scoped authorization
-            # layer; ExecutionPolicy is a module-scoped platform override, and
-            # letting the module-scoped one cancel the caller-scoped one is a
-            # privilege escalation — a policy rule written for `orders.*` would
-            # silently strip a requirement an ACL author attached to one
-            # untrusted caller. Union is the only safe composition, so the OR
-            # here is load-bearing and not a convenience.
-            needs_approval = decision.needs_approval or acl_requires_approval
-            effective_destructive = decision.destructive
-            if decision.overridden:
-                self._emit_policy_audit(decision, ctx.context)
-        else:
-            needs_approval = _requires_approval(governance) or acl_requires_approval
-            effective_destructive = _is_destructive(governance)
+        # PROTOCOL_SPEC §7.9.6: policy resolution receives the call site.
+        # The arguments have NOT been schema-validated at this point — this
+        # gate is Step 5 and input validation is Step 7 (§12.8) — and the
+        # built-in pattern rules do not consult them, so the verdict of an
+        # existing policy is unchanged. A host-supplied policy can decide
+        # on them, and an implementation can carry them into the audit
+        # trail. The pipeline separates the resume credential at entry.
+        decision = self._policy.resolve(
+            ctx.module_id,
+            governance,
+            arguments=ctx.inputs,
+            context=ctx.context,
+        )
+        # §6.9 row 4: a policy may ADD an approval requirement and MUST NOT
+        # remove one the ACL set. The ACL is a caller-scoped authorization
+        # layer; ExecutionPolicy is a module-scoped platform override, and
+        # letting the module-scoped one cancel the caller-scoped one is a
+        # privilege escalation — a policy rule written for `orders.*` would
+        # silently strip a requirement an ACL author attached to one
+        # untrusted caller. Union is the only safe composition, so the OR
+        # here is load-bearing and not a convenience.
+        needs_approval = decision.needs_approval or acl_requires_approval
+        effective_destructive = decision.destructive
+        if decision.overridden:
+            self._emit_policy_audit(decision, ctx.context)
 
         if not needs_approval:
             if effective_destructive:
@@ -822,7 +814,7 @@ class BuiltinApprovalGate(_GovernanceGateFields):
             return StepResult(action="continue")
 
         if self._handler is None:
-            if self._policy is not None and self._policy.strict:
+            if self._policy.strict:
                 result = ApprovalResult(
                     status="rejected",
                     reason=(
@@ -835,8 +827,8 @@ class BuiltinApprovalGate(_GovernanceGateFields):
             self._warn_once(
                 f"no_handler:{ctx.module_id}",
                 "Module '%s' requires approval but no ApprovalHandler is configured; "
-                "the approval gate is skipped per PROTOCOL_SPEC §7.4. Configure an "
-                "approval handler, or ExecutionPolicy(strict=True) to fail closed. (apcore#76)",
+                "the explicit non-strict policy allows the call to proceed. Configure an "
+                "approval handler to require approval regardless of the compatibility policy.",
                 ctx.module_id,
             )
             return StepResult(action="continue")

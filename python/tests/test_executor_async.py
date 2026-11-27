@@ -6,7 +6,7 @@ import asyncio
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from threading import Event, current_thread
+from threading import Barrier, Event, current_thread
 from typing import Any
 
 import pytest
@@ -14,7 +14,7 @@ import pytest
 from apcore.builtin_steps import build_standard_strategy
 from apcore.config import Config
 from apcore.context import Context
-from apcore.errors import ModuleTimeoutError
+from apcore.errors import ModuleError, ModuleTimeoutError
 from apcore.executor import Executor
 from apcore.middleware import Middleware
 from apcore.registry import Registry
@@ -136,7 +136,7 @@ class TestCallSyncWithAsyncModule:
     """Tests for sync call() bridging to async modules."""
 
     def test_bridges_async_no_running_loop(self) -> None:
-        """call() with async module uses asyncio.run when no loop running."""
+        """call() with async module works without a running loop."""
         ex = _make_executor(module=AsyncModule())
         result = ex.call("test.module", {"name": "Dave"})
         assert result == {"greeting": "Hello, Dave"}
@@ -157,47 +157,116 @@ class TestCallSyncWithAsyncModule:
         finally:
             loop.close()
 
-    def test_concurrent_callers_cannot_both_start_the_cached_loop(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        first_at_run = Event()
-        second_executing = Event()
-        release_second = Event()
+    def test_concurrent_callers_own_and_reuse_distinct_loops(self) -> None:
+        entered = Barrier(2, timeout=5)
+        observations: dict[str, tuple[asyncio.AbstractEventLoop, str]] = {}
 
-        class CoordinatedModule(AsyncModule):
+        class LoopRecorder(AsyncModule):
             async def execute(self, inputs: dict[str, Any], context: Context) -> dict[str, Any]:
-                if inputs.get("name") == "second":
-                    second_executing.set()
-                    assert release_second.wait(5)
+                observations[inputs["name"]] = asyncio.get_running_loop(), current_thread().name
+                if inputs["name"].endswith("first"):
+                    entered.wait()
                 return await super().execute(inputs, context)
 
-        with _make_executor(module=CoordinatedModule()) as ex:
-            ex.call("test.module", {})
-            loop = ex._sync_loop
-            assert loop is not None
-            run = loop.run_until_complete
+        def call_twice(prefix: str) -> str:
+            owner = current_thread().name
+            ex.call("test.module", {"name": f"{prefix}-first"})
+            ex.call("test.module", {"name": f"{prefix}-again"})
+            return owner
 
-            def pause_first(coro: Any) -> Any:
-                if current_thread().name.startswith("first-caller"):
-                    first_at_run.set()
-                    assert second_executing.wait(5)
-                try:
-                    return run(coro)
-                except RuntimeError:
-                    coro.close()
-                    raise
+        with _make_executor(module=LoopRecorder()) as ex, ThreadPoolExecutor(2) as callers:
+            calls = {prefix: callers.submit(call_twice, prefix) for prefix in ("one", "two")}
+            for prefix, result in calls.items():
+                owner = result.result(timeout=5)
+                first, executing_thread = observations[f"{prefix}-first"]
+                assert executing_thread == owner
+                assert observations[f"{prefix}-again"] == (first, owner)
+            assert observations["one-first"][0] is not observations["two-first"][0]
 
-            monkeypatch.setattr(loop, "run_until_complete", pause_first)
-            with (
-                ThreadPoolExecutor(1, thread_name_prefix="first-caller") as first,
-                ThreadPoolExecutor(1) as second,
-            ):
-                first_result = first.submit(ex.call, "test.module", {"name": "first"})
+    def test_close_retires_an_active_thread_loop_and_allows_reuse(self) -> None:
+        entered = Event()
+        release = Event()
+        loops: list[asyncio.AbstractEventLoop] = []
+
+        class PausingModule(AsyncModule):
+            async def execute(self, inputs: dict[str, Any], context: Context) -> dict[str, Any]:
+                loops.append(asyncio.get_running_loop())
+                if inputs.get("name") == "pause":
+                    entered.set()
+                    assert release.wait(5)
+                return await super().execute(inputs, context)
+
+        with _make_executor(module=PausingModule()) as ex, ThreadPoolExecutor(1) as caller:
+            first = caller.submit(ex.call, "test.module", {"name": "pause"})
+            try:
+                assert entered.wait(5)
+                ex.close()
+                assert not loops[0].is_closed()
+            finally:
+                release.set()
+            assert first.result(timeout=5) == {"greeting": "Hello, pause"}
+            assert loops[0].is_closed()
+            assert caller.submit(ex.call, "test.module").result(timeout=5) == {"greeting": "Hello, World"}
+            assert loops[1] is not loops[0]
+            ex.close()
+            assert loops[1].is_closed()
+
+    def test_nested_loop_bridge_bounds_admission_across_close(self) -> None:
+        entered = Barrier(5, timeout=5)
+        release = Event()
+        observed: list[str] = []
+
+        class PausingModule(AsyncModule):
+            async def execute(self, inputs: dict[str, Any], context: Context) -> dict[str, Any]:
+                name = inputs["name"]
+                observed.append(name)
+                if name.startswith("active"):
+                    entered.wait()
+                    assert release.wait(5)
+                return await super().execute(inputs, context)
+
+        def run_inside_loop(name: str, timeout_ms: int = 0) -> dict[str, Any]:
+            async def invoke() -> dict[str, Any]:
+                return ex.call("test.module", {"name": name}, timeout_ms=timeout_ms)
+
+            return asyncio.run(invoke())
+
+        with _make_executor(module=PausingModule()) as ex, ThreadPoolExecutor(4) as callers:
+            calls = [callers.submit(run_inside_loop, f"active{i}") for i in range(4)]
+            try:
+                entered.wait()
+                ex.close()
+                with pytest.raises(ModuleTimeoutError) as caught:
+                    run_inside_loop("expired", timeout_ms=40)
+                assert caught.value.details["timeout_ms"] == 40
+            finally:
+                release.set()
+            assert [call.result(timeout=5)["greeting"] for call in calls] == [f"Hello, active{i}" for i in range(4)]
+            assert run_inside_loop("fresh") == {"greeting": "Hello, fresh"}
+            assert "expired" not in observed
+
+    def test_reentrant_bridge_does_not_wait_for_its_own_pool_when_saturated(self) -> None:
+        entered = Barrier(4, timeout=5)
+
+        class NestingModule(AsyncModule):
+            async def execute(self, inputs: dict[str, Any], context: Context) -> dict[str, Any]:
+                entered.wait()
                 try:
-                    assert first_at_run.wait(5)
-                    second_result = second.submit(ex.call, "test.module", {"name": "second"})
-                    assert first_result.result(timeout=5) == {"greeting": "Hello, first"}
-                finally:
-                    release_second.set()
-                assert second_result.result(timeout=5) == {"greeting": "Hello, second"}
+                    return ex.call("test.inner", timeout_ms=0)
+                except ModuleError as exc:
+                    assert "Sync bridge is busy" in str(exc)
+                    return {"greeting": "Pool full"}
+
+        def run_inside_loop() -> dict[str, Any]:
+            async def invoke() -> dict[str, Any]:
+                return ex.call("test.module", timeout_ms=1000)
+
+            return asyncio.run(invoke())
+
+        with _make_executor(module=NestingModule()) as ex, ThreadPoolExecutor(4) as callers:
+            ex.registry.register("test.inner", AsyncModule())
+            calls = [callers.submit(run_inside_loop) for _ in range(4)]
+            assert "Pool full" in [call.result(timeout=5)["greeting"] for call in calls]
 
     def test_shared_executor_handles_repeated_sync_calls_from_worker_threads(self) -> None:
         with _make_executor(module=AsyncModule()) as ex, ThreadPoolExecutor(8) as workers:

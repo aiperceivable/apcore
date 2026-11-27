@@ -814,6 +814,7 @@ class TestEnableDisable:
     def _make_client_with_module(self) -> APCore:
         """Create a client with sys_modules enabled and a test module registered."""
         client = APCore(config=_sys_config())
+        client.executor.set_approval_handler(AutoApproveHandler())
 
         @client.module(id="math.add")
         def add(a: int, b: int) -> int:
@@ -837,6 +838,7 @@ class TestEnableDisable:
 
     def test_disable_nonexistent_raises(self) -> None:
         client = APCore(config=_sys_config())
+        client.executor.set_approval_handler(AutoApproveHandler())
         with pytest.raises(ModuleNotFoundError):
             client.disable("nonexistent.module")
 

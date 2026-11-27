@@ -17,22 +17,16 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
-import pytest
 
 from apcore.events.emitter import ApCoreEvent, EventEmitter
 from apcore.events.retry import EventRetryConfig
 from apcore.events.subscribers import (
-    A2ASubscriber,
     FileSubscriber,
     FilterSubscriber,
     StdoutSubscriber,
     WebhookSubscriber,
 )
-from apcore.sys_modules.registration import (
-    create_subscriber_from_config,
-    register_subscriber_type,
-    reset_subscriber_registry,
-)
+from apcore.events import SubscriberRegistry, create_subscriber_from_config
 
 # A policy in which every single field differs from EventRetryConfig() defaults.
 NON_DEFAULT_RETRY: dict[str, Any] = {
@@ -52,13 +46,6 @@ def _assert_non_default_policy(retry: EventRetryConfig) -> None:
     assert retry.backoff_multiplier == 3.0 != default.backoff_multiplier
 
 
-@pytest.fixture(autouse=True)
-def _clean_registry() -> Any:
-    reset_subscriber_registry()
-    yield
-    reset_subscriber_registry()
-
-
 # ---------------------------------------------------------------------------
 # One case per built-in subscriber type
 # ---------------------------------------------------------------------------
@@ -74,17 +61,6 @@ class TestNestedRetryBlockPerSubscriberType:
             }
         )
         assert isinstance(sub, WebhookSubscriber)
-        _assert_non_default_policy(sub.retry)
-
-    def test_a2a_reads_nested_retry_block(self) -> None:
-        sub = create_subscriber_from_config(
-            {
-                "type": "a2a",
-                "platform_url": "https://platform.example.com",
-                "retry": NON_DEFAULT_RETRY,
-            }
-        )
-        assert isinstance(sub, A2ASubscriber)
         _assert_non_default_policy(sub.retry)
 
     def test_file_reads_nested_retry_block(self, tmp_path: Any) -> None:
@@ -233,7 +209,7 @@ class TestDeclaredPolicyTakesEffect:
 
     def test_registered_custom_type_can_use_shared_parser(self) -> None:
         """Third-party factories opt in via the same nested block shape."""
-        from apcore.sys_modules.registration import _parse_retry_config
+        from apcore.events.factory import _parse_retry_config
 
         class _CustomSink:
             subscriber_type = "custom_sink"
@@ -246,8 +222,9 @@ class TestDeclaredPolicyTakesEffect:
             async def on_event(self, event: ApCoreEvent) -> None:
                 await asyncio.sleep(0)
 
-        register_subscriber_type("custom_sink", lambda cfg: _CustomSink(_parse_retry_config(cfg)))
-        sub = create_subscriber_from_config({"type": "custom_sink", "retry": NON_DEFAULT_RETRY})
+        registry = SubscriberRegistry()
+        registry.register("custom_sink", lambda cfg: _CustomSink(_parse_retry_config(cfg)))
+        sub = registry.create({"type": "custom_sink", "retry": NON_DEFAULT_RETRY})
         _assert_non_default_policy(sub.retry)
 
 

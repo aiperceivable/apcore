@@ -242,7 +242,6 @@ class TestPublicApi:
     def test_all_names_importable(self) -> None:
         """All 14 public API names are importable from apcore.schema."""
         from apcore.schema import (
-            ExportProfile,
             LLMExtensions,
             RefResolver,
             ResolvedSchema,
@@ -262,7 +261,6 @@ class TestPublicApi:
         # Just verify they're all not None
         assert all(
             [
-                ExportProfile,
                 LLMExtensions,
                 RefResolver,
                 ResolvedSchema,

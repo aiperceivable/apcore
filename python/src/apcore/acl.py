@@ -18,8 +18,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, ClassVar
 
-import yaml
-
 from apcore.acl_handlers import (
     ACLConditionHandler,
     ConditionOutcome,
@@ -1639,6 +1637,8 @@ class ACL:
         """
         if not os.path.isfile(yaml_path):
             raise ConfigNotFoundError(config_path=yaml_path)
+
+        import yaml
 
         with open(yaml_path, encoding="utf-8") as f:
             try:

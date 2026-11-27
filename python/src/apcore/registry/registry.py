@@ -1851,7 +1851,6 @@ class Registry:
         prefix: str | None = None,
         *,
         visibility: list[str] | None = None,
-        include_hidden: bool | None = None,
     ) -> list[str]:
         """Return sorted list of unique registered module IDs, optionally filtered.
 
@@ -1862,16 +1861,11 @@ class Registry:
             visibility: Filter by module visibility. Supported: ``["public", "hidden"]``.
                 Defaults to ``["public"]``. Pass ``["public", "hidden"]`` to see
                 all modules (protocol-spec §4.4 ``discoverable``).
-            include_hidden: Deprecated. Use ``visibility=["public", "hidden"]`` instead.
         """
-        # protocol-spec §4.4 discoverable: the visibility list takes precedence over the legacy include_hidden bool.
         if visibility is not None:
             vis = set(visibility)
             show_public = "public" in vis
             show_hidden = "hidden" in vis
-        elif include_hidden is True:
-            show_public = True
-            show_hidden = True
         else:
             # Default per protocol-spec §4.4 discoverable: public only.
             show_public = True
@@ -1937,7 +1931,7 @@ class Registry:
         """Sorted list of registered module IDs (excludes ``discoverable=False`` modules).
 
         Modules annotated ``discoverable=False`` (per the apcore RFC pilot)
-        are filtered out. Use :meth:`list` with ``include_hidden=True`` when
+        are filtered out. Use :meth:`list` with ``visibility=["public", "hidden"]`` when
         the full set is required.
         """
         with self._lock:

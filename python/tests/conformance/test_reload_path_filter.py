@@ -31,7 +31,7 @@ import pytest
 from jsonschema import Draft202012Validator
 
 from apcore import AutoApproveHandler, Executor
-from apcore.errors import ModuleReloadConflictError
+from apcore.errors import ModuleError, ModuleReloadConflictError, SchemaValidationError
 from apcore.events import EventEmitter
 from apcore.registry import Registry
 from apcore.sys_modules.audit import InMemoryAuditStore
@@ -108,12 +108,15 @@ def test_reload_path_filter_case(case: dict[str, Any]) -> None:
         assert (
             error is not None
         ), f"[{cid}] expected error_code {expected['error_code']!r} but execute() returned {result!r}"
-        assert isinstance(
-            error, ModuleReloadConflictError
-        ), f"[{cid}] expected ModuleReloadConflictError, got {type(error).__name__}: {error}"
-        assert (
-            error.code == expected["error_code"]
-        ), f"[{cid}] error code mismatch: got {error.code!r}, expected {expected['error_code']!r}"
+        error_types = {
+            "MODULE_RELOAD_CONFLICT": ModuleReloadConflictError,
+            "SCHEMA_VALIDATION_ERROR": SchemaValidationError,
+        }
+        expected_type = error_types[expected["error_code"]]
+        assert isinstance(error, ModuleError) and isinstance(error, expected_type)
+        assert error.code == expected["error_code"]
+        assert not rediscovered
+        assert not audit_store.query()
         return
 
     assert error is None, f"[{cid}] execute() raised unexpectedly: {type(error).__name__}: {error}"

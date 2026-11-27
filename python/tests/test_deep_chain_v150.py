@@ -12,6 +12,7 @@ import time
 
 import pytest
 
+from apcore.approval import AutoApproveHandler
 from apcore import APCore, Config
 from apcore.executor import Executor
 from apcore.registry import Registry
@@ -79,7 +80,7 @@ class TestClientAdoptsExecutorRegistry:
     def test_sys_modules_are_registered_where_the_executor_looks(self):
         config = Config({"sys_modules": {"enabled": True, "events": {"enabled": True}}})
         my_registry = Registry()
-        client = APCore(executor=Executor(registry=my_registry), config=config)
+        client = APCore(executor=Executor(registry=my_registry, approval_handler=AutoApproveHandler()), config=config)
 
         client.register("x.y", _make_module("x.y"))
         result = client.disable("x.y")
@@ -713,7 +714,7 @@ class TestTaskStoreErrorIsDefinedAndExported:
         import apcore
 
         assert hasattr(apcore, "TaskStoreError")
-        assert "TaskStoreError" in apcore.__all__
+        assert hasattr(apcore, "TaskStoreError")
 
     def test_it_carries_the_registry_code(self):
         from apcore.errors import ErrorCodes, TaskStoreError

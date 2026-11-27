@@ -96,7 +96,7 @@ class TestObservabilityPackageExports:
             "InMemoryObservabilityStore",
             "ObservabilityStore",
             "MetricPoint",
-            "PrometheusExporter",
+            "render_prometheus_metrics",
             "render_prometheus_metrics",
             "RedactionConfig",
             "normalize_message",

@@ -9,7 +9,7 @@ import pytest
 from apcore.events.emitter import ApCoreEvent, EventEmitter, _DLQ_EVENT_TYPE
 from apcore.events.circuit_breaker import CircuitBreakerWrapper
 from apcore.events.retry import EventRetryConfig
-from apcore.events.subscribers import A2ASubscriber, FileSubscriber, StdoutSubscriber
+from apcore.events.subscribers import FileSubscriber, StdoutSubscriber
 
 
 def _make_event(name: str = "apcore.test.event", payload: dict | None = None) -> ApCoreEvent:
@@ -313,17 +313,6 @@ def test_event_pattern_wildcard_skips_dlq_events() -> None:
     # catch_all gets the normal event but NOT the DLQ event about 'failing'
     dlq_received = [e for e in catch_all.attempts if e.event_type == _DLQ_EVENT_TYPE]
     assert len(dlq_received) == 0
-
-
-def test_a2a_subscriber_id_and_skill_id() -> None:
-    """A2ASubscriber supports explicit id and skill_id constructor params."""
-    sub = A2ASubscriber(
-        platform_url="https://example.com",
-        skill_id="myapp.event_receiver",
-        id="remote-monitor-1",
-    )
-    assert sub.subscriber_id == "remote-monitor-1"
-    assert sub._skill_id == "myapp.event_receiver"
 
 
 def test_file_subscriber_has_retry_and_event_pattern() -> None:

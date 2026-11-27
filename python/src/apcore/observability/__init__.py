@@ -9,7 +9,7 @@ Re-exports all public observability classes for convenient access::
         MetricsCollector, MetricsMiddleware,
         ErrorHistory, ErrorEntry,
         ObservabilityStore, InMemoryObservabilityStore,
-        PrometheusExporter,
+        render_prometheus_metrics,
     )
 
 Recommended middleware registration order (outermost to innermost):
@@ -34,7 +34,7 @@ from apcore.observability.metrics import (
     MetricsMiddleware,
     estimate_p99_latency_ms,
 )
-from apcore.observability.prometheus_exporter import PrometheusExporter, render_prometheus_metrics
+from apcore.observability.prometheus_exporter import render_prometheus_metrics
 from apcore.observability.storage import (
     InMemoryStorageBackend,
     StorageBackend,
@@ -82,7 +82,6 @@ __all__ = [
     "ObservabilityStore",
     "OTLPExporter",
     "PeriodicUsageExporter",
-    "PrometheusExporter",
     "render_prometheus_metrics",
     "StorageBackend",
     "RedactionConfig",

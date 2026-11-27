@@ -27,6 +27,7 @@ from apcore.context import Context
 from apcore.errors import InvalidInputError, SysModulesDisabledError
 from apcore.decorator import module as decorator_module
 from apcore.events.emitter import ApCoreEvent, EventEmitter, EventSubscriber
+from apcore.events.factory import SubscriberRegistry
 from apcore.executor import Executor
 from apcore.lifecycle import (
     LifecycleError,
@@ -65,6 +66,7 @@ class APCore:
         policy: ExecutionPolicy | None = None,
         *,
         fail_on_error: bool = False,
+        subscriber_registry: SubscriberRegistry | None = None,
     ) -> None:
         """Initialize the APCore client.
 
@@ -82,6 +84,8 @@ class APCore:
             fail_on_error: Raise the first system-module registration failure.
                 By default, startup continues and exposes failures through
                 ``sys_modules_errors``.
+            subscriber_registry: Factories for this client's configured event
+                subscribers. Omitting this uses the built-in factories.
         """
         self.config = config
         self._shutdown_lock = threading.Lock()
@@ -179,6 +183,7 @@ class APCore:
                     fail_on_error=fail_on_error,
                     toggle_state=self.toggle_state,
                     on_registration_error=self._sys_modules_errors.append,
+                    subscriber_registry=subscriber_registry,
                 )
             except Exception as exc:
                 if fail_on_error:

@@ -1,3 +1,4 @@
+# ruff: noqa: F401
 """apcore - Schema-driven module standard."""
 
 from __future__ import annotations
@@ -5,6 +6,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncGenerator
 from contextlib import aclosing
+from importlib import import_module
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _get_version
 from typing import Any
@@ -61,6 +63,7 @@ from apcore.lifecycle import (
     UnregisterOptions,
 )
 from apcore.registry.types import DependencyInfo, DiscoveredModule, ModuleDescriptor
+from apcore.events.emitter import EventSubscriber
 from apcore.executor import Executor
 from apcore.utils.redaction import REDACTED_VALUE, redact_sensitive
 
@@ -75,13 +78,6 @@ from apcore.module import (
     PreflightResult,
     PreviewResult,
     ValidationResult,
-)
-
-# Config
-from apcore.config import (
-    RESERVED_NAMESPACES,
-    Config,
-    discover_config_file,
 )
 
 # Error Formatter
@@ -215,12 +211,8 @@ from apcore.async_task import (
     TaskStore,
 )
 
-# Bindings
-from apcore.bindings import BindingLoader
-
 # Schema
 from apcore.schema import (
-    ExportProfile as ExportProfile,
     SchemaLoader as SchemaLoader,
     SchemaStrategy as SchemaStrategy,
     SchemaValidator as SchemaValidator,
@@ -248,49 +240,6 @@ from apcore.utils.normalize import (
     normalize_to_canonical_id as normalize_to_canonical_id,
 )
 from apcore.utils.pattern import calculate_specificity as calculate_specificity
-
-# Observability
-from apcore.observability import (
-    ContextLogger,
-    ErrorEntry,
-    ErrorHistory,
-    InMemoryExporter,
-    InMemoryStorageBackend,
-    MetricsCollector,
-    MetricsMiddleware,
-    NoopUsageExporter,
-    ObsLoggingMiddleware,
-    OTLPExporter,
-    PeriodicUsageExporter,
-    Span,
-    SpanExporter,
-    StdoutExporter,
-    StorageBackend,
-    TracingMiddleware,
-    UsageCollector,
-    UsageExporter,
-    UsageMiddleware,
-    create_span,
-)
-from apcore.observability.metrics import (
-    METRIC_CALLS_TOTAL,
-    METRIC_DURATION_SECONDS,
-)
-
-# Events
-from apcore.events import (
-    A2ASubscriber,
-    ApCoreEvent,
-    EventEmitter,
-    EventRetryConfig,
-    EventSubscriber,
-    FileSubscriber,
-    FilterSubscriber,
-    StdoutSubscriber,
-    WebhookSubscriber,
-    create_subscriber_from_config,
-    register_subscriber_factory,
-)
 
 # NOTE (audit D1-003, 2026-05-28): the events-layer circuit-breaker types
 # `CircuitBreakerWrapper` / `CircuitState` are intentionally NOT re-exported at
@@ -358,46 +307,6 @@ from apcore.builtin_steps import (
 # Trace Context
 from apcore.trace_context import TraceContext, TraceParent
 
-# System Modules
-from apcore.sys_modules.registration import (
-    SysModulesContext,
-    register_sys_modules,
-)
-
-# Deprecated subscriber-type APIs — kept importable for back-compat, but
-# NOT listed in __all__ so they don't appear in `from apcore import *`
-# or in IDE auto-completion for new code. Use EventEmitter.subscribe()
-# directly.
-from apcore.sys_modules.registration import (  # noqa: F401
-    register_subscriber_type as register_subscriber_type,
-    reset_subscriber_registry as reset_subscriber_registry,
-    unregister_subscriber_type as unregister_subscriber_type,
-)
-from apcore.sys_modules.health import (
-    HealthModule,
-    HealthSummaryModule,
-    classify_health_status,
-)
-from apcore.sys_modules.manifest import (
-    ManifestFullModule,
-    ManifestModule,
-)
-from apcore.sys_modules.usage import (
-    UsageModule,
-    UsageSummaryModule,
-)
-from apcore.sys_modules.control import (
-    ReloadModule,
-    ToggleFeatureModule,
-    ToggleState,
-    UpdateConfigModule,
-)
-from apcore.sys_modules.overrides import (
-    FileOverridesStore,
-    InMemoryOverridesStore,
-    OverridesStore,
-)
-
 # ---------------------------------------------------------------------------
 # Default client for simplified global access
 # ---------------------------------------------------------------------------
@@ -454,15 +363,70 @@ def close() -> None:
         client._close_owned_resources(terminal=True)
 
 
-def __getattr__(name: str) -> Any:
-    """PEP 562 lazy attribute access for the default-client singleton.
+# Explicit imports of extension names remain available during migration.
+_EXTENSION_EXPORTS = {
+    "ApCoreEvent": "apcore.events",
+    "BindingLoader": "apcore.bindings",
+    "Config": "apcore.config",
+    "ContextLogger": "apcore.observability",
+    "ErrorEntry": "apcore.observability",
+    "ErrorHistory": "apcore.observability",
+    "EventEmitter": "apcore.events",
+    "EventRetryConfig": "apcore.events",
+    "FileOverridesStore": "apcore.sys_modules.overrides",
+    "FileSubscriber": "apcore.events",
+    "FilterSubscriber": "apcore.events",
+    "HealthModule": "apcore.sys_modules.health",
+    "HealthSummaryModule": "apcore.sys_modules.health",
+    "InMemoryExporter": "apcore.observability",
+    "InMemoryOverridesStore": "apcore.sys_modules.overrides",
+    "InMemoryStorageBackend": "apcore.observability",
+    "METRIC_CALLS_TOTAL": "apcore.observability.metrics",
+    "METRIC_DURATION_SECONDS": "apcore.observability.metrics",
+    "ManifestFullModule": "apcore.sys_modules.manifest",
+    "ManifestModule": "apcore.sys_modules.manifest",
+    "MetricsCollector": "apcore.observability",
+    "MetricsMiddleware": "apcore.observability",
+    "NoopUsageExporter": "apcore.observability",
+    "OTLPExporter": "apcore.observability",
+    "ObsLoggingMiddleware": "apcore.observability",
+    "OverridesStore": "apcore.sys_modules.overrides",
+    "PeriodicUsageExporter": "apcore.observability",
+    "RESERVED_NAMESPACES": "apcore.config",
+    "ReloadModule": "apcore.sys_modules.control",
+    "Span": "apcore.observability",
+    "SpanExporter": "apcore.observability",
+    "StdoutExporter": "apcore.observability",
+    "StdoutSubscriber": "apcore.events",
+    "StorageBackend": "apcore.observability",
+    "SysModulesContext": "apcore.sys_modules.registration",
+    "ToggleFeatureModule": "apcore.sys_modules.control",
+    "ToggleState": "apcore.sys_modules.control",
+    "TracingMiddleware": "apcore.observability",
+    "UpdateConfigModule": "apcore.sys_modules.control",
+    "UsageCollector": "apcore.observability",
+    "UsageExporter": "apcore.observability",
+    "UsageMiddleware": "apcore.observability",
+    "UsageModule": "apcore.sys_modules.usage",
+    "UsageSummaryModule": "apcore.sys_modules.usage",
+    "WebhookSubscriber": "apcore.events",
+    "classify_health_status": "apcore.sys_modules.health",
+    "create_span": "apcore.observability",
+    "create_subscriber_from_config": "apcore.events",
+    "discover_config_file": "apcore.config",
+    "register_sys_modules": "apcore.sys_modules.registration",
+}
 
-    Access to ``apcore._default_client`` returns the same object the
-    convenience functions call; allocates it on first access. Other names
-    fall through to ``AttributeError``.
-    """
+
+def __getattr__(name: str) -> Any:
+    """Lazily resolve the default client and explicit extension imports."""
     if name == "_default_client":
         return _get_default_client()
+    extension = _EXTENSION_EXPORTS.get(name)
+    if extension is not None:
+        value = getattr(import_module(extension), name)
+        globals()[name] = value
+        return value
     raise AttributeError(f"module 'apcore' has no attribute {name!r}")
 
 
@@ -619,341 +583,47 @@ except PackageNotFoundError:
     __version__ = "unknown"
 
 __all__ = [
-    # Core
-    "CancelToken",
-    "ExecutionCancelledError",
-    "Context",
-    "ContextFactory",
-    "ContextKey",
-    "TRACING_SPANS",
-    "TRACING_SAMPLED",
-    "METRICS_STARTS",
-    "LOGGING_START",
-    "REDACTED_OUTPUT",
-    "RETRY_COUNT_BASE",
-    "GovernanceProjection",
-    "Identity",
-    "Registry",
-    "Executor",
-    "APCore",
-    "DrainAbortedContext",
-    "DrainContext",
-    "LifecycleError",
-    "LifecycleModuleReport",
-    "LifecycleOperation",
-    "LifecycleReport",
-    "ReloadOptions",
-    "ShutdownOptions",
-    "UnregisterOptions",
-    "close",
-    "call",
-    "call_async",
-    "stream",
-    "validate",
-    "register",
-    "describe",
-    "use",
-    "use_before",
-    "use_after",
-    "remove",
-    "discover",
-    "list_modules",
-    "on",
-    "off",
-    "disable",
-    "enable",
-    # Approval
-    "ApprovalHandler",
-    "ApprovalRequest",
-    "ApprovalResult",
-    "AlwaysDenyHandler",
-    "AutoApproveHandler",
-    "CallbackApprovalHandler",
-    "ScopedApprovalHandler",
-    # Module types
-    "Change",
-    "DEFAULT_ANNOTATIONS",
-    "Module",
-    "ModuleAnnotations",
-    "ModuleExample",
-    "ValidationResult",
-    "PreflightCheckResult",
-    "PreflightResult",
-    "PreviewResult",
-    # Registry types
-    "ModuleDescriptor",
-    "DiscoveredModule",
-    "DependencyInfo",
-    # ID conflict detection
-    "ConflictResult",
-    "ConflictSeverity",
-    "ConflictType",
-    "detect_id_conflicts",
-    # Config
-    "Config",
-    "RESERVED_NAMESPACES",
-    "discover_config_file",
-    # Error Formatter
-    "ErrorFormatter",
-    "ErrorFormatterRegistry",
-    # Streaming
-    "StreamCompletion",
-    "StreamCompletionReason",
-    "StreamExecution",
-    "StreamingModule",
-    "StreamStepOutcome",
-    # Registry protocols
-    "Discoverer",
-    "ModuleValidator",
-    # Multi-class discovery
-    "class_name_to_segment",
-    "discover_multi_class",
-    # Registry module-id constants (parity with apcore-typescript / apcore-rust
-    # root exports; previously reachable only via apcore.registry.registry)
-    "DEFAULT_MODULE_VERSION",
-    "EPHEMERAL_NAMESPACE_PREFIX",
-    "MAX_MODULE_ID_LENGTH",
-    "MODULE_ID_PATTERN",
-    "REGISTRY_EVENTS",
-    "RESERVED_WORDS",
-    # Errors
-    "ErrorCodes",
-    "ModuleError",
-    "ACLDeniedError",
-    "ACLRuleError",
-    "ApprovalError",
-    "ApprovalDeniedError",
-    "ApprovalTimeoutError",
-    "ApprovalPendingError",
-    "BindingCallableNotFoundError",
-    "BindingFileInvalidError",
-    "BindingInvalidTargetError",
-    "BindingModuleNotFoundError",
-    "BindingNotCallableError",
-    "BindingSchemaInferenceFailedError",
-    "BindingSchemaMissingError",
-    "BindingSchemaModeConflictError",
-    "BindingStrictSchemaIncompatibleError",
-    "CallDepthExceededError",
-    "CallFrequencyExceededError",
-    "CircuitBreakerOpenError",
-    "CircuitOpenError",
-    "CircularCallError",
-    "CircularDependencyError",
-    "ConfigBindError",
-    "ConfigEnvMapConflictError",
-    "ConfigEnvPrefixConflictError",
-    "ConfigError",
-    "ConfigMountError",
-    "ConfigNamespaceDuplicateError",
-    "ConfigNamespaceReservedError",
-    "ConfigNotFoundError",
-    "ContextBindingError",
-    "DependencyNotFoundError",
-    "DependencyVersionMismatchError",
-    "ErrorFormatterDuplicateError",
-    "ErrorCodeCollisionError",
-    "ErrorCodeRegistry",
-    "FRAMEWORK_ERROR_CODE_PREFIXES",
-    "FuncMissingReturnTypeError",
-    "FuncMissingTypeHintError",
-    "IdTooLongError",
-    "InternalError",
-    "InvalidInputError",
-    "InvalidParentIdError",
-    "InvalidSegmentError",
-    "ModuleDisabledError",
-    "ModuleExecuteError",
-    "ModuleIdConflictError",
-    "ModuleLoadError",
-    "ModuleNotFoundError",
-    "ModuleReloadConflictError",
-    "ReloadFailedError",
-    "SysModuleRegistrationError",
-    "SysModulesDisabledError",
-    "StreamingInterfaceError",
-    "ModuleTimeoutError",
-    "SchemaCircularRefError",
-    "SchemaMaxDepthExceededError",
-    "SchemaNotFoundError",
-    "SchemaParseError",
-    "SchemaValidationError",
-    "TaskLimitExceededError",
-    "TaskStoreError",
-    "VersionConstraintError",
-    # ACL
     "ACL",
     "ACLRule",
-    "AccessDecision",
-    "AuditEntry",
-    "ConditionOutcome",
-    "RuleValidationFinding",
-    # Execution-time governance policy (apcore#76 RFC pilot)
+    "APCore",
+    "ApprovalDeniedError",
+    "ApprovalHandler",
+    "ApprovalPendingError",
+    "ApprovalRequest",
+    "ApprovalResult",
+    "AutoApproveHandler",
+    "CancelToken",
+    "Context",
+    "ErrorCodes",
     "ExecutionPolicy",
-    "PolicyDecision",
-    "PolicyRule",
-    # Middleware
-    "Middleware",
-    "RetrySignal",
-    "MiddlewareManager",
-    "BeforeMiddleware",
-    "AfterMiddleware",
-    "LoggingMiddleware",
-    "MiddlewareChainError",
-    "NamespaceCheck",
-    "validate_context_key",
-    "APCORE_KEY_PREFIX",
-    "EXT_KEY_PREFIX",
-    "RetryConfig",
-    "RetryMiddleware",
-    "ErrorHistoryMiddleware",
-    "PlatformNotifyMiddleware",
-    "CircuitBreakerMiddleware",
-    "CircuitBreakerState",
-    # Decorators
-    "module",
-    "FunctionModule",
-    # NOTE: parse_docstring is intentionally NOT in __all__ — it is an
-    #       implementation detail importable via apcore._docstrings.
-    # Extensions
-    "ExtensionManager",
-    "ExtensionPoint",
-    # Async tasks
-    "AsyncTaskManager",
-    "TaskStatus",
-    "TaskInfo",
-    "TaskStore",
-    "InMemoryTaskStore",
-    "AsyncRetryConfig",
-    "RetryPolicy",
-    "BackoffStrategy",
-    # Bindings
-    "BindingLoader",
-    # Schema
-    "SchemaStrategy",
-    "ExportProfile",
-    "SchemaLoader",
-    "SchemaValidator",
-    "SchemaExporter",
-    "RefResolver",
-    "to_strict_schema",
-    # Utilities
-    "match_pattern",
-    "guard_call_chain",
-    "DEFAULT_MAX_CALL_DEPTH",
-    "DEFAULT_MAX_MODULE_REPEAT",
-    "normalize_to_canonical_id",
-    "canonicalize_name",
-    "CanonicalNameError",
-    "CanonicalNameResult",
-    "calculate_specificity",
-    "propagate_error",
-    "redact_sensitive",
-    "REDACTED_VALUE",
-    # Observability
-    "TracingMiddleware",
-    "ContextLogger",
-    "ObsLoggingMiddleware",
-    "MetricsMiddleware",
-    "METRIC_CALLS_TOTAL",
-    "METRIC_DURATION_SECONDS",
-    "MetricsCollector",
-    "Span",
-    "StdoutExporter",
-    "InMemoryExporter",
-    "OTLPExporter",
-    "SpanExporter",
-    "create_span",
-    "ErrorEntry",
-    "ErrorHistory",
-    "StorageBackend",
-    "InMemoryStorageBackend",
-    "UsageCollector",
-    "UsageExporter",
-    "UsageMiddleware",
-    "NoopUsageExporter",
-    "PeriodicUsageExporter",
-    # Events
-    "ApCoreEvent",
-    "EventEmitter",
-    "EventSubscriber",
-    "EventRetryConfig",
-    "WebhookSubscriber",
-    "A2ASubscriber",
-    "FileSubscriber",
-    "StdoutSubscriber",
-    "FilterSubscriber",
-    "register_subscriber_factory",
-    "create_subscriber_from_config",
-    # Trace Context
-    "TraceContext",
-    "TraceParent",
-    # Version
-    "VersionIncompatibleError",
-    "negotiate_version",
-    # Pipeline
-    "Step",
-    "BaseStep",
-    "StepMiddleware",
-    "StepResult",
-    "PipelineContext",
-    "PipelineEngine",
-    "PipelineTrace",
-    "StepTrace",
     "ExecutionStrategy",
-    "GovernanceState",
-    "StrategyInfo",
-    "PipelineAbortError",
-    "PipelineState",
-    "PipelineStepError",
-    "PipelineStepNotFoundError",
-    "StepNotFoundError",
-    "StepNotRemovableError",
-    "StepNotReplaceableError",
-    "StepNameDuplicateError",
-    "StrategyNotFoundError",
-    "ConfigurationError",
-    "PipelineDependencyError",
-    # Pipeline Configuration
-    "register_step_type",
-    "unregister_step_type",
-    "registered_step_types",
-    "build_strategy_from_config",
-    # Pipeline Preset Builders (parity with apcore-typescript / apcore-rust)
-    "build_standard_strategy",
-    "build_internal_strategy",
-    "build_testing_strategy",
-    "build_performance_strategy",
-    "build_minimal_strategy",
-    # Builtin Pipeline Steps (parity with apcore-typescript / apcore-rust)
-    "BuiltinContextCreation",
-    "BuiltinCallChainGuard",
-    "BuiltinModuleLookup",
-    "BuiltinACLCheck",
-    "BuiltinApprovalGate",
-    "BuiltinMiddlewareBefore",
-    "BuiltinInputValidation",
-    "BuiltinExecute",
-    "BuiltinOutputValidation",
-    "BuiltinMiddlewareAfter",
-    "BuiltinReturnResult",
-    # System Modules
-    "register_sys_modules",
-    "SysModulesContext",
-    # System Module Implementations
-    "HealthSummaryModule",
-    "HealthModule",
-    "classify_health_status",
-    "ManifestFullModule",
-    "ManifestModule",
-    "UsageSummaryModule",
-    "UsageModule",
-    "UpdateConfigModule",
-    "ReloadModule",
-    "ToggleFeatureModule",
-    "ToggleState",
-    # Overrides Store (cross-language alignment with TS / Rust)
-    "OverridesStore",
-    "InMemoryOverridesStore",
-    "FileOverridesStore",
+    "Executor",
+    "Identity",
+    "Middleware",
+    "Module",
+    "ModuleAnnotations",
+    "ModuleError",
+    "PipelineEngine",
+    "PreflightResult",
+    "PreviewResult",
+    "Registry",
+    "ReloadOptions",
+    "SchemaExporter",
+    "SchemaValidator",
+    "ScopedApprovalHandler",
+    "ShutdownOptions",
+    "StreamCompletion",
+    "StreamExecution",
+    "StreamingModule",
+    "TraceContext",
+    "UnregisterOptions",
+    "call",
+    "call_async",
+    "close",
+    "module",
+    "redact_sensitive",
+    "register",
+    "stream",
+    "to_strict_schema",
+    "validate",
 ]

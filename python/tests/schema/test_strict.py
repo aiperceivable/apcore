@@ -6,7 +6,6 @@ import copy
 from typing import Any
 
 from apcore.schema.strict import (
-    _apply_llm_descriptions,
     _strip_extensions,
     to_strict_schema,
 )
@@ -260,38 +259,6 @@ class TestToStrictSchema:
         assert first["required"] == ["z"]
 
 
-# === _apply_llm_descriptions() ===
-
-
-class TestApplyLlmDescriptions:
-    def test_replaces_description(self) -> None:
-        node: dict[str, Any] = {
-            "description": "short",
-            "x-llm-description": "long detailed",
-        }
-        _apply_llm_descriptions(node)
-        assert node["description"] == "long detailed"
-        assert "x-llm-description" in node  # stripping happens separately
-
-    def test_preserves_description_without_llm(self) -> None:
-        node: dict[str, Any] = {"description": "short"}
-        _apply_llm_descriptions(node)
-        assert node["description"] == "short"
-
-    def test_recursive_into_properties(self) -> None:
-        node: dict[str, Any] = {
-            "type": "object",
-            "properties": {
-                "a": {"description": "old", "x-llm-description": "new"},
-            },
-        }
-        _apply_llm_descriptions(node)
-        assert node["properties"]["a"]["description"] == "new"
-
-    def test_no_llm_description_unchanged(self) -> None:
-        node: dict[str, Any] = {"description": "keep me", "type": "string"}
-        _apply_llm_descriptions(node)
-        assert node["description"] == "keep me"
 
 
 # === _strip_extensions() ===

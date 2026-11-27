@@ -1,87 +1,20 @@
-"""Regression test for A-D-16: PrometheusExporter must append usage metrics.
-
-Cross-language parity: TS prometheus-exporter.ts and Rust prometheus_exporter.rs
-both append the ``apcore_usage_*`` metric families to their /metrics output when
-a usage collector is present. The Python exporter previously exposed only the
-MetricsCollector output and left UsageCollector.export_prometheus() unwired.
-
-Back-compat: when no usage_collector is supplied, the output must be unchanged
-(MetricsCollector output only).
-"""
+"""Render metrics and usage as one Prometheus exposition."""
 
 from __future__ import annotations
 
-import threading
-from concurrent.futures import ThreadPoolExecutor
-from contextlib import closing
 from datetime import datetime, timedelta, timezone
-from http.client import HTTPConnection
 
 import pytest
 
 from apcore.observability import render_prometheus_metrics
 from apcore.observability import usage as usage_module
 from apcore.observability.metrics import MetricsCollector
-from apcore.observability.prometheus_exporter import PrometheusExporter
 from apcore.observability.usage import UsageCollector
-
-
-def _get(port: int, path: str) -> tuple[int, bytes]:
-    with closing(HTTPConnection("127.0.0.1", port, timeout=2)) as connection:
-        connection.request("GET", path)
-        response = connection.getresponse()
-        return response.status, response.read()
-
-
-def test_prometheus_listener_binds_to_loopback_and_can_restart() -> None:
-    exporter = PrometheusExporter(MetricsCollector())
-    exporter.start(port=0)
-    try:
-        assert exporter._server is not None
-        host, port = exporter._server.server_address
-        assert host == "127.0.0.1"
-        assert _get(port, "/readyz")[0] == 503
-    finally:
-        exporter.stop()
-
-    exporter.start(port, host="127.0.0.1")
-    try:
-        exporter.mark_ready()
-        assert _get(port, "/readyz") == (200, b"OK")
-    finally:
-        exporter.stop()
-
-
-def test_health_probe_progresses_while_metrics_are_rendered(monkeypatch: pytest.MonkeyPatch) -> None:
-    exporter = PrometheusExporter(MetricsCollector())
-    rendering = threading.Event()
-    release_render = threading.Event()
-
-    def render() -> str:
-        rendering.set()
-        assert release_render.wait(timeout=5)
-        return "sample_metric 1\n"
-
-    monkeypatch.setattr(exporter, "export", render)
-    exporter.start(port=0)
-    try:
-        assert exporter._server is not None
-        _, port = exporter._server.server_address
-        with ThreadPoolExecutor(max_workers=1) as pool:
-            metrics = pool.submit(_get, port, "/metrics")
-            try:
-                assert rendering.wait(timeout=2)
-                assert _get(port, "/healthz") == (200, b"OK")
-            finally:
-                release_render.set()
-            assert metrics.result(timeout=2) == (200, b"sample_metric 1\n")
-    finally:
-        exporter.stop()
 
 
 @pytest.mark.parametrize("populated_metrics", [False, True])
 @pytest.mark.parametrize("populated_usage", [None, False, True])
-def test_render_prometheus_metrics_matches_legacy_export(populated_metrics: bool, populated_usage: bool | None) -> None:
+def test_render_prometheus_metrics_combines_collectors(populated_metrics: bool, populated_usage: bool | None) -> None:
     collector = MetricsCollector()
     if populated_metrics:
         collector.increment_calls("math.add", "success")
@@ -93,7 +26,6 @@ def test_render_prometheus_metrics_matches_legacy_export(populated_metrics: bool
     fragments = [collector.export_prometheus(), usage.export_prometheus() if usage is not None else ""]
     expected = "".join(fragments)
     assert render_prometheus_metrics(collector, usage) == expected
-    assert PrometheusExporter(collector, usage).export() == expected
     assert render_prometheus_metrics(collector) == collector.export_prometheus()
 
 
@@ -110,10 +42,9 @@ def test_prometheus_usage_gauges_decrease_after_window_rolls(monkeypatch: pytest
     metrics.increment("demo_counter_total", {})
     usage = UsageCollector()
     usage.record("demo.one", "client", 12.0, True)
-    exporter = PrometheusExporter(metrics, usage)
-    before = exporter.export()
+    before = render_prometheus_metrics(metrics, usage)
     instant += timedelta(hours=25)
-    after = exporter.export()
+    after = render_prometheus_metrics(metrics, usage)
 
     for family in ("apcore_usage_calls_24h", "apcore_usage_calls_total"):
         sample = f'{family}{{module_id="demo.one",status="success"}}'
@@ -132,8 +63,7 @@ class TestPrometheusUsageMetrics:
         usage = UsageCollector()
         usage.record(module_id="m.a", caller_id="caller", latency_ms=12.0, success=True)
 
-        exporter = PrometheusExporter(collector, usage_collector=usage)
-        output = exporter.export()
+        output = render_prometheus_metrics(collector, usage)
 
         # MetricsCollector families remain present.
         assert "apcore_module_calls_total" in output
@@ -146,14 +76,7 @@ class TestPrometheusUsageMetrics:
         collector = MetricsCollector()
         collector.increment("apcore_module_calls_total", {"module_id": "m.a", "status": "success"})
 
-        exporter = PrometheusExporter(collector)
-        output = exporter.export()
+        output = render_prometheus_metrics(collector)
 
         assert "apcore_module_calls_total" in output
         assert "apcore_usage_" not in output
-
-    def test_default_usage_collector_is_none(self) -> None:
-        """Back-compat: the positional-only signature still works."""
-        exporter = PrometheusExporter(MetricsCollector())
-        # No exception, no usage output.
-        assert "apcore_usage_" not in exporter.export()

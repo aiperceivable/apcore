@@ -77,8 +77,7 @@ def _build(setup: dict[str, Any]) -> Executor:
         executor.set_acl(ACL(default_effect="deny"))
     if setup["approval_handler_attached"]:
         executor.set_approval_handler(_NeverCalledHandler())
-    if setup["policy_strict"]:
-        executor.set_policy(ExecutionPolicy(strict=True))
+    executor.set_policy(ExecutionPolicy(strict=setup["policy_strict"]))
     return executor
 
 

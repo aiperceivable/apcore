@@ -809,12 +809,13 @@ class TestApprovalTokenStripping:
 
     async def test_stripped_when_gated_but_no_handler_is_configured(self) -> None:
         from apcore.module import ModuleAnnotations
+        from apcore.policy import ExecutionPolicy
 
         ctx = self._ctx(
             {"x": 1, "_approval_token": "tok"},
             annotations=ModuleAnnotations(requires_approval=True),
         )
-        result = await BuiltinApprovalGate(handler=None).execute(ctx)
+        result = await BuiltinApprovalGate(policy=ExecutionPolicy(strict=False)).execute(ctx)
         assert result.action == "continue"
         assert "_approval_token" not in ctx.inputs
 

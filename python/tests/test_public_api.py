@@ -137,16 +137,12 @@ class TestPublicAPIImports:
         """A-001: ModuleIdConflictError, InvalidSegmentError, and
         IdTooLongError are exported by the TS/Rust SDKs and the errors
         submodule; they must also be importable from the top-level apcore
-        package and present in apcore.__all__."""
-        import apcore
+        package."""
         from apcore import IdTooLongError, InvalidSegmentError, ModuleIdConflictError
 
         assert ModuleIdConflictError is not None
         assert InvalidSegmentError is not None
         assert IdTooLongError is not None
-        assert "ModuleIdConflictError" in apcore.__all__
-        assert "InvalidSegmentError" in apcore.__all__
-        assert "IdTooLongError" in apcore.__all__
 
     def test_call_frequency_exceeded_error_importable(self):
         from apcore import CallFrequencyExceededError
@@ -350,8 +346,11 @@ class TestPublicAPIImports:
 
     # -- SpanExporter is now exported --
 
-    def test_span_exporter_in_top_level(self):
-        assert "SpanExporter" in apcore.__all__
+    def test_span_exporter_is_available_from_observability(self):
+        from apcore.observability import SpanExporter
+
+        assert "SpanExporter" not in apcore.__all__
+        assert apcore.SpanExporter is SpanExporter
 
     # -- Version --
 
@@ -383,16 +382,6 @@ class TestPublicAPIImports:
         ):
             assert callable(fn)
 
-    def test_pipeline_preset_builders_in_all(self):
-        for name in (
-            "build_standard_strategy",
-            "build_internal_strategy",
-            "build_testing_strategy",
-            "build_performance_strategy",
-            "build_minimal_strategy",
-        ):
-            assert name in apcore.__all__, f"{name} missing from apcore.__all__"
-
     # -- ID conflict detection (D1-004) --
     # Regression: detect_id_conflicts, ConflictResult were defined in
     # apcore.registry.conflicts but not re-exported from the package root.
@@ -402,10 +391,6 @@ class TestPublicAPIImports:
 
         assert callable(detect_id_conflicts)
         assert ConflictResult is not None
-
-    def test_detect_id_conflicts_in_all(self):
-        assert "detect_id_conflicts" in apcore.__all__, "detect_id_conflicts missing from apcore.__all__"
-        assert "ConflictResult" in apcore.__all__, "ConflictResult missing from apcore.__all__"
 
     # -- Registry module-id constants (issue #30) --
     # Regression: MAX_MODULE_ID_LENGTH, RESERVED_WORDS, REGISTRY_EVENTS,
@@ -428,7 +413,6 @@ class TestPublicAPIImports:
 
         for name in self._REGISTRY_CONSTANTS:
             assert hasattr(apcore_mod, name), f"{name} not importable from apcore"
-            assert name in apcore_mod.__all__, f"{name} missing from apcore.__all__"
 
     def test_registry_constants_importable_from_registry_package(self):
         import apcore.registry as reg
@@ -461,355 +445,49 @@ class TestPublicAPIAll:
     """Verify __all__ is comprehensive and matches actual exports."""
 
     EXPECTED_NAMES = {
-        # Core
-        "CancelToken",
-        "ExecutionCancelledError",
-        "Context",
-        "ContextFactory",
-        "ContextKey",
-        "GovernanceProjection",
-        "Identity",
-        "Registry",
-        "Executor",
-        "APCore",
-        "DrainAbortedContext",
-        "DrainContext",
-        "close",
-        "call",
-        "call_async",
-        "stream",
-        "validate",
-        "register",
-        "describe",
-        "use",
-        "use_before",
-        "use_after",
-        "remove",
-        "discover",
-        "list_modules",
-        # Lifecycle operations
-        "LifecycleError",
-        "LifecycleModuleReport",
-        "LifecycleOperation",
-        "LifecycleReport",
-        "ReloadOptions",
-        "ShutdownOptions",
-        "UnregisterOptions",
-        # Approval
-        "ApprovalHandler",
-        "ApprovalRequest",
-        "ApprovalResult",
-        "AlwaysDenyHandler",
-        "AutoApproveHandler",
-        "CallbackApprovalHandler",
-        "ScopedApprovalHandler",
-        # Module types
-        "Change",
-        "DEFAULT_ANNOTATIONS",
-        "Module",
-        "ModuleAnnotations",
-        "ModuleExample",
-        "ValidationResult",
-        "PreflightCheckResult",
-        "PreflightResult",
-        "PreviewResult",
-        # Registry types
-        "ModuleDescriptor",
-        "DiscoveredModule",
-        "DependencyInfo",
-        # ID conflict detection
-        "ConflictResult",
-        "ConflictSeverity",
-        "ConflictType",
-        "detect_id_conflicts",
-        # Registry protocols
-        "Discoverer",
-        "ModuleValidator",
-        # Multi-class discovery
-        "class_name_to_segment",
-        "discover_multi_class",
-        # Registry module-id constants (issue #30 — parity with TS / Rust root)
-        "DEFAULT_MODULE_VERSION",
-        "EPHEMERAL_NAMESPACE_PREFIX",
-        "MAX_MODULE_ID_LENGTH",
-        "MODULE_ID_PATTERN",
-        "REGISTRY_EVENTS",
-        "RESERVED_WORDS",
-        # Config
-        "Config",
-        "RESERVED_NAMESPACES",
-        "discover_config_file",
-        # Errors
-        "ErrorCodes",
-        "ModuleError",
-        "ACLDeniedError",
-        "ACLRuleError",
-        "ApprovalError",
-        "ApprovalDeniedError",
-        "ApprovalTimeoutError",
-        "ApprovalPendingError",
-        "BindingCallableNotFoundError",
-        "BindingFileInvalidError",
-        "BindingInvalidTargetError",
-        "BindingModuleNotFoundError",
-        "BindingNotCallableError",
-        "BindingSchemaInferenceFailedError",
-        "BindingSchemaMissingError",
-        "BindingSchemaModeConflictError",
-        "BindingStrictSchemaIncompatibleError",
-        "CallDepthExceededError",
-        "CallFrequencyExceededError",
-        "CircuitBreakerOpenError",
-        "CircuitOpenError",
-        "CircularCallError",
-        "CircularDependencyError",
-        "ConfigError",
-        "ConfigNotFoundError",
-        "ContextBindingError",
-        "DependencyNotFoundError",
-        "DependencyVersionMismatchError",
-        "TaskLimitExceededError",
-        "TaskStoreError",
-        "VersionConstraintError",
-        "FuncMissingReturnTypeError",
-        "FuncMissingTypeHintError",
-        "IdTooLongError",
-        "InternalError",
-        "InvalidInputError",
-        "InvalidParentIdError",
-        "InvalidSegmentError",
-        "ModuleExecuteError",
-        "ModuleIdConflictError",
-        "ModuleLoadError",
-        "ModuleNotFoundError",
-        "ModuleTimeoutError",
-        "SchemaCircularRefError",
-        "SchemaMaxDepthExceededError",
-        "SchemaNotFoundError",
-        "SchemaParseError",
-        "SchemaValidationError",
-        # ACL
         "ACL",
         "ACLRule",
-        "AccessDecision",
-        "AuditEntry",
-        "ConditionOutcome",
-        "RuleValidationFinding",
-        # Execution-time governance policy (apcore#76 RFC pilot)
+        "APCore",
+        "ApprovalDeniedError",
+        "ApprovalHandler",
+        "ApprovalPendingError",
+        "ApprovalRequest",
+        "ApprovalResult",
+        "AutoApproveHandler",
+        "CancelToken",
+        "Context",
+        "ErrorCodes",
         "ExecutionPolicy",
-        "PolicyDecision",
-        "PolicyRule",
-        # Middleware
+        "ExecutionStrategy",
+        "Executor",
+        "Identity",
         "Middleware",
-        "RetrySignal",
-        "MiddlewareManager",
-        "BeforeMiddleware",
-        "AfterMiddleware",
-        "LoggingMiddleware",
-        "MiddlewareChainError",
-        "RetryConfig",
-        "RetryMiddleware",
-        "CircuitBreakerMiddleware",
-        "CircuitBreakerState",
-        # Decorators
-        "module",
-        "FunctionModule",
-        # Extensions
-        "ExtensionManager",
-        "ExtensionPoint",
-        # Async tasks
-        "AsyncTaskManager",
-        "TaskStatus",
-        "TaskInfo",
-        "TaskStore",
-        "InMemoryTaskStore",
-        "AsyncRetryConfig",
-        "RetryPolicy",
-        "BackoffStrategy",
-        # Bindings
-        "BindingLoader",
-        # Schema
-        "SchemaLoader",
-        "SchemaValidator",
+        "Module",
+        "ModuleAnnotations",
+        "ModuleError",
+        "PipelineEngine",
+        "PreflightResult",
+        "PreviewResult",
+        "Registry",
+        "ReloadOptions",
         "SchemaExporter",
-        "RefResolver",
-        "to_strict_schema",
-        # Utilities
-        "match_pattern",
-        "guard_call_chain",
-        "normalize_to_canonical_id",
-        "canonicalize_name",
-        "CanonicalNameResult",
-        "CanonicalNameError",
-        "calculate_specificity",
-        "propagate_error",
-        "redact_sensitive",
-        "REDACTED_VALUE",
-        # Errors (new)
-        "ErrorCodeCollisionError",
-        "ErrorCodeRegistry",
-        # Version
-        "VersionIncompatibleError",
-        "negotiate_version",
-        # Observability
-        "TracingMiddleware",
-        "ContextLogger",
-        "ObsLoggingMiddleware",
-        "MetricsMiddleware",
-        "MetricsCollector",
-        "Span",
-        "SpanExporter",
-        "StdoutExporter",
-        "InMemoryExporter",
-        "create_span",
-        "OTLPExporter",
-        # Trace Context
-        "TraceContext",
-        "TraceParent",
-        # Events
-        "EventEmitter",
-        "EventSubscriber",
-        "EventRetryConfig",
-        "ApCoreEvent",
-        "WebhookSubscriber",
-        "A2ASubscriber",
-        "FileSubscriber",
-        "StdoutSubscriber",
-        "FilterSubscriber",
-        "register_subscriber_factory",
-        "create_subscriber_from_config",
-        "on",
-        "off",
-        # Toggle
-        "disable",
-        "enable",
-        # Schema enums
-        "SchemaStrategy",
-        "ExportProfile",
-        # Additional errors
-        "ModuleDisabledError",
-        "ModuleReloadConflictError",
-        "ReloadFailedError",
-        "SysModuleRegistrationError",
-        "SysModulesDisabledError",
-        "StreamingInterfaceError",
-        # Streaming Protocol (apcore #62)
+        "SchemaValidator",
+        "ScopedApprovalHandler",
+        "ShutdownOptions",
         "StreamCompletion",
-        "StreamCompletionReason",
         "StreamExecution",
         "StreamingModule",
-        "StreamStepOutcome",
-        # Observability (added in 0.11.0, exported in 0.12.0)
-        "ErrorEntry",
-        "ErrorHistory",
-        "ErrorHistoryMiddleware",
-        "StorageBackend",
-        "InMemoryStorageBackend",
-        "UsageCollector",
-        "UsageExporter",
-        "UsageMiddleware",
-        "NoopUsageExporter",
-        "PeriodicUsageExporter",
-        "PlatformNotifyMiddleware",
-        # System Modules
-        "register_sys_modules",
-        # Pipeline
-        "Step",
-        "BaseStep",
-        "StepResult",
-        "PipelineContext",
-        "PipelineEngine",
-        "PipelineTrace",
-        "StepTrace",
-        "ExecutionStrategy",
-        "GovernanceState",
-        "StrategyInfo",
-        "PipelineAbortError",
-        "PipelineState",
-        "PipelineStepError",
-        "PipelineStepNotFoundError",
-        "StepNotFoundError",
-        "StepNotRemovableError",
-        "StepNotReplaceableError",
-        "StepNameDuplicateError",
-        "StrategyNotFoundError",
-        "StepMiddleware",
-        "ConfigurationError",
-        "PipelineDependencyError",
-        # Pipeline Configuration (0.17.0)
-        "register_step_type",
-        "unregister_step_type",
-        "registered_step_types",
-        "build_strategy_from_config",
-        # Pipeline Preset Builders (parity with apcore-typescript / apcore-rust)
-        "build_standard_strategy",
-        "build_internal_strategy",
-        "build_testing_strategy",
-        "build_performance_strategy",
-        "build_minimal_strategy",
-        # Builtin Pipeline Steps (parity with apcore-typescript / apcore-rust)
-        "BuiltinContextCreation",
-        "BuiltinCallChainGuard",
-        "BuiltinModuleLookup",
-        "BuiltinACLCheck",
-        "BuiltinApprovalGate",
-        "BuiltinMiddlewareBefore",
-        "BuiltinInputValidation",
-        "BuiltinExecute",
-        "BuiltinOutputValidation",
-        "BuiltinMiddlewareAfter",
-        "BuiltinReturnResult",
-        # Config Bus (0.15.0)
-        "ConfigBindError",
-        "ConfigEnvMapConflictError",
-        "ConfigEnvPrefixConflictError",
-        "ConfigMountError",
-        "ConfigNamespaceDuplicateError",
-        "ConfigNamespaceReservedError",
-        # Error Formatter (0.15.0)
-        "ErrorFormatter",
-        "ErrorFormatterRegistry",
-        "ErrorFormatterDuplicateError",
-        # Built-in context keys
-        "TRACING_SPANS",
-        "TRACING_SAMPLED",
-        "METRICS_STARTS",
-        "LOGGING_START",
-        "REDACTED_OUTPUT",
-        "RETRY_COUNT_BASE",
-        # System module classes
-        "HealthSummaryModule",
-        "HealthModule",
-        "ManifestFullModule",
-        "ManifestModule",
-        "UsageSummaryModule",
-        "UsageModule",
-        "UpdateConfigModule",
-        "ReloadModule",
-        "ToggleFeatureModule",
-        "ToggleState",
-        # Overrides Store (cross-language alignment with TS / Rust)
-        "OverridesStore",
-        "InMemoryOverridesStore",
-        "FileOverridesStore",
-        # System Modules context type
-        "SysModulesContext",
-        # System module registration
-        "register_sys_modules",
-        # Module-level constants (parity with apcore-typescript / apcore-rust)
-        "DEFAULT_MAX_CALL_DEPTH",
-        "DEFAULT_MAX_MODULE_REPEAT",
-        "FRAMEWORK_ERROR_CODE_PREFIXES",
-        "METRIC_CALLS_TOTAL",
-        "METRIC_DURATION_SECONDS",
-        # Health utility
-        "classify_health_status",
-        # Context-data namespace validation (middleware-system.md 1.1) — peer of
-        # apcore-typescript validateContextKey / apcore-rust validate_context_key
-        "validate_context_key",
-        "NamespaceCheck",
-        "APCORE_KEY_PREFIX",
-        "EXT_KEY_PREFIX",
+        "TraceContext",
+        "UnregisterOptions",
+        "call",
+        "call_async",
+        "close",
+        "module",
+        "redact_sensitive",
+        "register",
+        "stream",
+        "to_strict_schema",
+        "validate",
     }
 
     def test_all_contains_all_expected_names(self):
@@ -844,8 +522,8 @@ class TestPublicAPIAll:
         # After close(), a new instance is created on next access — not the same object.
         assert first is not second
 
-    def test_deprecated_subscriber_apis_not_advertised(self):
-        """Deprecated subscriber registry APIs must not appear in __all__ but remain importable."""
+    def test_legacy_global_subscriber_apis_removed(self):
+        """Subscriber registration belongs to the host registry."""
         deprecated = (
             "register_subscriber_type",
             "unregister_subscriber_type",
@@ -853,5 +531,4 @@ class TestPublicAPIAll:
         )
         for name in deprecated:
             assert name not in apcore.__all__, f"Deprecated {name} should not be advertised in __all__"
-            # Back-compat: still importable via attribute access.
-            assert hasattr(apcore, name), f"Deprecated {name} must remain importable"
+            assert not hasattr(apcore, name)

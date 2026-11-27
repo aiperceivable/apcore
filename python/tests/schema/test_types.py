@@ -7,7 +7,6 @@ from pydantic import BaseModel
 
 from apcore.errors import SchemaValidationError
 from apcore.schema.types import (
-    ExportProfile,
     LLMExtensions,
     ResolvedSchema,
     SchemaDefinition,
@@ -30,24 +29,6 @@ class TestSchemaStrategy:
     def test_string_comparison(self) -> None:
         assert SchemaStrategy.YAML_FIRST == "yaml_first"
         assert isinstance(SchemaStrategy.YAML_FIRST, str)
-
-
-class TestExportProfile:
-    def test_mcp_value(self) -> None:
-        assert ExportProfile.MCP == "mcp"
-
-    def test_openai_value(self) -> None:
-        assert ExportProfile.OPENAI == "openai"
-
-    def test_anthropic_value(self) -> None:
-        assert ExportProfile.ANTHROPIC == "anthropic"
-
-    def test_generic_value(self) -> None:
-        assert ExportProfile.GENERIC == "generic"
-
-    def test_string_comparison(self) -> None:
-        assert ExportProfile.MCP == "mcp"
-        assert isinstance(ExportProfile.MCP, str)
 
 
 class TestSchemaDefinition:

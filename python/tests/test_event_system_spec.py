@@ -10,7 +10,7 @@ Symbol-reality notes (drive the skip decisions below):
 - ``EventEmitter.emit`` takes a single ``ApCoreEvent`` (not ``event_type`` /
   ``payload``) and raises no errors (fire-and-forget). The spec's
   ``input.event_type.not_empty`` rule is not enforced by this SDK.
-- ``WebhookSubscriber.deliver`` / ``A2ASubscriber.deliver`` are named
+- ``WebhookSubscriber.deliver`` are named
   ``on_event`` in this SDK. The emitter owns retry and dead-letter delivery.
 - The circuit-breaker contract names ``SubscriberCircuitBreaker.on_failure``
   with signature ``(subscriber_id, error) -> CircuitState``. This SDK ships
@@ -29,7 +29,7 @@ import pytest
 
 from apcore.events.circuit_breaker import CircuitBreakerWrapper, CircuitState
 from apcore.events.emitter import ApCoreEvent, EventEmitter
-from apcore.events.subscribers import A2ASubscriber, WebhookSubscriber
+from apcore.events.subscribers import WebhookSubscriber
 
 
 # ---------------------------------------------------------------------------
@@ -348,7 +348,7 @@ def test_webhook_deliver_input_event_required() -> None:
     sub = WebhookSubscriber(url="https://example.com/hook")
     event = _make_event(event_type="apcore.health.recovered")
     mock_aiohttp, session = _mock_aiohttp(status=200)
-    with patch("apcore.events.subscribers.aiohttp", mock_aiohttp):
+    with patch("apcore.events.subscribers._load_aiohttp", return_value=mock_aiohttp):
         asyncio.run(sub.on_event(event))
     session.post.assert_called_once()
     posted = session.post.call_args.kwargs["json"]
@@ -363,7 +363,7 @@ def test_webhook_deliver_property_async_true() -> None:
     sub = WebhookSubscriber(url="https://example.com/hook")
     assert asyncio.iscoroutinefunction(sub.on_event)
     mock_aiohttp, _ = _mock_aiohttp(status=200)
-    with patch("apcore.events.subscribers.aiohttp", mock_aiohttp):
+    with patch("apcore.events.subscribers._load_aiohttp", return_value=mock_aiohttp):
         coro = sub.on_event(_make_event())
         assert asyncio.iscoroutine(coro)
         assert asyncio.run(coro) is None
@@ -379,7 +379,7 @@ def test_webhook_deliver_property_thread_safe() -> None:
     mock_aiohttp, session = _mock_aiohttp(status=200)
 
     async def run_all() -> None:
-        with patch("apcore.events.subscribers.aiohttp", mock_aiohttp):
+        with patch("apcore.events.subscribers._load_aiohttp", return_value=mock_aiohttp):
             await asyncio.gather(*[sub.on_event(_make_event(data={"i": i})) for i in range(8)])
 
     asyncio.run(run_all())
@@ -393,7 +393,7 @@ def test_webhook_deliver_property_pure_false() -> None:
     """
     sub = WebhookSubscriber(url="https://example.com/hook")
     mock_aiohttp, session = _mock_aiohttp(status=200)
-    with patch("apcore.events.subscribers.aiohttp", mock_aiohttp):
+    with patch("apcore.events.subscribers._load_aiohttp", return_value=mock_aiohttp):
         asyncio.run(sub.on_event(_make_event()))
     session.post.assert_called_once()  # outbound side effect occurred
 
@@ -408,13 +408,13 @@ def test_webhook_deliver_side_effect_1_retry_on_5xx() -> None:
 
     sub = WebhookSubscriber(url="https://example.com/hook")
     mock_5xx, _ = _mock_aiohttp(status=503)
-    with patch("apcore.events.subscribers.aiohttp", mock_5xx):
+    with patch("apcore.events.subscribers._load_aiohttp", return_value=mock_5xx):
         with pytest.raises(RuntimeError):
             asyncio.run(sub.on_event(event))
 
     sub2 = WebhookSubscriber(url="https://example.com/hook")
     mock_4xx, _ = _mock_aiohttp(status=404)
-    with patch("apcore.events.subscribers.aiohttp", mock_4xx):
+    with patch("apcore.events.subscribers._load_aiohttp", return_value=mock_4xx):
         # 4xx is a permanent failure: logged, not raised.
         assert asyncio.run(sub2.on_event(event)) is None
 
@@ -790,133 +790,3 @@ def test_flush_property_idempotent_true() -> None:
     finally:
         emitter.shutdown(timeout=1.0)
     assert count_after_first == count_after_second == 1
-
-
-# ===========================================================================
-# Contract: A2ASubscriber.deliver
-# ===========================================================================
-
-
-def test_a2a_deliver_input_event_required() -> None:
-    """event_system.deliver.input.event.required_a2a
-
-    A2A delivery (on_event) POSTs a {skillId, event} wrapper carrying the
-    serialized event.
-    """
-    sub = A2ASubscriber(platform_url="https://platform.example.com")
-    event = _make_event(event_type="apcore.health.recovered")
-    mock_aiohttp, session = _mock_aiohttp(status=200)
-    with patch("apcore.events.subscribers.aiohttp", mock_aiohttp):
-        asyncio.run(sub.on_event(event))
-    session.post.assert_called_once()
-    body = session.post.call_args.kwargs["json"]
-    assert body["skillId"] == "apevo.event_receiver"
-    assert body["event"]["event_type"] == "apcore.health.recovered"
-
-
-def test_a2a_deliver_error_import_error_without_aiohttp() -> None:
-    """event_system.deliver.error.ImportError_a2a
-
-    ImportError is raised synchronously (before network I/O) if aiohttp is not
-    installed, with the documented install hint.
-    """
-    sub = A2ASubscriber(platform_url="https://platform.example.com")
-    with patch("apcore.events.subscribers.aiohttp", None):
-        with pytest.raises(ImportError, match=r"aiohttp is required.*apcore\[events\]"):
-            asyncio.run(sub.on_event(_make_event()))
-
-
-def test_a2a_deliver_property_async_true() -> None:
-    """event_system.deliver.property.async_a2a
-
-    A2A delivery is awaitable and resolves to None.
-    """
-    sub = A2ASubscriber(platform_url="https://platform.example.com")
-    assert asyncio.iscoroutinefunction(sub.on_event)
-    mock_aiohttp, _ = _mock_aiohttp(status=200)
-    with patch("apcore.events.subscribers.aiohttp", mock_aiohttp):
-        coro = sub.on_event(_make_event())
-        assert asyncio.iscoroutine(coro)
-        assert asyncio.run(coro) is None
-
-
-def test_a2a_deliver_property_thread_safe() -> None:
-    """event_system.deliver.property.thread_safe_a2a
-
-    >=8 concurrent A2A deliveries with distinct events all resolve; each issues
-    its own POST.
-    """
-    sub = A2ASubscriber(platform_url="https://platform.example.com")
-    mock_aiohttp, session = _mock_aiohttp(status=200)
-
-    async def run_all() -> None:
-        with patch("apcore.events.subscribers.aiohttp", mock_aiohttp):
-            await asyncio.gather(*[sub.on_event(_make_event(data={"i": i})) for i in range(8)])
-
-    asyncio.run(run_all())
-    assert session.post.call_count == 8
-
-
-def test_a2a_deliver_property_pure_false() -> None:
-    """event_system.deliver.property.pure_a2a
-
-    Delivery is NOT pure: it performs an outbound HTTP POST to the platform URL.
-    """
-    sub = A2ASubscriber(platform_url="https://platform.example.com")
-    mock_aiohttp, session = _mock_aiohttp(status=200)
-    with patch("apcore.events.subscribers.aiohttp", mock_aiohttp):
-        asyncio.run(sub.on_event(_make_event()))
-    assert session.post.call_args.args[0] == "https://platform.example.com"
-
-
-def test_a2a_deliver_side_effect_1_auth_bearer_header() -> None:
-    """event_system.deliver.side_effect.1.auth_modes_a2a
-
-    Observable auth policy: a str auth -> 'Authorization: Bearer <auth>';
-    a dict auth -> keys merged into headers; None -> no Authorization header.
-    """
-    event = _make_event()
-
-    # str auth -> Bearer
-    sub_str = A2ASubscriber(platform_url="https://p.example.com", auth="tok123")
-    mock_str, session_str = _mock_aiohttp(status=200)
-    with patch("apcore.events.subscribers.aiohttp", mock_str):
-        asyncio.run(sub_str.on_event(event))
-    headers_str = session_str.post.call_args.kwargs["headers"]
-    assert headers_str["Authorization"] == "Bearer tok123"
-
-    # dict auth -> merged
-    sub_dict = A2ASubscriber(platform_url="https://p.example.com", auth={"X-Api-Key": "k"})
-    mock_dict, session_dict = _mock_aiohttp(status=200)
-    with patch("apcore.events.subscribers.aiohttp", mock_dict):
-        asyncio.run(sub_dict.on_event(event))
-    headers_dict = session_dict.post.call_args.kwargs["headers"]
-    assert headers_dict["X-Api-Key"] == "k"
-
-    # None auth -> no Authorization
-    sub_none = A2ASubscriber(platform_url="https://p.example.com", auth=None)
-    mock_none, session_none = _mock_aiohttp(status=200)
-    with patch("apcore.events.subscribers.aiohttp", mock_none):
-        asyncio.run(sub_none.on_event(event))
-    headers_none = session_none.post.call_args.kwargs["headers"]
-    assert "Authorization" not in headers_none
-
-
-def test_a2a_deliver_side_effect_2_retry_on_5xx() -> None:
-    """event_system.deliver.side_effect.2.retry_on_5xx_a2a
-
-    Observable HTTP-status policy for A2A: 5xx raises (emitter retries);
-    4xx does not raise (no retry).
-    """
-    event = _make_event()
-
-    sub_5xx = A2ASubscriber(platform_url="https://p.example.com")
-    mock_5xx, _ = _mock_aiohttp(status=502)
-    with patch("apcore.events.subscribers.aiohttp", mock_5xx):
-        with pytest.raises(RuntimeError):
-            asyncio.run(sub_5xx.on_event(event))
-
-    sub_4xx = A2ASubscriber(platform_url="https://p.example.com")
-    mock_4xx, _ = _mock_aiohttp(status=403)
-    with patch("apcore.events.subscribers.aiohttp", mock_4xx):
-        assert asyncio.run(sub_4xx.on_event(event)) is None

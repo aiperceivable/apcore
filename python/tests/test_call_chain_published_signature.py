@@ -29,9 +29,9 @@ import pytest
 def test_the_published_signature_is_reachable_from_the_package_root() -> None:
     import apcore
 
-    assert "guard_call_chain" in apcore.__all__
-    assert "DEFAULT_MAX_CALL_DEPTH" in apcore.__all__
-    assert "DEFAULT_MAX_MODULE_REPEAT" in apcore.__all__
+    assert hasattr(apcore, "guard_call_chain")
+    assert hasattr(apcore, "DEFAULT_MAX_CALL_DEPTH")
+    assert hasattr(apcore, "DEFAULT_MAX_MODULE_REPEAT")
 
     from apcore import guard_call_chain
 

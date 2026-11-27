@@ -2,7 +2,7 @@
 
 The original observability RFC (#45 §3) committed to a push-style exporter
 that delivers hourly :class:`UsageCollector` summaries to external sinks
-(HTTP, Kafka, custom backends). The pull-style :class:`PrometheusExporter`
+(HTTP, Kafka, custom backends). The pull-style :func:`render_prometheus_metrics`
 covers scrape-based collection; this module covers the complementary push
 path so operators can stream usage data into log pipelines or analytics
 systems without standing up a Prometheus scrape target.

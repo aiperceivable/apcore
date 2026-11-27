@@ -6,8 +6,6 @@ import copy
 from pathlib import Path
 from typing import Any
 
-import yaml
-
 from apcore.errors import (
     InvalidInputError,
     SchemaCircularRefError,
@@ -307,6 +305,8 @@ class RefResolver:
         if not content.strip():
             self._file_cache[file_path] = {}
             return {}
+
+        import yaml
 
         try:
             parsed = yaml.safe_load(content)

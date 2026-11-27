@@ -31,10 +31,8 @@ from apcore.config import Config
 from apcore.context import Context, Identity
 from apcore.errors import ModuleError
 from apcore.executor import Executor
-from apcore.module import Change, ModuleAnnotations, PreviewResult
-from apcore.schema.exporter import SchemaExporter
+from apcore.module import Change, PreviewResult
 from apcore.schema.loader import SchemaLoader
-from apcore.schema.types import ExportProfile, SchemaDefinition
 
 from .canonical_fixtures import load_fixture
 
@@ -42,7 +40,6 @@ BINDING = load_fixture("binding_file_validation.json")
 ENV = load_fixture("env_prefix_dispatch.json")
 EPHEMERAL = load_fixture("ephemeral_modules.json")
 ERROR = load_fixture("error_details_shape.json")
-EXPORT = load_fixture("export_profiles.json")
 NATIVE = load_fixture("json_input_native_types.json")
 PREFLIGHT = load_fixture("preflight_check_reporting.json")
 TIMEOUT = load_fixture("timeout_cancellation.json")
@@ -235,50 +232,6 @@ def test_error_details_shape(case: dict[str, Any]) -> None:
         assert name in details
     for name in expected.get("detail_keys_absent", []):
         assert name not in details
-
-
-def _pointer(document: Any, pointer: str) -> Any:
-    value = document
-    for segment in pointer.split("/")[1:]:
-        key = segment.replace("~1", "/").replace("~0", "~")
-        value = value[int(key)] if isinstance(value, list) else value[key]
-    return value
-
-
-def _assert_no_x_keywords(value: Any, property_names: bool = False) -> None:
-    if isinstance(value, dict):
-        for key, child in value.items():
-            assert property_names or not key.startswith("x-"), f"Extension keyword survived: {key}"
-            _assert_no_x_keywords(child, key == "properties" and not property_names)
-    elif isinstance(value, list):
-        for child in value:
-            _assert_no_x_keywords(child)
-
-
-@pytest.mark.parametrize("case", EXPORT["test_cases"], ids=lambda case: case["id"])
-def test_export_profiles(case: dict[str, Any]) -> None:
-    """D-140, protocol §4.17: real profile exporter and keyword/property distinction."""
-    expected = _expect_keys(case, {"paths", "absent_paths", "no_x_keywords_under"})
-    contract = EXPORT["module_contract"]
-    registry = Registry()
-    module = _module(contract)
-    module.annotations = ModuleAnnotations(**case["input"]["annotations"])
-    if module.annotations.streaming:
-
-        async def stream(inputs: dict[str, Any], context: Context) -> Any:
-            yield {"sent": True}
-
-        module.stream = stream
-    registry.register(contract["module_id"], module)
-    definition = SchemaDefinition(**contract)
-    result = SchemaExporter().export(definition, ExportProfile(case["input"]["profile"]), module.annotations)
-    for pointer, value in expected["paths"].items():
-        assert _pointer(result, pointer) == value
-    for pointer in expected.get("absent_paths", []):
-        with pytest.raises((KeyError, IndexError)):
-            _pointer(result, pointer)
-    if "no_x_keywords_under" in expected:
-        _assert_no_x_keywords(_pointer(result, expected["no_x_keywords_under"]))
 
 
 class Level(str, Enum):
@@ -528,9 +481,8 @@ def test_d133_sync_timeout_returns_before_a_blocking_module_finishes() -> None:
     assert captured["token"].is_cancelled
     assert not completed.is_set()
     assert completed.wait(timeout=1)
-    # Let the cached loop consume the discarded worker future before closing.
-    assert executor._sync_loop is not None
-    executor._sync_loop.run_until_complete(asyncio.sleep(0))
+    # Exercise a second public entry point over the caller's loop after timeout.
+    executor.validate("slow.blocking", {"count": 1})
     executor.close()
 
 
@@ -632,8 +584,7 @@ def test_d149_raw_json_schema_errors_share_the_native_wire_shape(case: dict[str,
 
 def test_subscriber_circuit_breaker_configuration_reaches_standard_bootstrap() -> None:
     """Issue #123 and protocol event system: honor every circuit_breaker setting."""
-    from apcore.events.emitter import ApCoreEvent
-    from apcore.sys_modules.registration import register_subscriber_type, unregister_subscriber_type
+    from apcore.events import ApCoreEvent, SubscriberRegistry
 
     class SlowSubscriber:
         subscriber_id = "issue123-configured"
@@ -649,8 +600,10 @@ def test_subscriber_circuit_breaker_configuration_reaches_standard_bootstrap() -
                 await asyncio.sleep(0.3)
 
     subscriber = SlowSubscriber()
-    register_subscriber_type("issue123-probe", lambda config: subscriber)
+    subscribers = SubscriberRegistry()
+    subscribers.register("issue123-probe", lambda config: subscriber)
     client = APCore(
+        subscriber_registry=subscribers,
         config=Config(
             {
                 "sys_modules": {
@@ -698,7 +651,6 @@ def test_subscriber_circuit_breaker_configuration_reaches_standard_bootstrap() -
         assert len([item for item in recorder.events if item.event_type == "apcore.subscriber.circuit_closed"]) == 1
     finally:
         client.close()
-        unregister_subscriber_type("issue123-probe")
 
 
 def test_d151_declaration_matches_verified_fixture_scope_and_package() -> None:
@@ -716,9 +668,9 @@ def test_d151_declaration_matches_verified_fixture_scope_and_package() -> None:
     conformance = declaration["conformance"]
     assert conformance["level"] == 0
     results = conformance["fixture_results"]
-    assert results["fixtures"] == len(results["fixture_names"]) == len(set(results["fixture_names"])) == 9
+    assert results["fixtures"] == len(results["fixture_names"]) == len(set(results["fixture_names"])) == 8
     cases = sum(len(load_fixture(name + ".json")["test_cases"]) for name in results["fixture_names"])
-    assert results["cases"] == results["passed"] == cases == 79
+    assert results["cases"] == results["passed"] == cases == 74
     assert results["failed"] == results["skipped"] == 0
     assert (root / results["report"]).is_file()
     assert len(results["reports"]) == 2

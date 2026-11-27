@@ -25,8 +25,6 @@ from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 from weakref import WeakValueDictionary
 
-import yaml
-
 logger = logging.getLogger(__name__)
 
 _update_locks: WeakValueDictionary[Path | int, LockType] = WeakValueDictionary()
@@ -107,6 +105,8 @@ class FileOverridesStore:
             raise OSError(f"Failed to read overrides file {self._path}: {exc}") from exc
         if not raw:
             return {}
+        import yaml
+
         try:
             parsed: Any = yaml.safe_load(raw)
         except yaml.YAMLError as exc:
@@ -123,6 +123,8 @@ class FileOverridesStore:
         raise ValueError(f"Overrides file {self._path} root is not a mapping")
 
     def save(self, overrides: dict[str, Any]) -> None:
+        import yaml
+
         directory = self._path.parent if str(self._path.parent) else Path(".")
         try:
             directory.mkdir(parents=True, exist_ok=True)

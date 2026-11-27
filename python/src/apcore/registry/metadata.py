@@ -8,8 +8,6 @@ import os
 from pathlib import Path
 from typing import Any
 
-import yaml
-
 from apcore.errors import ConfigError, ConfigNotFoundError
 from apcore.module import ModuleAnnotations
 from apcore.registry.types import DependencyInfo
@@ -32,6 +30,8 @@ def load_metadata(meta_path: Path) -> dict[str, Any]:
     """
     if not meta_path.exists():
         return {}
+
+    import yaml
 
     content = meta_path.read_text(encoding="utf-8")
     try:
@@ -177,6 +177,8 @@ def load_id_map(id_map_path: str | os.PathLike[str]) -> dict[str, dict[str, Any]
 
     Raises ConfigNotFoundError if file does not exist (ID map is explicitly requested).
     """
+    import yaml
+
     try:
         with open(id_map_path, encoding="utf-8") as source:
             parsed = yaml.safe_load(source)

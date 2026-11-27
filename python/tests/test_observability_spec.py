@@ -8,7 +8,7 @@ Contracts under test (verbatim ``## Contract:`` blocks):
   2. ``MetricsEmitter.record``    — MISSING SYMBOL in apcore-python (no ``MetricsEmitter``
                                      class; the SDK exposes ``MetricsCollector`` instead).
                                      Documented as skips.
-  3. ``PrometheusExporter.export``— PRESENT and fully exercised.
+  3. ``render_prometheus_metrics``— PRESENT and fully exercised.
 
 Each test's docstring carries the verbatim clause id formatted
 ``observability.<method>.<kind>.<detail>`` so cross-language diffs line up
@@ -25,7 +25,7 @@ import asyncio
 import pytest
 
 from apcore.observability.metrics import MetricsCollector
-from apcore.observability.prometheus_exporter import PrometheusExporter
+from apcore.observability import render_prometheus_metrics
 
 # ---------------------------------------------------------------------------
 # Missing-symbol detection (keeps the whole file importable / runnable).
@@ -175,19 +175,15 @@ def test_metrics_emitter_record_property_pure_is_false() -> None:
 
 
 # ===========================================================================
-# Contract 3: PrometheusExporter.export  (PRESENT — fully exercised)
-#
-# Source note: in apcore-python the `collector` from the contract's ### Inputs
-# is supplied at construction (`PrometheusExporter(collector=...)`), and
-# `export()` takes no arguments and returns the Prometheus text string.
+# Contract 3: render_prometheus_metrics
 # ===========================================================================
 
 
-def _exporter_with_one_counter() -> PrometheusExporter:
+def _collector_with_one_counter() -> MetricsCollector:
     """Build an exporter over a collector carrying a single known counter."""
     collector = MetricsCollector()
     collector.increment_calls("math.add", "success")
-    return PrometheusExporter(collector=collector)
+    return collector
 
 
 def test_prometheus_export_input_collector_required() -> None:
@@ -200,13 +196,12 @@ def test_prometheus_export_input_collector_required() -> None:
     """
     # Negative: the required `collector` arg cannot be omitted.
     with pytest.raises(TypeError):
-        PrometheusExporter()  # type: ignore[call-arg]
+        render_prometheus_metrics()  # type: ignore[call-arg]
 
     # Positive: a supplied collector's data is what `export()` renders.
     collector = MetricsCollector()
     collector.increment_calls("math.add", "success")
-    exporter = PrometheusExporter(collector=collector)
-    text = exporter.export()
+    text = render_prometheus_metrics(collector)
     assert "apcore_module_calls_total" in text
     assert 'module_id="math.add"' in text
     assert 'status="success"' in text
@@ -219,8 +214,8 @@ def test_prometheus_export_error_none_does_not_propagate() -> None:
     propagate to callers. Exporting over an empty collector must return a
     string (empty exposition) without raising.
     """
-    exporter = PrometheusExporter(collector=MetricsCollector())
-    text = exporter.export()
+    collector = MetricsCollector()
+    text = render_prometheus_metrics(collector)
     assert isinstance(text, str)
 
 
@@ -231,8 +226,8 @@ def test_prometheus_export_returns_prometheus_text() -> None:
     Output must be a UTF-8-encodable string and, for populated collectors,
     carry the canonical HELP/TYPE comment lines.
     """
-    exporter = _exporter_with_one_counter()
-    text = exporter.export()
+    collector = _collector_with_one_counter()
+    text = render_prometheus_metrics(collector)
     assert isinstance(text, str)
     # Round-trips through UTF-8 without loss.
     assert text.encode("utf-8").decode("utf-8") == text
@@ -247,8 +242,8 @@ def test_prometheus_export_property_async_is_false() -> None:
     Spec ### Properties: async: false. `export()` MUST be a plain synchronous
     call returning a concrete str (not a coroutine / awaitable).
     """
-    exporter = _exporter_with_one_counter()
-    result = exporter.export()
+    collector = _collector_with_one_counter()
+    result = render_prometheus_metrics(collector)
     assert isinstance(result, str)
     assert not asyncio.iscoroutine(result)
     assert not asyncio.isfuture(result)
@@ -261,11 +256,11 @@ def test_prometheus_export_property_thread_safe() -> None:
     over a shared exporter via asyncio.gather; assert no exception is raised
     and every result is a consistent, identical snapshot string.
     """
-    exporter = _exporter_with_one_counter()
+    collector = _collector_with_one_counter()
 
     async def do_export() -> str:
         await asyncio.sleep(0)
-        return exporter.export()
+        return render_prometheus_metrics(collector)
 
     async def run() -> list[str]:
         return await asyncio.gather(*[do_export() for _ in range(12)])
@@ -288,10 +283,9 @@ def test_prometheus_export_property_pure_reads_live_state() -> None:
     """
     collector = MetricsCollector()
     collector.increment_calls("math.add", "success")
-    exporter = PrometheusExporter(collector=collector)
 
     before = collector.snapshot()
-    first = exporter.export()
+    first = render_prometheus_metrics(collector)
     after = collector.snapshot()
     # export() is a query: it does not mutate collector state.
     assert before == after
@@ -299,7 +293,7 @@ def test_prometheus_export_property_pure_reads_live_state() -> None:
 
     # Live-state coupling: a new module appears on the next export.
     collector.increment_calls("math.sub", "success")
-    second = exporter.export()
+    second = render_prometheus_metrics(collector)
     assert 'module_id="math.sub"' in second
     assert 'module_id="math.sub"' not in first
 
@@ -311,8 +305,8 @@ def test_prometheus_export_property_idempotent() -> None:
     (unchanged) collector state MUST produce identical output and leave the
     observable collector state identical.
     """
-    exporter = _exporter_with_one_counter()
-    first = exporter.export()
-    second = exporter.export()
+    collector = _collector_with_one_counter()
+    first = render_prometheus_metrics(collector)
+    second = render_prometheus_metrics(collector)
     assert first == second
     assert first != ""

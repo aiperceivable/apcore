@@ -12,6 +12,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from apcore.approval import AutoApproveHandler
 from apcore.client import APCore
 from apcore.config import Config
 from apcore.errors import InvalidInputError, ModuleDisabledError, ModuleError, ModuleNotFoundError, ReloadFailedError
@@ -139,6 +140,7 @@ class TestUpdateConfigAppliesChange:
             **{"sys_modules.enabled": True, "sys_modules.events.enabled": True, "sys_modules.control.enabled": True}
         )
         client = APCore(config=config)
+        client.executor.set_approval_handler(AutoApproveHandler())
         release = asyncio.Event()
 
         class WaitForSignal:
@@ -747,6 +749,8 @@ class TestReloadModuleRealDiscoveryPath:
             config=Config({"sys_modules": {"enabled": True, "events": {"enabled": True}}}),
             registry=registry,
         )
+
+        client.executor.set_approval_handler(AutoApproveHandler())
 
         result = client.call(
             "system.control.reload_module",

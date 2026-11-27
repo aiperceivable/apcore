@@ -374,6 +374,7 @@ class ReloadModule:
     annotations = ModuleAnnotations(requires_approval=True, destructive=False, idempotent=False, open_world=False)
     input_schema: dict[str, Any] = {
         "type": "object",
+        "additionalProperties": False,
         "properties": {
             "module_id": {
                 "type": "string",
@@ -382,19 +383,6 @@ class ReloadModule:
             "path_filter": {
                 "type": "string",
                 "description": "Glob pattern for bulk reload (mutually exclusive with module_id)",
-            },
-            "reload_dependents": {
-                "type": "boolean",
-                "description": (
-                    "DEPRECATED (spec v1.51.0, D-121) — ignored, and removed at 2.0. "
-                    "Declared in all three SDKs and implemented by none, so no caller "
-                    "could ever rely on it. Use an explicit `path_filter` that also "
-                    "matches the dependents. At 2.0 this field is REMOVED and, because "
-                    "this schema sets additionalProperties: false, passing it becomes a "
-                    "validation error rather than a silent no-op."
-                ),
-                "default": False,
-                "deprecated": True,
             },
             "reason": {"type": "string", "description": "Audit reason for the reload"},
             "lifecycle": {
@@ -476,44 +464,11 @@ class ReloadModule:
         self._registry = registry
         self._emitter = event_emitter
         self._audit_store = audit_store
-        self._reload_dependents_warned = False
-
-    # Once per INSTANCE, not per process. `reload` is called by hot-reload loops
-    # and watchers, so an advisory whose volume is proportional to traffic is one
-    # operators learn to filter out — the cadence reasoning D-89 settled. Per
-    # instance rather than per process for the reason D-90's notice is per token:
-    # a process-wide one-shot tells the first caller and leaves every later one
-    # to discover it in production.
-    def _warn_reload_dependents(self, inputs: dict[str, Any]) -> None:
-        """Warn once that ``reload_dependents`` is ignored and will be removed (D-121).
-
-        The field was declared in all three SDKs' input schemas and read by
-        none — a spec MUST that no implementation satisfied, which is the
-        §9.1.3 "declared surface reaches no mechanism" shape applied to a module
-        input field. Three independent implementations skipping it is the
-        evidence the maintainer decision rests on.
-
-        Deprecated rather than removed now, because the input schema sets
-        ``additionalProperties: false``: at 2.0 the same call stops being a
-        silent no-op and becomes a validation error, so a caller passing it
-        today needs a release in which they are told.
-        """
-        if not inputs.get("reload_dependents"):
-            return
-        if self._reload_dependents_warned:
-            return
-        self._reload_dependents_warned = True
-        logger.warning(
-            "system.control.reload: 'reload_dependents' is ignored and will be removed at 2.0 "
-            "(spec D-121). No SDK has ever implemented it. Use a 'path_filter' that also matches "
-            "the dependents; after removal this field becomes a validation error, not a no-op."
-        )
 
     def execute(self, inputs: dict[str, Any], context: Any) -> dict[str, Any]:
         """Reload one or more modules.
 
         Raises ModuleReloadConflictError if both module_id and path_filter are given.
-        ``reload_dependents`` is accepted and ignored — see :meth:`_warn_reload_dependents`.
         """
         if "lifecycle" in inputs:
             try:
@@ -526,7 +481,6 @@ class ReloadModule:
             return result(operation._join_blocking())
         module_id: Any = inputs.get("module_id")
         path_filter: Any = inputs.get("path_filter")
-        self._warn_reload_dependents(inputs)
         reason = self._validate_reason(inputs)
 
         if module_id is not None and path_filter is not None:
@@ -558,7 +512,6 @@ class ReloadModule:
     def _start_managed(
         self, inputs: dict[str, Any], context: Any
     ) -> tuple[LifecycleOperation, Callable[[LifecycleReport], dict[str, Any]]]:
-        self._warn_reload_dependents(inputs)
         reason = self._validate_reason(inputs)
         module_id, path_filter = inputs.get("module_id"), inputs.get("path_filter")
         if module_id is not None and path_filter is not None:

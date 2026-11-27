@@ -28,6 +28,7 @@ from typing import Any
 
 import pytest
 
+from apcore.approval import AutoApproveHandler
 from apcore.client import APCore, _CallbackSubscriber
 from apcore.config import Config
 from apcore.context import Context
@@ -652,6 +653,7 @@ def test_disable_input_reason_default() -> None:
     module disabled (enabled=False). reason defaults when omitted.
     """
     client = APCore(config=_sys_config())
+    client.executor.set_approval_handler(AutoApproveHandler())
 
     @client.module(id="risky.module", description="A risky module")
     def risky() -> dict:
@@ -670,6 +672,7 @@ def test_disable_property_idempotent_true() -> None:
     disabled (enabled stays False).
     """
     client = APCore(config=_sys_config())
+    client.executor.set_approval_handler(AutoApproveHandler())
 
     @client.module(id="risky.dup", description="risky")
     def risky() -> dict:
@@ -705,6 +708,7 @@ def test_enable_input_reason_default() -> None:
     enable() returns a result dict reporting the module enabled (enabled=True).
     """
     client = APCore(config=_sys_config())
+    client.executor.set_approval_handler(AutoApproveHandler())
 
     @client.module(id="risky.enable", description="risky")
     def risky() -> dict:
@@ -724,6 +728,7 @@ def test_enable_property_idempotent_true() -> None:
     True).
     """
     client = APCore(config=_sys_config())
+    client.executor.set_approval_handler(AutoApproveHandler())
 
     @client.module(id="risky.reenable", description="risky")
     def risky() -> dict:

@@ -7,19 +7,16 @@ Supports sync, async, and streaming execution modes.
 
 from __future__ import annotations
 
-import asyncio
-import atexit
 import inspect
 import logging
 import threading
 import time
-import weakref
 from collections.abc import AsyncGenerator, AsyncIterator
-from concurrent.futures import Future
 from contextlib import AsyncExitStack, aclosing
 from copy import copy, deepcopy
 from typing import TYPE_CHECKING, Any, Callable
 
+from apcore._sync_bridge import _SyncBridge
 from apcore.acl import ACL
 from apcore.approval import ApprovalHandler
 from apcore.builtin_steps import BuiltinContextCreation, BuiltinModuleLookup, _is_idempotent
@@ -69,6 +66,7 @@ from apcore.pipeline import (
     PipelineTrace,
     StrategyInfo,
     StrategyNotFoundError,
+    _any_match,
 )
 from apcore.registry import MAX_MODULE_ID_LENGTH, MODULE_ID_PATTERN, Registry
 from apcore.streaming import StreamExecution, _StreamObservation
@@ -158,16 +156,6 @@ _SYNC_BRIDGE_GRACE_SECONDS = 1.0
 def _validate_bridge_timeout(timeout_ms: int | None) -> None:
     if timeout_ms is not None and (type(timeout_ms) is not int or not 0 <= timeout_ms <= threading.TIMEOUT_MAX * 1000):
         raise InvalidInputError(message="Sync bridge timeout must be a non-negative integer in milliseconds")
-
-
-def _close_if_alive(ref: "weakref.ref[Executor]") -> None:
-    """atexit callback: close() the Executor if its weakref is still live."""
-    obj = ref()
-    if obj is not None:
-        try:
-            obj.close()
-        except Exception:  # pragma: no cover — atexit best-effort
-            _logger.warning("atexit Executor.close() failed", exc_info=True)
 
 
 def _json_type_name(value: Any) -> str:
@@ -424,18 +412,7 @@ class Executor:
                 message=f"Negative default_timeout: {self._default_timeout}",
             )
 
-        # Cached event loop for sync call() to avoid asyncio.run() overhead.
-        # Callers that create many short-lived Executors should call
-        # close() (or use the `async with` context-manager form) so the loop
-        # is released deterministically rather than waiting for the GC finalizer.
-        self._sync_loop: asyncio.AbstractEventLoop | None = None
-        self._sync_loop_lock = threading.Lock()
-        self._sync_loop_in_use = False
-
-        # Best-effort cleanup at interpreter shutdown for callers that never
-        # call close(). Uses a weakref so the atexit callback does not itself
-        # keep the Executor alive past normal refcount-driven GC.
-        atexit.register(_close_if_alive, weakref.ref(self))
+        self._sync_bridge = _SyncBridge()
 
     @classmethod
     def from_registry(
@@ -606,7 +583,7 @@ class Executor:
         of the running strategy.
 
         Args:
-            policy: The ExecutionPolicy to apply, or None to remove it.
+            policy: The ExecutionPolicy to apply, or None to restore the defaults.
         """
         from apcore.builtin_steps import BuiltinApprovalGate
 
@@ -637,18 +614,12 @@ class Executor:
         return self._middleware_manager.remove(middleware)
 
     def close(self) -> None:
-        """Release the cached sync event loop, if any.
+        """Release synchronous call resources.
 
-        Safe to call multiple times. After ``close()``, a subsequent sync
-        ``call()`` will lazily create a fresh loop — this method is the
-        explicit teardown hook for short-lived Executors. An in-flight call
-        releases its loop when it finishes.
+        Safe to call multiple times. Later calls create new loops and workers
+        as needed. In-flight calls release their resources when they finish.
         """
-        with self._sync_loop_lock:
-            loop = self._sync_loop
-            self._sync_loop = None
-            if not self._sync_loop_in_use and loop is not None:
-                loop.close()
+        self._sync_bridge.close()
 
     def __enter__(self) -> Executor:
         return self
@@ -673,9 +644,9 @@ class Executor:
     ) -> dict[str, Any]:
         """Execute a module through the execution pipeline.
 
-        Sync wrapper around :meth:`call_async`. Routes through a cached event
-        loop when available. Concurrent sync callers and callers inside a
-        running loop use an independent thread bridge.
+        Sync wrapper around :meth:`call_async`. Each thread caches its own
+        loop for synchronous calls. A call made inside a running loop uses a
+        bounded worker pool instead.
 
         Args:
             module_id: The module to execute.
@@ -689,7 +660,7 @@ class Executor:
             The module output dict, possibly modified by middleware.
         """
         bridge_wait = self._sync_bridge_wait(context, timeout_ms)
-        return self._run_async_in_sync(
+        return self._sync_bridge.run(
             self.call_async(module_id, inputs, context, version_hint),
             module_id,
             bridge_wait,
@@ -729,43 +700,6 @@ class Executor:
         wait = remaining + _SYNC_BRIDGE_GRACE_SECONDS
         return wait if wait <= threading.TIMEOUT_MAX else None
 
-    def _run_async_in_sync(self, coro: Any, module_id: str, bridge_wait: float | None) -> Any:
-        """Execute a coroutine from sync context using a cached loop or thread bridge.
-
-        Centralizes the loop-detection logic shared by ``call``, ``validate``,
-        and ``call_with_trace``. Inside an existing event loop, dispatches to a
-        background thread; otherwise uses (and creates if needed) the cached
-        ``_sync_loop``.
-        """
-        try:
-            asyncio.get_running_loop()
-            inside_loop = True
-        except RuntimeError:
-            inside_loop = False
-
-        if inside_loop:
-            return self._run_in_new_thread(coro, module_id, bridge_wait)
-
-        # Reserve the cached loop before releasing the lock. Checking
-        # is_running() alone races with run_until_complete() on another thread.
-        with self._sync_loop_lock:
-            loop = None
-            if not self._sync_loop_in_use:
-                if self._sync_loop is None or self._sync_loop.is_closed():
-                    self._sync_loop = asyncio.new_event_loop()
-                loop = self._sync_loop
-                self._sync_loop_in_use = True
-
-        if loop is None:
-            return self._run_in_new_thread(coro, module_id, bridge_wait)
-        try:
-            return loop.run_until_complete(coro)
-        finally:
-            with self._sync_loop_lock:
-                self._sync_loop_in_use = False
-                if self._sync_loop is not loop:
-                    loop.close()
-
     def validate(
         self,
         module_id: str,
@@ -792,7 +726,7 @@ class Executor:
             PreflightResult with per-check status.
         """
         bridge_wait = self._sync_bridge_wait(context, timeout_ms)
-        return self._run_async_in_sync(
+        return self._sync_bridge.run(
             self.validate_async(module_id, inputs, context, version_hint=version_hint),
             module_id,
             bridge_wait,
@@ -916,27 +850,25 @@ class Executor:
                 requires_approval = annotations.requires_approval
             elif isinstance(annotations, dict):
                 requires_approval = bool(annotations.get("requires_approval", False))
-            if self._policy is not None:
-                # Policy overrides win over declared annotations (apcore#76),
-                # so preflight reports the same verdict the gate will enforce.
-                # The call site travels here too (PROTOCOL_SPEC §7.9.6), so a
-                # host-supplied policy reports in preflight the same verdict it
-                # will enforce at the gate.
-                # §7.9.6 rule 5 — strip the framework-owned approval token
-                # before resolution. `ExecutionPolicy.resolve` strips it too,
-                # which covers every door into the built-in rules; it cannot
-                # cover this one, because the surface the rule protects is a
-                # host policy that OVERRIDES `resolve` (the method's own
-                # docstring names that as how a host consults the call site),
-                # and such an override is entered before any strip inside the
-                # base implementation runs. The pipeline separates the incoming
-                # credential at entry, even when it skips Step 5.
-                requires_approval = self._policy.resolve(
-                    module_id,
-                    annotations,
-                    arguments=strip_approval_token(pipe_ctx.inputs),
-                    context=pipe_ctx.context,
-                ).needs_approval
+            from apcore.builtin_steps import BuiltinApprovalGate
+
+            policies = [
+                step.policy
+                for step in self._strategy.steps
+                if isinstance(step, BuiltinApprovalGate)
+                and (step.match_modules is None or _any_match(step.match_modules, module_id))
+            ]
+            if not policies and self._policy is not None:
+                policies = [self._policy]
+            if policies:
+                # Evaluate the same policy providers as the invocation gate,
+                # including policies attached to a prebuilt strategy. A host's
+                # custom resolver must never see the resume credential.
+                arguments = strip_approval_token(pipe_ctx.inputs)
+                requires_approval = any(
+                    policy.resolve(module_id, annotations, arguments=arguments, context=pipe_ctx.context).needs_approval
+                    for policy in policies
+                )
 
         # PROTOCOL_SPEC §7.9.5: report the GOVERNANCE-effective requirement —
         # the union of §6.9 rows 3-5 — and not merely the policy-effective one.
@@ -1089,58 +1021,6 @@ class Executor:
 
         # Fallback: return as ModuleError
         return ModuleError(code="PIPELINE_ABORT", message=explanation)
-
-    def _run_in_new_thread(self, coro: Any, module_id: str, timeout_s: float | None) -> Any:
-        """Wait for a worker loop independently of pipeline execution timeouts."""
-        result: Future[Any] = Future()
-        expired = threading.Event()
-        worker: tuple[asyncio.AbstractEventLoop, asyncio.Task[Any]] | None = None
-
-        def thread_target() -> None:
-            nonlocal worker
-            try:
-                loop = asyncio.new_event_loop()
-            except BaseException as exc:
-                coro.close()
-                result.set_exception(exc)
-                return
-            try:
-                task = loop.create_task(coro)
-                worker = loop, task
-                if expired.is_set():
-                    task.cancel()
-                result.set_result(loop.run_until_complete(task))
-            except BaseException as exc:
-                result.set_exception(exc)
-            finally:
-                # Let cooperative work drain after publishing the outcome.
-                pending = asyncio.all_tasks(loop)
-                if pending:
-                    loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
-                loop.close()
-
-        thread = threading.Thread(target=thread_target, daemon=True)
-        try:
-            thread.start()
-        except BaseException:
-            coro.close()
-            raise
-        try:
-            return result.result(timeout_s)
-        except TimeoutError:
-            if result.done() or timeout_s is None:
-                return result.result()
-
-        expired.set()
-        if worker is not None:
-            loop, task = worker
-            try:
-                loop.call_soon_threadsafe(task.cancel)
-            except RuntimeError:
-                # The worker finished between the wait and the cancellation.
-                pass
-        _logger.warning("Sync bridge wait expired for module %s", module_id)
-        raise ModuleTimeoutError(module_id=module_id, timeout_ms=round(timeout_s * 1000), retryable=False)
 
     async def call_async(
         self,
@@ -1691,7 +1571,7 @@ class Executor:
             A tuple of (result dict, PipelineTrace).
         """
         bridge_wait = self._sync_bridge_wait(context, timeout_ms, strategy)
-        return self._run_async_in_sync(
+        return self._sync_bridge.run(
             self.call_async_with_trace(module_id, inputs, context, version_hint=version_hint, strategy=strategy),
             module_id,
             bridge_wait,
@@ -1810,7 +1690,7 @@ class Executor:
             step
             for step in self._strategy.steps
             if isinstance(step, BuiltinApprovalGate)
-            and (step.handler is not None or (step.policy is not None and step.policy.strict))
+            and (step.handler is not None or step.policy.strict)
         ]
         ungated: list[str] = []
         for module_id in self._registry.list(visibility=["public", "hidden"]):
@@ -1818,7 +1698,7 @@ class Executor:
             if annotations is None or not annotations.requires_approval:
                 continue
             if not any(
-                gate.policy is None or gate.policy.resolve(module_id, annotations).needs_approval
+                gate.policy.resolve(module_id, annotations).needs_approval
                 for gate in enforcing_gates
             ):
                 ungated.append(module_id)
@@ -1887,9 +1767,7 @@ class Executor:
             acl_configured = self._acl is not None
         if approval_gates:
             handler_configured = any(gate.handler is not None for gate in approval_gates)
-            policy_strict = any(
-                gate.policy is not None and bool(getattr(gate.policy, "strict", False)) for gate in approval_gates
-            )
+            policy_strict = any(gate.policy.strict for gate in approval_gates)
         else:
             handler_configured = self._approval_handler is not None
             policy_strict = self._policy is not None and bool(getattr(self._policy, "strict", False))

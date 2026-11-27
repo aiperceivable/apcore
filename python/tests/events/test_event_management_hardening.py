@@ -94,22 +94,13 @@ def _make_mock_emitter() -> MagicMock:
 
 
 class TestSubscriberFactoryRegisteredType:
-    """A custom subscriber type registered via register_subscriber_type is
+    """A custom subscriber type registered in a host registry is
     instantiated when referenced by name in configuration."""
 
-    @pytest.fixture(autouse=True)
-    def _reset_registry(self) -> Any:
-        from apcore.sys_modules.registration import reset_subscriber_registry
-
-        reset_subscriber_registry()
-        yield
-        reset_subscriber_registry()
-
     def test_custom_slack_type_instantiated(self) -> None:
-        from apcore.sys_modules.registration import (
-            _create_subscriber,
-            register_subscriber_type,
-        )
+        from apcore.events import SubscriberRegistry
+
+        registry = SubscriberRegistry()
 
         case = _case("subscriber_factory_registered_type")
         params, expected = case["input"], case["expected"]
@@ -123,10 +114,10 @@ class TestSubscriberFactoryRegisteredType:
             sub.on_event = AsyncMock()
             subscribers[type_name] = sub
             factories[type_name] = MagicMock(return_value=sub)
-            register_subscriber_type(type_name, factories[type_name])
+            registry.register(type_name, factories[type_name])
 
         sub_cfg: dict[str, Any] = dict(params["subscriber_config"])
-        subscriber = _create_subscriber(sub_cfg)
+        subscriber = registry.create(sub_cfg)
 
         assert (subscriber is not None) is expected["subscriber_created"], (
             f"[{case['id']}] fixture declares subscriber_created="
@@ -153,12 +144,8 @@ def _assert_builtin_subscriber_case(case_id: str) -> None:
     chosen itself, which is true of an SDK whose built-in registry is empty for
     every OTHER type the fixture might declare.
     """
+    from apcore.events import SubscriberRegistry
     from apcore.events.subscribers import FileSubscriber, StdoutSubscriber
-    from apcore.sys_modules.registration import (
-        _BUILTIN_FACTORIES,
-        _create_subscriber,
-        reset_subscriber_registry,
-    )
 
     classes: dict[str, type] = {"stdout": StdoutSubscriber, "file": FileSubscriber}
 
@@ -167,18 +154,20 @@ def _assert_builtin_subscriber_case(case_id: str) -> None:
     sub_cfg: dict[str, Any] = dict(params["subscriber_config"])
     expected_class = dispatch_or_fail(FIXTURE, case_id, expected["subscriber_type"], classes, "subscriber type")
 
-    # No register_subscriber_type call anywhere in this test: the registry is
-    # reset to built-ins only, which is what "requires_registration: false"
-    # asserts.
-    reset_subscriber_registry()
-    requires_registration = sub_cfg["type"] not in _BUILTIN_FACTORIES
+    # The fresh registry has only its built-in factories.
+    try:
+        subscriber = SubscriberRegistry().create(sub_cfg)
+    except ValueError as exc:
+        if "Unknown subscriber type" not in str(exc):
+            raise
+        subscriber = None
+    requires_registration = subscriber is None
     assert requires_registration is expected["requires_registration"], (
         f"[{case_id}] fixture declares requires_registration="
         f"{expected['requires_registration']}; {sub_cfg['type']!r} "
         f"{'is not' if requires_registration else 'is'} a built-in type"
     )
 
-    subscriber = _create_subscriber(sub_cfg)
     assert (subscriber is not None) is expected["subscriber_created"], (
         f"[{case_id}] fixture declares subscriber_created=" f"{expected['subscriber_created']}, got {subscriber!r}"
     )
