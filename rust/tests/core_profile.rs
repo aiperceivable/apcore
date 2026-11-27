@@ -189,6 +189,6 @@ fn a_custom_strategy_without_the_builtin_gate_reports_that_boundary() {
         build_minimal_strategy(),
     );
     let state = executor.governance_state();
-    assert!(state.policy_strict);
+    assert!(!state.policy_strict);
     assert!(!state.builtin_approval_gate_wired);
 }

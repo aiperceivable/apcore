@@ -2377,7 +2377,11 @@ impl Executor {
         // cannot drift from the gate.
         let acl_configured = self.acl.is_some();
         let approval_handler_configured = self.approval_handler.is_some();
-        let policy_strict = ExecutionPolicy::effective(self.policy.as_deref()).strict;
+        let policy_strict = if builtin_approval_gate_wired {
+            ExecutionPolicy::effective(self.policy.as_deref()).strict
+        } else {
+            self.policy.as_deref().is_some_and(|policy| policy.strict)
+        };
 
         // PROTOCOL_SPEC 6.6.5.1. The approval conjunct carries
         // `all_control_modules_require_approval` because `approval_gate` is
