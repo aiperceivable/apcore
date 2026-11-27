@@ -5,19 +5,34 @@
 import type { Config } from '../config.js';
 import { getDefault } from '../config-defaults.js';
 import type { Context } from '../context.js';
-import type { ApCoreEvent, EventEmitter } from '../events/emitter.js';
+import { createEvent, type ApCoreEvent, type EventEmitter } from '../events/emitter.js';
+import type { CancelToken } from '../cancel.js';
 import {
   DependencyVersionMismatchError,
   DuplicateModuleIdError,
   ErrorCodes,
   InvalidInputError,
-  type ModuleError,
+  ModuleError,
   ModuleLoadError,
   ModuleNotFoundError,
+  ModuleReloadConflictError,
   StreamingInterfaceError,
 } from '../errors.js';
+import {
+  type DrainAbortReason,
+  lifecycleCallback,
+  LifecycleCompletion,
+  lifecycleError,
+  LifecycleProgress,
+  type LifecycleOperation,
+  type ModuleLifecycleProgress,
+  type ShutdownOptions,
+  type UnregisterOptions,
+  type WatchOptions,
+  validateLifecycleOptions,
+} from '../lifecycle.js';
 import { isStreamingModule } from '../streaming.js';
-import type { ModuleAnnotations, ModuleExample } from '../module.js';
+import type { Module, ModuleAnnotations, ModuleExample } from '../module.js';
 import { detectIdConflicts } from './conflicts.js';
 import { resolveDependencies } from './dependencies.js';
 import { resolveEntryPoint } from './entry-point.js';
@@ -29,6 +44,7 @@ import { toStrictSchema } from '../schema/strict.js';
 import type { DependencyInfo, DiscoveredModule, ModuleDescriptor } from './types.js';
 import { validateModule } from './validation.js';
 import { matchesVersionHint } from './version.js';
+import { type ManagedDrainPolicy, runManagedDrain } from './managed-drain.js';
 
 /** @internal Registration state used to compensate for a failed reload. */
 export interface RegistrationSnapshot {
@@ -36,6 +52,7 @@ export interface RegistrationSnapshot {
   readonly module: unknown;
   readonly metadata: Record<string, unknown>;
   readonly sourceFile: string | undefined;
+  readonly generation: ExecutionGeneration;
 }
 
 type RegistryFilesystem = {
@@ -59,6 +76,7 @@ interface DiscoveredRegistration {
 interface ExecutionGeneration {
   references: number;
   readonly drainWaiters: Set<() => void>;
+  executions?: Map<CancelToken, number>;
 }
 
 interface ModuleRemoval {
@@ -66,9 +84,36 @@ interface ModuleRemoval {
   readonly completion: Promise<boolean>;
   readonly module: unknown;
   readonly sourceFile: string | undefined;
+  readonly progress: ModuleLifecycleProgress;
+  readonly setDrainDeadline?: (timeoutMs: number) => void;
 }
 
-type BeforePublish = (moduleId: string, module: unknown) => void;
+interface RemovalOptions {
+  readonly forceAfterMs?: number;
+  readonly managed?: ManagedDrainPolicy;
+  readonly progress?: ModuleLifecycleProgress;
+  readonly owner?: LifecycleProgress;
+  readonly context?: Context | null;
+  readonly beforeUnload?: (module: unknown) => void | Promise<void>;
+}
+
+interface RegistryShutdown {
+  readonly lifecycle: LifecycleProgress;
+  readonly completion: Promise<void>;
+  readonly timeoutMs: number;
+  readonly force: boolean;
+  readonly policy?: ManagedDrainPolicy;
+  readonly rows: ReadonlyMap<ExecutionGeneration, ModuleLifecycleProgress>;
+}
+
+type BeforePublish = (moduleId: string, module: unknown) => void | Promise<void>;
+
+interface ReloadReservation {
+  readonly moduleId: string;
+  readonly sourceFile?: string;
+  readonly settled: LifecycleCompletion;
+  publishedVersion?: string;
+}
 
 let registryFilesystem: RegistryFilesystem | null = null;
 
@@ -358,7 +403,7 @@ export class Registry {
   private _config: Config | null;
   private _watchers?: Array<{ close(): void }>;
   private _watchGeneration = 0;
-  private _debounceTimers?: Map<string, number>;
+  private _debounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private _customDiscoverer: Discoverer | null = null;
   private _customValidator: ModuleValidator | null = null;
   private _idMapPath: string | null = null;
@@ -389,7 +434,9 @@ export class Registry {
   private readonly _manualReferences = new Map<string, Map<ExecutionGeneration, number>>();
   private readonly _removals = new Map<string, Set<ModuleRemoval>>();
   private _draining: Set<string> = new Set();
-  private _shutdown: Promise<void> | undefined;
+  private readonly _managedReloads = new Map<string, ReloadReservation>();
+  private readonly _unavailable = new Set<string>();
+  private _shutdown: RegistryShutdown | undefined;
 
   /**
    * In-flight async registrations: modules whose async onLoad has not yet
@@ -476,16 +523,16 @@ export class Registry {
 
   discover(options?: { reloadFiles?: readonly string[] }): Promise<number>;
   /** @internal */
-  discover(options?: { reloadFiles?: readonly string[]; beforePublish?: BeforePublish }): Promise<number>;
-  async discover(options?: { reloadFiles?: readonly string[]; beforePublish?: BeforePublish }): Promise<number> {
+  discover(options?: { reloadFiles?: readonly string[]; beforePublish?: BeforePublish; managed?: ReloadReservation }): Promise<number>;
+  async discover(options?: { reloadFiles?: readonly string[]; beforePublish?: BeforePublish; managed?: ReloadReservation }): Promise<number> {
     this._assertOpen();
     if (this._customDiscoverer !== null) {
-      return this._discoverCustom(options?.beforePublish);
+      return this._discoverCustom(options?.beforePublish, options?.managed);
     }
-    return this._discoverDefault(new Set(options?.reloadFiles), options?.beforePublish);
+    return this._discoverDefault(new Set(options?.reloadFiles), options?.beforePublish, options?.managed);
   }
 
-  private async _discoverCustom(beforePublish?: BeforePublish): Promise<number> {
+  private async _discoverCustom(beforePublish?: BeforePublish, managed?: ReloadReservation): Promise<number> {
     const rootPaths = this._extensionRoots.map((r) => r['root'] as string);
     const customModules = await this._customDiscoverer!.discover(rootPaths);
 
@@ -506,6 +553,7 @@ export class Registry {
       }
 
       const { moduleId, module: mod } = entry as { moduleId?: unknown; module?: unknown };
+      if (managed && moduleId !== managed.moduleId) continue;
       if (typeof moduleId !== 'string' || mod === undefined) {
         console.warn(
           `[apcore:registry] Malformed entry from custom discoverer (missing 'moduleId' string or 'module'); skipping.`,
@@ -552,10 +600,11 @@ export class Registry {
 
       try {
         this._assertModuleStructure(moduleId, mod);
-        this._assertNoIdConflict(moduleId);
-        await this._registerWithOnLoad(moduleId, mod, null, null, { beforePublish });
+        this._assertNoIdConflict(moduleId, RESERVED_WORDS, managed);
+        await this._registerWithOnLoad(moduleId, mod, null, null, { beforePublish, managed });
         count++;
       } catch (e) {
+        if (managed) throw e;
         console.warn(`[apcore:registry] Failed to register custom-discovered module '${moduleId}':`, e);
       }
     }
@@ -577,7 +626,7 @@ export class Registry {
    *   8. _resolveLoadOrder + _registerInOrder
    *                              — topological sort then register.
    */
-  private async _discoverDefault(reloadFiles: ReadonlySet<string>, beforePublish?: BeforePublish): Promise<number> {
+  private async _discoverDefault(reloadFiles: ReadonlySet<string>, beforePublish?: BeforePublish, managed?: ReloadReservation): Promise<number> {
     await this._ensureIdMap();
     const discovered = await this._scanRoots();
     await this._applyIdMapOverrides(discovered);
@@ -588,7 +637,7 @@ export class Registry {
     const validModules = await this._validateAll(resolvedModules);
     const filteredModules = this._filterIdConflicts(validModules);
     const loadOrder = this._resolveLoadOrder(filteredModules);
-    return this._registerInOrder(loadOrder, filteredModules, beforePublish);
+    return this._registerInOrder(loadOrder, filteredModules, beforePublish, managed);
   }
 
   private async _scanRoots(): Promise<import('./types.js').DiscoveredModule[]> {
@@ -838,9 +887,11 @@ export class Registry {
     loadOrder: string[],
     validModules: Map<string, DiscoveredRegistration>,
     beforePublish?: BeforePublish,
+    managed?: ReloadReservation,
   ): Promise<number> {
     let count = 0;
     for (const moduleId of loadOrder) {
+      if (managed && moduleId !== managed.moduleId) continue;
       const candidate = validModules.get(moduleId);
       if (candidate === undefined) continue;
       const { module, metadata, sourceFile } = candidate;
@@ -849,7 +900,7 @@ export class Registry {
         const dependencyFailure = () => this._discoveryDependencyError(moduleId, dependencies);
         const error = dependencyFailure();
         if (error) {
-          this._emitModuleLoadFailed(moduleId, error);
+          if (!managed) this._emitModuleLoadFailed(moduleId, error);
           throw error;
         }
         for (const dep of dependencies) {
@@ -858,10 +909,11 @@ export class Registry {
           }
         }
         this._assertModuleStructure(moduleId, module);
-        this._assertNoIdConflict(moduleId);
-        await this._registerWithOnLoad(moduleId, module, null, metadata, { sourceFile, dependencyFailure, beforePublish });
+        this._assertNoIdConflict(moduleId, RESERVED_WORDS, managed);
+        await this._registerWithOnLoad(moduleId, module, null, metadata, { sourceFile, dependencyFailure, beforePublish, managed });
         count++;
       } catch (error) {
+        if (managed) throw error;
         console.warn(`[apcore:registry] Failed to load ${moduleId}, skipping:`, error);
       }
     }
@@ -989,7 +1041,9 @@ export class Registry {
    * and a `duplicate_id` conflict is reported as DuplicateModuleIdError while
    * every other error-severity conflict is InvalidInputError.
    */
-  private _assertNoIdConflict(moduleId: string, reservedWords: ReadonlySet<string> = RESERVED_WORDS): void {
+  private _assertNoIdConflict(moduleId: string, reservedWords: ReadonlySet<string> = RESERVED_WORDS, managed?: ReloadReservation): void {
+    const reservation = this._managedReloads.get(moduleId);
+    if (reservation !== undefined && reservation !== managed) throw new DuplicateModuleIdError(moduleId);
     const conflict = detectIdConflicts(
       moduleId,
       new Set([...this._modules.keys(), ...this._inFlight.keys()]),
@@ -1027,29 +1081,31 @@ export class Registry {
       mergedMetadata?: Record<string, unknown>;
       dependencyFailure?: () => ModuleError | null;
       beforePublish?: BeforePublish;
+      managed?: ReloadReservation;
     },
     ephemeral?: boolean,
   ): Promise<void> {
     this._assertOpen();
     for (const removal of this._removals.get(moduleId) ?? []) {
-      if (removal.module === module) throw new DuplicateModuleIdError(moduleId);
+      if (removal.module === module && removal.progress.phase !== 'done') throw new DuplicateModuleIdError(moduleId);
     }
     const overrides: Record<string, unknown> = { ...(metadata ?? {}) };
     if (version != null) overrides['version'] = version;
     const mod = module as Record<string, unknown>;
     const merged = options?.mergedMetadata ?? mergeModuleMetadata(mod, overrides);
 
-    const publish = (): void => {
-      const error = options?.dependencyFailure?.();
-      if (error) {
-        this._inFlight.delete(moduleId);
-        if (typeof onLoad === 'function') void this._runOnUnload(moduleId, module);
-        this._emitModuleLoadFailed(moduleId, error);
-        throw error;
-      }
-      if (options?.beforePublish) {
-        if (!this._inFlight.has(moduleId)) this._inFlight.set(moduleId, Promise.resolve());
-        options.beforePublish(moduleId, module);
+    const onLoad = mod['onLoad'];
+    const assertPublicationOpen = (): void => {
+      if (options?.managed || this._shutdown?.force === false) this._assertOpen();
+    };
+    const failLoad = (error: unknown): void => {
+      this._inFlight.delete(moduleId);
+      if (!options?.managed) this._emitModuleLoadFailed(moduleId, error);
+    };
+    const commit = (): void => {
+      assertPublicationOpen();
+      if (options?.managed && this._managedReloads.get(moduleId) !== options.managed) {
+        throw new ModuleReloadConflictError();
       }
       this._inFlight.delete(moduleId);
       this._modules.set(moduleId, module);
@@ -1057,24 +1113,51 @@ export class Registry {
       this._moduleMeta.set(moduleId, merged);
       this._lowercaseMap.set(moduleId.toLowerCase(), moduleId);
       if (options?.sourceFile !== undefined) this._sourceFiles.set(moduleId, options.sourceFile);
+      if (options?.managed) options.managed.publishedVersion = String(merged['version'] ?? '1.0.0');
       this._triggerEvent(REGISTRY_EVENTS.REGISTER, moduleId, module);
       if (ephemeral) {
         this._emitEphemeralAudit('apcore.registry.module_registered', moduleId, options?.context ?? null);
       }
     };
+    const failPublication = (error: unknown): never | Promise<void> => {
+      const fail = (): never => {
+        failLoad(error);
+        throw error;
+      };
+      const cleanup = typeof onLoad === 'function' || options?.managed && options.beforePublish
+        ? lifecycleCallback([this], () => this._runOnUnload(moduleId, module)) : undefined;
+      if (cleanup === undefined) return fail();
+      const failedPublication = cleanup.then(fail);
+      this._inFlight.set(moduleId, failedPublication);
+      return failedPublication;
+    };
+    const publish = (): void | Promise<void> => {
+      try {
+        assertPublicationOpen();
+        const error = options?.dependencyFailure?.();
+        if (error) throw error;
+        if (options?.beforePublish) {
+          if (!this._inFlight.has(moduleId)) this._inFlight.set(moduleId, Promise.resolve());
+          const before = lifecycleCallback([this], () => options.beforePublish!(moduleId, module));
+          if (before !== undefined) {
+            const publication = Promise.resolve(before).then(commit).catch(failPublication);
+            this._inFlight.set(moduleId, publication);
+            return publication;
+          }
+        }
+        commit();
+      } catch (error) {
+        return failPublication(error);
+      }
+    };
 
-    const onLoad = mod['onLoad'];
     if (typeof onLoad === 'function') {
       this._inFlight.set(moduleId, Promise.resolve());
-      const fail = (error: unknown): void => {
-        this._inFlight.delete(moduleId);
-        this._emitModuleLoadFailed(moduleId, error);
-      };
       try {
-        const result: unknown = onLoad.call(module);
+        const result: unknown = lifecycleCallback([this], () => onLoad.call(module));
         if (result != null && typeof (result as PromiseLike<unknown>).then === 'function') {
           const promise = Promise.resolve(result).then(publish, (error: unknown) => {
-            fail(error);
+            failLoad(error);
             throw error;
           });
           this._inFlight.set(moduleId, promise);
@@ -1082,7 +1165,7 @@ export class Registry {
           return promise;
         }
       } catch (error) {
-        fail(error);
+        failLoad(error);
         if (options?.throwSyncLoadFailure) throw error;
         const rejected = Promise.reject(error);
         void rejected.catch(() => {});
@@ -1090,8 +1173,7 @@ export class Registry {
       }
     }
 
-    publish();
-    return Promise.resolve();
+    return publish() ?? Promise.resolve();
   }
 
   /**
@@ -1099,9 +1181,10 @@ export class Registry {
    * waits for them to finish. Use safeUnregister to await cleanup.
    */
   unregister(moduleId: string, options?: { context?: Context | null }): boolean {
+    if (this._shutdown?.force === false || this._managedReloads.has(moduleId)) return false;
     const generation = this._executionGenerations.get(moduleId);
     if (generation === undefined) return false;
-    this._startRemoval(moduleId, generation, 5000, options?.context);
+    this._startRemoval(moduleId, generation, { context: options?.context });
     return true;
   }
 
@@ -1114,6 +1197,56 @@ export class Registry {
     return outcomes;
   }
 
+  /** Start an ordered batch that waits for each owned generation to finish. */
+  startUnregisterMany(moduleIds: Iterable<string>, options: UnregisterOptions = {}): LifecycleOperation {
+    validateLifecycleOptions(options, 'operationTimeoutMs');
+    this._assertOpen();
+    if (typeof moduleIds === 'string' || moduleIds == null || typeof moduleIds[Symbol.iterator] !== 'function') {
+      throw new InvalidInputError('moduleIds must be an iterable of module IDs');
+    }
+    const ids = Array.from(moduleIds);
+    for (const id of ids) validateModuleId(id, true);
+    this._assertOpen();
+    const generations = ids.map(id => this._executionGenerations.get(id) ?? this._latestRemoval(id)?.generation);
+    const rows = ids.map((moduleId): ModuleLifecycleProgress => ({ moduleId, phase: 'pending' }));
+    const lifecycle = new LifecycleProgress('unregister_many', rows, []);
+    const { drainTimeoutMs = 5_000, operationTimeoutMs, onDrainTimeout = 'continue_waiting', cancelGraceMs } = options;
+    const policy: ManagedDrainPolicy = { timeoutMs: drainTimeoutMs, action: onDrainTimeout, cancelGraceMs };
+    const deadline = operationTimeoutMs === undefined ? Infinity : performance.now() + operationTimeoutMs;
+    if (rows.length === 0) lifecycle.finish();
+    else void lifecycle.run(() => this._runUnregisterBatch(lifecycle, generations, policy, deadline));
+    return lifecycle.operation;
+  }
+
+  private async _runUnregisterBatch(
+    lifecycle: LifecycleProgress,
+    generations: readonly (ExecutionGeneration | undefined)[],
+    policy: ManagedDrainPolicy,
+    deadline: number,
+  ): Promise<void> {
+    for (const [index, row] of lifecycle.report.modules.entries()) {
+      const remaining = deadline - performance.now();
+      if (remaining <= 0) {
+        lifecycle.report.stopReason = 'operation_deadline';
+        row.phase = 'done';
+        row.outcome = 'not_started';
+        continue;
+      }
+      const generation = generations[index];
+      const id = row.moduleId;
+      if (generation && generation === this._executionGenerations.get(id) && !this._shutdown && !this._managedReloads.has(id)) {
+        await this._startRemoval(id, generation, {
+          managed: { ...policy, timeoutMs: Math.min(policy.timeoutMs, Math.ceil(remaining)) }, progress: row, owner: lifecycle,
+        }).completion;
+      } else {
+        row.phase = 'done';
+        row.outcome = generation && (generation === this._executionGenerations.get(id) ||
+          Array.from(this._removals.get(id) ?? []).some(removal => removal.generation === generation))
+          ? 'already_removing' : 'absent';
+      }
+    }
+  }
+
   private _detach(moduleId: string): unknown {
     const module = this._modules.get(moduleId);
     this._modules.delete(moduleId);
@@ -1123,6 +1256,7 @@ export class Registry {
     this._lowercaseMap.delete(moduleId.toLowerCase());
 
     this._draining.delete(moduleId);
+    this._unavailable.delete(moduleId);
     this._executionGenerations.delete(moduleId);
     return module;
   }
@@ -1138,9 +1272,10 @@ export class Registry {
     }
   }
 
-  private _runOnUnload(moduleId: string, module: unknown): Promise<void> | undefined {
+  private _runOnUnload(moduleId: string, module: unknown, onError?: (error: unknown) => void): Promise<void> | undefined {
     const warnUnloadFailure = (error: unknown): void => {
       console.warn(`[apcore:registry] onUnload failed for ${moduleId}:`, error);
+      onError?.(error);
     };
     try {
       const onUnload = (module as Record<string, unknown>)['onUnload'];
@@ -1573,7 +1708,7 @@ export class Registry {
 
   private _triggerEvent(event: string, moduleId: string, module: unknown): void {
     const callbacks = this._callbacks.get(event) ?? [];
-    for (const cb of callbacks) {
+    for (const cb of [...callbacks]) {
       try {
         cb(moduleId, module);
       } catch (e) {
@@ -1605,19 +1740,19 @@ export class Registry {
    * If your application needs Python-style hot-reload semantics, listen for
    * `'file_changed'` and re-discover or re-import explicitly.
    */
-  async watch(): Promise<void> {
+  async watch(options?: WatchOptions): Promise<void> {
     this._assertOpen();
+    if (options !== undefined) validateLifecycleOptions(options);
     if (this._watchers && this._watchers.length > 0) {
       return; // Already watching
     }
 
     const generation = this._watchGeneration;
+    const drainOptions = options === undefined ? undefined : { ...options };
     const { fs, path: nodePath } = requireRegistryFilesystem();
     const { join } = nodePath;
 
     this._watchers = [];
-    this._debounceTimers = new Map<string, number>();
-
     for (const root of this._extensionRoots) {
       const rootPath = typeof root === "string" ? root : (root as Record<string, unknown>).root as string;
       if (!rootPath) continue;
@@ -1629,10 +1764,10 @@ export class Registry {
           if (!filename.endsWith(".ts") && !filename.endsWith(".js")) return;
 
           const fullPath = join(watchedDir, filename);
-          const now = Date.now();
-          const last = this._debounceTimers?.get(fullPath) ?? 0;
-          if (now - last < 300) return;
-          this._debounceTimers?.set(fullPath, now);
+          if (this._debounceTimers.has(fullPath)) return;
+          const debounce = setTimeout(() => { this._debounceTimers.delete(fullPath); }, 300);
+          debounce.unref?.();
+          this._debounceTimers.set(fullPath, debounce);
 
           const handle = (p: Promise<void>): void => {
             p.catch((e: unknown) => {
@@ -1644,12 +1779,12 @@ export class Registry {
             // Could be create or delete
             try {
               fs.accessSync(fullPath);
-              handle(this._handleFileChange(fullPath));
+              handle(this._handleFileChange(fullPath, drainOptions));
             } catch {
-              handle(this._handleFileDeletion(fullPath));
+              handle(this._handleFileDeletion(fullPath, drainOptions));
             }
           } else {
-            handle(this._handleFileChange(fullPath));
+            handle(this._handleFileChange(fullPath, drainOptions));
           }
         });
         watcher.on('error', (error) => {
@@ -1676,14 +1811,15 @@ export class Registry {
       }
       this._watchers = [];
     }
-    this._debounceTimers = undefined;
+    for (const timer of this._debounceTimers.values()) clearTimeout(timer);
+    this._debounceTimers.clear();
   }
 
-  private async _handleFileChange(filePath: string): Promise<void> {
+  private async _handleFileChange(filePath: string, options?: WatchOptions): Promise<void> {
     const watchGeneration = this._watchGeneration;
     const { path: nodePath } = requireRegistryFilesystem();
     const { basename, extname } = nodePath;
-    const removal = this._unregisterWatchedFile(filePath);
+    const removal = this._unregisterWatchedFile(filePath, options);
     if (removal !== null) await removal.completion;
     if (this._watchGeneration !== watchGeneration) return;
 
@@ -1698,14 +1834,18 @@ export class Registry {
     );
   }
 
-  private async _handleFileDeletion(path: string): Promise<void> {
-    await this._unregisterWatchedFile(path)?.completion;
+  private async _handleFileDeletion(path: string, options?: WatchOptions): Promise<void> {
+    await this._unregisterWatchedFile(path, options)?.completion;
   }
 
-  private _unregisterWatchedFile(filePath: string): { moduleId: string; completion: Promise<unknown> } | null {
+  private _unregisterWatchedFile(filePath: string, options?: WatchOptions): { moduleId: string; completion: Promise<unknown> } | null {
+    for (const reservation of this._managedReloads.values()) {
+      if (reservation.sourceFile === filePath) return { moduleId: reservation.moduleId, completion: reservation.settled.wait() };
+    }
     for (const [moduleId, sourceFile] of this._sourceFiles) {
       if (sourceFile === filePath) {
-        return { moduleId, completion: this.safeUnregister(moduleId) };
+        const completion = options === undefined ? this.safeUnregister(moduleId) : this.startUnregisterMany([moduleId], options).wait();
+        return { moduleId, completion };
       }
     }
     for (const [moduleId, removals] of this._removals) {
@@ -1769,26 +1909,204 @@ export class Registry {
 
   /** @internal Capture the published registration before unloading its module. */
   snapshotRegistration(moduleId: string): RegistrationSnapshot | null {
-    if (!this._modules.has(moduleId)) return null;
+    const generation = this._executionGenerations.get(moduleId);
+    if (!generation) return null;
     return {
       moduleId,
       module: this._modules.get(moduleId),
       metadata: this.getModuleMetadata(moduleId),
       sourceFile: this._sourceFiles.get(moduleId),
+      generation,
     };
   }
 
   /** @internal Republish a previous registration after its load hook completes. */
-  async restoreRegistration(snapshot: RegistrationSnapshot, beforePublish?: BeforePublish): Promise<void> {
+  async restoreRegistration(snapshot: RegistrationSnapshot, beforePublish?: BeforePublish, managed?: ReloadReservation): Promise<void> {
     const { moduleId, module, metadata, sourceFile } = snapshot;
     validateModuleId(moduleId, true);
     this._assertModuleStructure(moduleId, module, false);
-    this._assertNoIdConflict(moduleId, new Set());
+    this._assertNoIdConflict(moduleId, new Set(), managed);
     await this._registerWithOnLoad(moduleId, module, null, null, {
       sourceFile,
       mergedMetadata: metadata,
       beforePublish,
+      managed,
     }, isEphemeralModuleId(moduleId));
+  }
+
+  /** @internal Legacy reload cannot take over a managed replacement. */
+  isManagedReloading(moduleId: string): boolean {
+    return this._managedReloads.has(moduleId);
+  }
+
+  /** @internal Run an opt-in reload against the selected registration only. */
+  async reloadManagedRegistration(
+    snapshot: RegistrationSnapshot,
+    policy: ManagedDrainPolicy,
+    owner: LifecycleProgress,
+    row: ModuleLifecycleProgress,
+    emitter: EventEmitter,
+  ): Promise<string | undefined> {
+    const { moduleId, generation, sourceFile } = snapshot;
+    const module = snapshot.module as Module;
+    if (this._shutdown || this._managedReloads.has(moduleId) || this._draining.has(moduleId) ||
+        this._executionGenerations.get(moduleId) !== generation) {
+      row.phase = 'done';
+      row.outcome = 'failed';
+      row.compensation = 'not_required';
+      row.error = lifecycleError(new ModuleReloadConflictError(), 'draining');
+      return;
+    }
+
+    const reservation: ReloadReservation = { moduleId, sourceFile, settled: new LifecycleCompletion() };
+    this._managedReloads.set(moduleId, reservation);
+    this._draining.add(moduleId);
+    try {
+      const { abort } = await this._runManagedDrain(module, generation, owner, row, policy, emitter);
+      if (abort) {
+        await this._recoverManagedReload(module, owner, row, abort, emitter);
+      } else if (this._shutdown) {
+        row.phase = 'done';
+        row.outcome = 'failed';
+        row.compensation = 'not_required';
+        row.error = lifecycleError(new ModuleReloadConflictError(), 'draining');
+      } else {
+        return await this._replaceManagedRegistration(snapshot, reservation, sourceFile, owner, row, emitter);
+      }
+    } finally {
+      this._managedReloads.delete(moduleId);
+      reservation.settled.settle();
+    }
+  }
+
+  private async _recoverManagedReload(
+    module: Module, owner: LifecycleProgress, row: ModuleLifecycleProgress, abortReason: DrainAbortReason, emitter: EventEmitter,
+  ): Promise<void> {
+    const { moduleId } = row;
+    row.phase = 'recovering';
+    row.abortReason = abortReason;
+    try {
+      if (typeof module.onDrain === 'function' && typeof module.onDrainAborted === 'function') {
+        row.activeHook = 'on_drain_aborted';
+        await lifecycleCallback([this, owner], () => module.onDrainAborted!({
+          operationId: owner.report.operationId, moduleId, signal: new AbortController().signal, abortReason,
+        }));
+      }
+      if (!this._shutdown) {
+        this._draining.delete(moduleId);
+        row.outcome = 'retained_ready';
+      }
+    } catch (error) {
+      row.error = lifecycleError(error, 'recovering');
+    } finally {
+      delete row.activeHook;
+    }
+    if (!row.outcome) {
+      this._unavailable.add(moduleId);
+      row.outcome = 'retained_unavailable';
+    }
+    row.phase = 'done';
+    row.compensation = 'not_required';
+    this._emitLifecycleEvent(emitter, 'module_drain_recovered', owner, row,
+      row.outcome === 'retained_ready' ? 'info' : 'error', { abort_reason: abortReason, outcome: row.outcome });
+  }
+
+  private async _replaceManagedRegistration(
+    snapshot: RegistrationSnapshot, reservation: ReloadReservation, sourceFile: string | undefined,
+    owner: LifecycleProgress, row: ModuleLifecycleProgress, emitter: EventEmitter,
+  ): Promise<string | undefined> {
+    const { moduleId, generation } = snapshot;
+    let state: Record<string, unknown> | null = null;
+    row.phase = 'unloading';
+    const removalProgress: ModuleLifecycleProgress = { moduleId, phase: 'unloading' };
+    await this._startRemoval(moduleId, generation, {
+      owner, progress: removalProgress,
+      beforeUnload: async module => {
+        const instance = module as Module;
+        if (!instance.onSuspend) return;
+        row.activeHook = 'on_suspend';
+        try { state = await instance.onSuspend(); } finally { delete row.activeHook; }
+      },
+    }).completion;
+    const beforePublish: BeforePublish = async (_, candidate) => {
+      const instance = candidate as Module;
+      if (state == null || !instance.onResume) return;
+      row.phase = 'resuming';
+      row.activeHook = 'on_resume';
+      try {
+        await lifecycleCallback([this, owner], () => instance.onResume!(state!));
+      } catch (error) {
+        console.warn(`[apcore:registry] onResume failed for ${moduleId}:`, error);
+      } finally {
+        delete row.activeHook;
+      }
+    };
+    try {
+      if (removalProgress.error) throw new ModuleError(removalProgress.error.code, 'Module unload failed');
+      row.phase = 'loading';
+      await this.discover({ reloadFiles: sourceFile === undefined ? [] : [sourceFile], beforePublish, managed: reservation });
+      if (reservation.publishedVersion === undefined) throw new ModuleLoadError(moduleId, 'The selected replacement was not discovered');
+      row.outcome = 'reloaded';
+      row.compensation = 'not_required';
+      return reservation.publishedVersion;
+    } catch (error) {
+      const phase = row.phase === 'unloading' ? 'unloading' : 'loading';
+      const cause = phase === 'loading' && !(error instanceof ModuleError) ? new ModuleLoadError(moduleId, 'Replacement load failed') : error;
+      row.error = lifecycleError(cause, phase);
+      row.outcome = 'failed';
+      row.compensation = 'failed';
+      try {
+        await this.restoreRegistration(snapshot, beforePublish, reservation);
+        row.compensation = 'restored';
+      } catch (compensationError) {
+        console.warn(`[apcore:registry] Failed to restore '${moduleId}' after reload failed:`, compensationError);
+      }
+      this._emitLifecycleEvent(emitter, 'module_reload_failed', owner, row, 'error', {
+        phase: row.error.phase, error_code: row.error.code, compensation: row.compensation,
+      });
+    } finally {
+      row.phase = 'done';
+      delete row.activeHook;
+    }
+  }
+
+  private async _runManagedDrain(
+    module: Module, generation: ExecutionGeneration, owner: LifecycleProgress, row: ModuleLifecycleProgress,
+    policy: ManagedDrainPolicy, emitter: EventEmitter | null = this._eventEmitter,
+  ): Promise<{ forced: boolean; abort?: DrainAbortReason }> {
+    row.phase = 'draining';
+    const reason = owner.report.kind === 'unregister_many' ? 'unregister' : owner.report.kind;
+    const drain = generation.references > 0 ? this._waitForDrain(generation) : undefined;
+    this._emitLifecycleEvent(emitter, 'module_drain_started', owner, row, 'info', {
+      reason_kind: reason, drain_timeout_ms: policy.timeoutMs,
+    });
+    try {
+      return await runManagedDrain({
+        owner, callbackOwner: this, module, progress: row, policy,
+        activeCount: () => generation.references,
+        idle: drain?.completion ?? Promise.resolve(),
+        cancelExecutions: () => { for (const token of generation.executions?.keys() ?? []) token.cancel(); },
+        reportTimeout: activeCount => this._emitLifecycleEvent(emitter, 'module_drain_timed_out', owner, row, 'warn', {
+          reason_kind: reason, action: policy.action, active_count: activeCount,
+        }),
+      });
+    } finally {
+      drain?.stop();
+    }
+  }
+
+  private _emitLifecycleEvent(
+    emitter: EventEmitter | null, name: string, owner: LifecycleProgress, row: ModuleLifecycleProgress,
+    severity: ApCoreEvent['severity'], data: Record<string, unknown>,
+  ): void {
+    if (!emitter) return;
+    try {
+      lifecycleCallback([this, owner], () => emitter.emit(createEvent(`apcore.registry.${name}`, row.moduleId, severity, {
+        operation_id: owner.report.operationId, ...data,
+      })));
+    } catch (error) {
+      console.warn(`[apcore:registry] Lifecycle event ${name} failed:`, error);
+    }
   }
 
   /**
@@ -1910,27 +2228,36 @@ export class Registry {
   }
 
   /** @internal Hold an execution reference to the instance resolved by lookup. */
-  acquireExecution(moduleId: string, expectedModule: unknown): () => void {
+  acquireExecution(moduleId: string, expectedModule: unknown, token?: CancelToken | null): () => void {
     if (this._modules.get(moduleId) !== expectedModule) {
       throw new ModuleNotFoundError(moduleId);
     }
     const generation = this._acquireGeneration(moduleId);
+    if (token) {
+      generation.executions ??= new Map();
+      generation.executions.set(token, (generation.executions.get(token) ?? 0) + 1);
+    }
     let released = false;
     return () => {
       if (released) return;
       released = true;
+      if (token && generation.executions) {
+        const count = generation.executions.get(token)!;
+        if (count <= 1) generation.executions.delete(token);
+        else generation.executions.set(token, count - 1);
+      }
       this._releaseGeneration(generation);
     };
   }
 
   /** @internal Capture the registration now and acquire its execution reference later. */
-  bindExecution(moduleId: string, expectedModule: unknown): () => () => void {
+  bindExecution(moduleId: string, expectedModule: unknown, token?: CancelToken | null): () => () => void {
     const expectedGeneration = this._executionGenerations.get(moduleId);
     return () => {
       if (this._executionGenerations.get(moduleId) !== expectedGeneration) {
         throw new ModuleNotFoundError(moduleId);
       }
-      return this.acquireExecution(moduleId, expectedModule);
+      return this.acquireExecution(moduleId, expectedModule, token);
     };
   }
 
@@ -1969,6 +2296,11 @@ export class Registry {
     );
   }
 
+  /** @internal Whether this registry has stopped admitting executions. */
+  get isClosed(): boolean {
+    return this._shutdown !== undefined;
+  }
+
   /**
    * Mark a module as draining so no new acquire() calls are accepted.
    */
@@ -1980,7 +2312,7 @@ export class Registry {
    * Remove a draining mark set by beginDrain. Existing references remain valid.
    */
   endDrain(moduleId: string): void {
-    this._draining.delete(moduleId);
+    if (!this._managedReloads.has(moduleId) && !this._unavailable.has(moduleId)) this._draining.delete(moduleId);
   }
 
   /**
@@ -1991,24 +2323,37 @@ export class Registry {
    */
   waitDrained(moduleId: string, timeoutMs: number = 5000): Promise<boolean> {
     const generation = this._executionGenerations.get(moduleId) ?? this._latestRemoval(moduleId)?.generation;
-    return generation === undefined ? Promise.resolve(true) : this._waitForDrain(generation, timeoutMs);
+    if (generation === undefined || generation.references === 0) return Promise.resolve(true);
+    const drain = this._waitForDrain(generation);
+    drain.setDeadline(timeoutMs);
+    return drain.completion.then((forcedAfterMs) => forcedAfterMs === undefined);
   }
 
-  private _waitForDrain(generation: ExecutionGeneration, timeoutMs: number): Promise<boolean> {
-    if (generation.references === 0) return Promise.resolve(true);
-
-    return new Promise<boolean>((resolve) => {
-      const drained = () => {
-        clearTimeout(timer);
+  /** Wait indefinitely unless the removal owner or shutdown sets a deadline. */
+  private _waitForDrain(generation: ExecutionGeneration): {
+    completion: Promise<number | undefined>;
+    setDeadline: (timeoutMs: number) => void;
+    stop: () => void;
+  } {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let finish!: (forcedAfterMs?: number) => void;
+    const drained = (): void => { finish(); };
+    const completion = new Promise<number | undefined>((resolve) => {
+      finish = (forcedAfterMs): void => {
+        if (timer !== undefined) clearTimeout(timer);
         generation.drainWaiters.delete(drained);
-        resolve(true);
+        resolve(forcedAfterMs);
       };
-      const timer = setTimeout(() => {
-        generation.drainWaiters.delete(drained);
-        resolve(false);
-      }, timeoutMs);
-      generation.drainWaiters.add(drained);
     });
+    generation.drainWaiters.add(drained);
+    return {
+      completion,
+      stop: drained,
+      setDeadline: (timeoutMs): void => {
+        if (timer !== undefined || !generation.drainWaiters.has(drained)) return;
+        timer = setTimeout(() => finish(timeoutMs), timeoutMs);
+      },
+    };
   }
 
   // ── Ephemeral namespace pilot (protocol-spec §2.5.1) ──────
@@ -2177,20 +2522,19 @@ export class Registry {
     }
   }
 
-  /** Drain and remove the current registration, joining cleanup already in progress. */
+  /** Drain and remove the current registration. An absent or already detached ID returns false. */
   safeUnregister(moduleId: string, timeoutMs?: number): Promise<boolean>;
   /** @internal Reload can capture state after drain and before resource release. */
-  safeUnregister(moduleId: string, timeoutMs?: number, beforeUnload?: (module: unknown) => void): Promise<boolean>;
+  safeUnregister(moduleId: string, timeoutMs?: number, beforeUnload?: RemovalOptions['beforeUnload']): Promise<boolean>;
   safeUnregister(
     moduleId: string,
     timeoutMs: number = 5000,
-    beforeUnload?: (module: unknown) => void,
+    beforeUnload?: RemovalOptions['beforeUnload'],
   ): Promise<boolean> {
+    if (this._shutdown?.force === false || this._managedReloads.has(moduleId)) return Promise.resolve(false);
     const generation = this._executionGenerations.get(moduleId);
-    if (generation === undefined) {
-      return this._latestRemoval(moduleId)?.completion ?? Promise.resolve(false);
-    }
-    return this._startRemoval(moduleId, generation, timeoutMs, undefined, beforeUnload);
+    if (generation === undefined) return Promise.resolve(false);
+    return this._startRemoval(moduleId, generation, { forceAfterMs: timeoutMs, beforeUnload }).completion;
   }
 
   private _latestRemoval(moduleId: string): ModuleRemoval | undefined {
@@ -2201,66 +2545,182 @@ export class Registry {
   private _startRemoval(
     moduleId: string,
     generation: ExecutionGeneration,
-    timeoutMs: number,
-    context?: Context | null,
-    beforeUnload?: (module: unknown) => void,
-  ): Promise<boolean> {
+    options: RemovalOptions,
+  ): ModuleRemoval {
     const sourceFile = this._sourceFiles.get(moduleId);
     const module = this._detach(moduleId);
+    const drain = !options.managed && generation.references > 0 ? this._waitForDrain(generation) : undefined;
+    const progress = options.progress ?? this._shutdown?.rows.get(generation) ?? { moduleId, phase: 'pending' };
+    progress.phase = options.managed || drain ? 'draining' : 'unloading';
     let finish!: (clean: boolean) => void;
     const completion = new Promise<boolean>((resolve) => { finish = resolve; });
-    const removal = { generation, completion, module, sourceFile };
+    const removal: ModuleRemoval = {
+      generation, completion, module, sourceFile, progress,
+      setDrainDeadline: drain?.setDeadline,
+    };
     const removals = this._removals.get(moduleId) ?? new Set();
     removals.add(removal);
     this._removals.set(moduleId, removals);
 
-    const unload = (clean: boolean) => {
-      if (clean) {
-        try {
-          beforeUnload?.(module);
-        } catch (error) {
-          console.warn(`[apcore:registry] Pre-unload hook failed for ${moduleId}:`, error);
-        }
-      } else {
-        console.warn(
-          `[apcore:registry] Force-unloading module ${moduleId} after ${timeoutMs}ms timeout ` +
-          `(${generation.references} in-flight executions)`,
-        );
-      }
+    const unload = (forcedAfterMs?: number): void => this._unloadRemoval(removal, removals, options, forcedAfterMs, finish);
 
-      const cleanup = this._runOnUnload(moduleId, module);
-      const complete = () => {
-        this._notifyUnregister(moduleId, module, context);
-        removals.delete(removal);
-        if (removals.size === 0) this._removals.delete(moduleId);
-        finish(clean);
-      };
-      if (cleanup === undefined) complete();
-      else void cleanup.then(complete);
+    if (options.managed && options.owner) {
+      const { managed, owner } = options;
+      void this._runManagedDrain(module as Module, generation, owner, progress, managed)
+        .then(({ forced }) => unload(forced ? managed.timeoutMs : undefined));
+    } else if (drain === undefined) unload();
+    else {
+      if (options.forceAfterMs !== undefined) drain.setDeadline(options.forceAfterMs);
+      void drain.completion.then(unload);
+    }
+    return removal;
+  }
+
+  private _unloadRemoval(
+    removal: ModuleRemoval,
+    removals: Set<ModuleRemoval>,
+    options: RemovalOptions,
+    forcedAfterMs: number | undefined,
+    finish: (clean: boolean) => void,
+  ): void {
+    const { progress, generation, module } = removal;
+    const { moduleId } = progress;
+    const owners = options.owner ? [this, options.owner] : [this];
+    progress.phase = 'unloading';
+    if (forcedAfterMs !== undefined) {
+      progress.drainTimedOut = true;
+      progress.activeAtUnload = generation.references;
+      console.warn(
+        `[apcore:registry] Force-unloading module ${moduleId} after ${forcedAfterMs}ms timeout ` +
+        `(${generation.references} in-flight executions)`,
+      );
+    }
+
+    const finishRemoval = (): void => {
+      removals.delete(removal);
+      if (removals.size === 0) this._removals.delete(moduleId);
+      progress.phase = 'done';
+      finish(forcedAfterMs === undefined);
+    };
+    const completeUnload = (): void => {
+      delete progress.activeHook;
+      lifecycleCallback(owners, () => this._notifyUnregister(moduleId, module, options.context));
+      progress.outcome = progress.error ? 'failed' : forcedAfterMs === undefined ? 'removed' : 'forced_removed';
+      if (forcedAfterMs !== undefined && generation.references > 0) {
+        progress.cleanupPending = true;
+        void this._waitForDrain(generation).completion.then(() => {
+          progress.cleanupPending = false;
+          finishRemoval();
+        });
+        if (!options.managed) {
+          // Compatibility waits for unload, while managed shutdown can still join the retiring generation.
+          progress.phase = 'done';
+          finish(false);
+        }
+        return;
+      }
+      finishRemoval();
+    };
+    const unload = (): void => {
+      progress.activeHook = 'on_unload';
+      const cleanup = lifecycleCallback(owners, () => this._runOnUnload(moduleId, module, error => {
+        progress.error ??= lifecycleError(error, 'unloading');
+      }));
+      if (cleanup === undefined) completeUnload();
+      else void cleanup.then(completeUnload);
     };
 
-    if (generation.references === 0) unload(true);
-    else void this._waitForDrain(generation, timeoutMs).then(unload);
-    return completion;
+    if (forcedAfterMs === undefined && options.beforeUnload) {
+      const warn = (error: unknown): void => { console.warn(`[apcore:registry] Pre-unload hook failed for ${moduleId}:`, error); };
+      try {
+        const before = lifecycleCallback(owners, () => options.beforeUnload!(module));
+        if (before !== undefined) {
+          void before.catch(warn).then(unload);
+          return;
+        }
+      } catch (error) {
+        warn(error);
+      }
+    }
+    unload();
+  }
+
+  /** @internal Start or join teardown for APCore and its client-owned event stage. */
+  startShutdown(options: Omit<ShutdownOptions, 'eventFlushTimeoutMs'> = {}): LifecycleOperation {
+    validateLifecycleOptions(options);
+    if (this._shutdown) {
+      if (options.drainTimeoutMs !== undefined && options.drainTimeoutMs !== this._shutdown.timeoutMs) {
+        throw new InvalidInputError('drainTimeoutMs conflicts with the active registry shutdown');
+      }
+      if (options.onDrainTimeout !== undefined && options.onDrainTimeout !== this._shutdown.policy?.action) {
+        throw new InvalidInputError('onDrainTimeout conflicts with the active registry shutdown');
+      }
+      if (options.cancelGraceMs !== undefined && options.cancelGraceMs !== this._shutdown.policy?.cancelGraceMs) {
+        throw new InvalidInputError('cancelGraceMs conflicts with the active registry shutdown');
+      }
+      return this._shutdown.lifecycle.operation;
+    }
+    const { drainTimeoutMs = 5_000, onDrainTimeout = 'continue_waiting', cancelGraceMs = 1_000 } = options;
+    return this._startShutdown(drainTimeoutMs, { timeoutMs: drainTimeoutMs, action: onDrainTimeout, cancelGraceMs }).lifecycle.operation;
   }
 
   /** @internal Stop discovery and drain every registration, including hidden modules. */
   shutdown(timeoutMs: number = 5000): Promise<void> {
-    this._shutdown ??= Promise.resolve().then(async () => {
+    return (this._shutdown ?? this._startShutdown(timeoutMs)).completion;
+  }
+
+  private _startShutdown(timeoutMs: number, policy?: ManagedDrainPolicy): RegistryShutdown {
+    const force = policy === undefined;
+    const rows = new Map<ExecutionGeneration, ModuleLifecycleProgress>();
+    for (const [moduleId, generation] of this._executionGenerations) rows.set(generation, { moduleId, phase: 'pending' });
+    const removals = new Set(Array.from(this._removals.values()).flatMap(entries => [...entries]));
+    for (const removal of removals) rows.set(removal.generation, removal.progress);
+    const lifecycle = new LifecycleProgress('shutdown', [...rows.values()], [this]);
+    const completion = lifecycle.run(async () => {
       this.unwatch();
-      const startRemovals = () => {
-        for (const moduleId of this._modules.keys()) {
-          void this.safeUnregister(moduleId, timeoutMs);
-        }
-      };
-      startRemovals();
+      this._scheduleShutdownRemovals(lifecycle, rows, removals, timeoutMs, policy);
+      await Promise.all([...this._managedReloads.values()].map(reservation => reservation.settled.wait()));
       await Promise.allSettled(this._inFlight.values());
-      startRemovals();
-      await Promise.all(
-        Array.from(this._removals.values()).flatMap((removals) => Array.from(removals, ({ completion }) => completion)),
-      );
+      this._scheduleShutdownRemovals(lifecycle, rows, removals, timeoutMs, policy);
+      await Promise.all([...removals].map(removal => removal.completion));
+      if (!force) {
+        await Promise.all([...removals]
+          .filter(removal => removal.generation.references > 0)
+          .map(removal => this._waitForDrain(removal.generation).completion));
+      }
     });
-    return this._shutdown;
+    const shutdown: RegistryShutdown = { lifecycle, completion, timeoutMs, force, policy, rows };
+    this._shutdown = shutdown;
+    return shutdown;
+  }
+
+  private _scheduleShutdownRemovals(
+    lifecycle: LifecycleProgress,
+    rows: Map<ExecutionGeneration, ModuleLifecycleProgress>,
+    joined: Set<ModuleRemoval>,
+    timeoutMs: number,
+    policy?: ManagedDrainPolicy,
+  ): void {
+    for (const [id, generation] of this._executionGenerations) {
+      if (this._managedReloads.has(id)) continue;
+      const row = rows.get(generation) ?? { moduleId: id, phase: 'pending' };
+      if (!rows.has(generation)) lifecycle.report.modules.push(row);
+      rows.set(generation, row);
+      joined.add(this._startRemoval(id, generation, {
+        progress: row, owner: lifecycle, ...(policy ? { managed: policy } : { forceAfterMs: timeoutMs }),
+      }));
+    }
+    for (const removals of this._removals.values()) {
+      for (const removal of removals) {
+        if (!policy) removal.setDrainDeadline?.(timeoutMs);
+        if (joined.has(removal)) continue;
+        joined.add(removal);
+        if (!rows.has(removal.generation)) {
+          lifecycle.report.modules.push(removal.progress);
+          rows.set(removal.generation, removal.progress);
+        }
+      }
+    }
   }
 
   private _assertOpen(): void {

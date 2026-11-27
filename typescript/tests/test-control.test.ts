@@ -403,6 +403,49 @@ describe('ReloadModule', () => {
   });
 
   describe('discover failure', () => {
+    it('skips discovery entirely when a bulk filter matches no modules', async () => {
+      const discover = vi.spyOn(registry, 'discover').mockRejectedValue(new Error('missing root'));
+      await expect(mod.execute({ path_filter: 'missing.*', reason: 'skip unmatched' }, null)).resolves.toMatchObject({
+        success: true,
+        module_id: null,
+        reloaded_modules: [],
+      });
+      expect(discover).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      { selector: { module_id: 'test.mod' }, discoveryThrows: true },
+      { selector: { module_id: 'test.mod' }, discoveryThrows: false },
+      { selector: { path_filter: 'test.*' }, discoveryThrows: true },
+      { selector: { path_filter: 'test.*' }, discoveryThrows: false },
+    ])('retains the discovery failure for $selector after restoration also fails (discovery throws $discoveryThrows)', async ({ selector, discoveryThrows }) => {
+      let loadCount = 0;
+      const original = {
+        ...createDummyModule(),
+        inputSchema: Type.Object({}),
+        outputSchema: Type.Object({}),
+        async onLoad(): Promise<void> {
+          if (++loadCount > 1) throw new Error('restore error');
+        },
+      };
+      await registry.register('test.mod', original);
+
+      const discover = vi.spyOn(registry, 'discover');
+      if (discoveryThrows) discover.mockRejectedValue(new Error('disk error'));
+      else discover.mockResolvedValue(0);
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        await expect(mod.execute({ ...selector, reason: 'restore test' }, null)).rejects.toMatchObject({
+          code: 'RELOAD_FAILED',
+          message: expect.stringContaining(discoveryThrows ? 'disk error' : 're-discovery'),
+        });
+        expect(registry.has('test.mod')).toBe(false);
+        expect(warn).toHaveBeenCalledWith(expect.stringContaining('restore'), expect.objectContaining({ message: 'restore error' }));
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
     it('waits for the previous module to unload before rediscovery', async () => {
       let enter!: () => void;
       let release!: () => void;

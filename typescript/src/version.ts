@@ -10,7 +10,7 @@ const SEMVER_RE = /^(?<major>0|[1-9]\d*)\.(?<minor>0|[1-9]\d*)\.(?<patch>0|[1-9]
 
 /** Deprecation warning threshold. */
 const DEPRECATION_THRESHOLD = 2;
-const CURRENT_DOCUMENT_VERSION = '2.0.0';
+const CURRENT_DOCUMENT_VERSION = '2.1.0';
 const LEGACY_DOCUMENT_VERSION = '1.66.0';
 
 interface SemVer {

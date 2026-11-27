@@ -112,6 +112,9 @@ export class ToggleFeatureModule {
     if (!this._registry.has(moduleId)) {
       throw new ModuleNotFoundError(moduleId);
     }
+    if (!enabled && moduleId === 'system.control.toggle_feature') {
+      throw new InvalidInputError('The toggle controller cannot disable itself');
+    }
 
     const before = !this._toggleState.isDisabled(moduleId);
     if (enabled) {

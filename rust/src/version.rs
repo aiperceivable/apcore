@@ -5,7 +5,7 @@ use std::cmp::Ordering;
 
 use crate::errors::{ErrorCode, ModuleError, VersionIncompatibleError};
 
-const CURRENT_DOCUMENT_VERSION: &str = "2.0.0";
+const CURRENT_DOCUMENT_VERSION: &str = "2.1.0";
 const LEGACY_DOCUMENT_VERSION: &str = "1.66.0";
 const DEPRECATION_THRESHOLD: u64 = 2;
 

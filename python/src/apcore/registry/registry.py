@@ -16,9 +16,10 @@ from contextvars import ContextVar
 from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, Iterator, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Callable, Iterator, Literal, Protocol, runtime_checkable
 
 from apcore.config import Config
+from apcore.cancel import CancelToken
 from apcore.errors import (
     DependencyVersionMismatchError,
     ErrorCodes,
@@ -27,6 +28,21 @@ from apcore.errors import (
     ModuleLoadError,
     ModuleNotFoundError,
     StreamingInterfaceError,
+)
+from apcore.lifecycle import (
+    DrainAbortedContext,
+    DrainContext,
+    LifecycleError,
+    LifecycleOperation,
+    ReloadOptions,
+    UnregisterOptions,
+    _AbortReason,
+    _HostDrainAction,
+    _ReloadDrainAction,
+    _lifecycle_callback,
+    _require_lifecycle_loop,
+    _validate_drain_options,
+    _validate_duration,
 )
 from apcore.registry.conflicts import ConflictSeverity, detect_id_conflicts
 from apcore.registry.dependencies import resolve_dependencies
@@ -47,6 +63,7 @@ if TYPE_CHECKING:
     from apcore.config import Config
 
 logger = logging.getLogger(__name__)
+_HookLoopFor = Callable[[str], asyncio.AbstractEventLoop | None]
 
 
 def _has_running_loop() -> bool:
@@ -62,6 +79,7 @@ class _ModuleRegistration:
     module: Any
     metadata: dict[str, Any]
     descriptor_metadata: dict[str, Any]
+    hook_loop: asyncio.AbstractEventLoop | None = None
 
 
 @dataclass(frozen=True)
@@ -80,6 +98,21 @@ class _RegistrationSnapshot:
                 seen.add(id(registration.module))
                 yield registration.module
 
+    def hook_loop(self, module: Any) -> asyncio.AbstractEventLoop | None:
+        for registration in reversed(tuple(self.versions.values())):
+            if registration.module is module:
+                return registration.hook_loop
+        return None
+
+
+@dataclass
+class _WatchedReplacement:
+    generation: object
+    registration: _RegistrationSnapshot
+    source: Path
+    revision: tuple[int, int, int, int] | None
+    refresh: bool = False
+
 
 @dataclass
 class _PendingUnload:
@@ -89,6 +122,18 @@ class _PendingUnload:
     context: Any
     remaining_leases: int
     finished: threading.Event = field(default_factory=threading.Event)
+    active_hook: bool = False
+    active_at_unload: int | None = None
+    drain_timed_out: bool = False
+    residuals: threading.Event | None = None
+    unload_finished: bool = False
+    error: LifecycleError | None = None
+
+
+@dataclass
+class _DrainProgress:
+    finished: bool = False
+    error: LifecycleError | None = None
 
 
 @dataclass(frozen=True)
@@ -300,27 +345,21 @@ def _validate_streaming_signature(module_id: str, module: Any) -> None:
     # mismatches; "wrong_return_type" would only fire on annotation-only errors.
 
 
-def _validate_streaming_annotation(module_id: str, module: Any) -> None:
-    """Enforce Issue #62 when ``annotations.streaming`` is explicitly True.
-
-    Shared by ``register`` and ``register_internal`` so a sys module cannot
-    advertise streaming it does not implement. Previously only ``register``
-    performed the check, contradicting ``register_internal``'s own docstring
-    ("bypasses **only** the reserved word check"); apcore-rust routes both entry
-    points through ``register_core``, which performs it.
-
-    Accepts both annotation carriers: a ``ModuleAnnotations`` dataclass and a
-    raw dict.
-    """
-    annotations = getattr(module, "annotations", None)
+def _validate_streaming_annotation(module_id: str, module: Any, annotations: object) -> None:
+    """Require a compatible stream method when the module declares streaming."""
     if isinstance(annotations, dict):
         streaming_declared = annotations.get("streaming") is True
-    elif annotations is not None:
-        streaming_declared = getattr(annotations, "streaming", None) is True
     else:
-        streaming_declared = False
+        streaming_declared = getattr(annotations, "streaming", None) is True
     if streaming_declared:
         _validate_streaming_signature(module_id, module)
+
+
+def _prepare_discovered_module(module_id: str, module: Any, metadata: dict[str, Any]) -> dict[str, Any]:
+    merged_metadata = merge_module_metadata(module, metadata)
+    _validate_streaming_annotation(module_id, module, merged_metadata["annotations"])
+    _ensure_schema_adapter(module)
+    return merged_metadata
 
 
 def _is_ephemeral(module_id: str) -> bool:
@@ -420,21 +459,12 @@ class _ModuleChangeHandler:
         if event.is_directory:
             return
         path = str(event.src_path)
-        if not self._should_process(path):
-            return
         reg = self._registry()
-        if reg is not None:
+        if reg is not None and not reg._defer_watched_change(path) and self._should_process(path):
             reg._handle_file_change(path)
 
     def on_created(self, event: Any) -> None:
-        if event.is_directory:
-            return
-        path = str(event.src_path)
-        if not self._should_process(path):
-            return
-        reg = self._registry()
-        if reg is not None:
-            reg._handle_file_change(path)
+        self.on_modified(event)
 
     def on_deleted(self, event: Any) -> None:
         if event.is_directory:
@@ -485,6 +515,50 @@ def _run_on_load(module: Any, module_id: str) -> None:
                 "and cannot await."
             ),
         )
+
+
+_LIFECYCLE_HOOKS = ("on_load", "on_unload", "on_suspend", "on_resume", "on_drain", "on_drain_aborted")
+
+
+def _call_lifecycle_hook(
+    hook: Callable[..., Any],
+    arguments: tuple[Any, ...],
+    loop: asyncio.AbstractEventLoop | None,
+    module_id: str,
+    name: str,
+) -> Any:
+    result = hook(*arguments)
+    if not inspect.isawaitable(result):
+        return result
+    if loop is None or not loop.is_running():
+        if inspect.iscoroutine(result):
+            result.close()
+        raise ModuleLoadError(module_id, f"Async {name} requires an available lifecycle event loop")
+    if _has_running_loop() and asyncio.get_running_loop() is loop:
+        if inspect.iscoroutine(result):
+            result.close()
+        raise ModuleLoadError(module_id, f"Async {name} cannot be joined synchronously from its lifecycle event loop")
+
+    async def await_hook() -> Any:
+        return await result
+
+    coroutine = await_hook()
+    try:
+        future = asyncio.run_coroutine_threadsafe(coroutine, loop)
+    except RuntimeError as error:
+        coroutine.close()
+        if inspect.iscoroutine(result):
+            result.close()
+        raise ModuleLoadError(module_id, f"Lifecycle event loop is unavailable for {name}") from error
+    while True:
+        try:
+            return future.result(timeout=0.1)
+        except TimeoutError:
+            if future.done():
+                return future.result()
+            if not loop.is_running():
+                future.cancel()
+                raise ModuleLoadError(module_id, f"Lifecycle event loop stopped during {name}") from None
 
 
 class Registry:
@@ -592,11 +666,21 @@ class Registry:
         # Safe hot-reload state (F09 / Algorithm A21)
         self._ref_counts: dict[str, int] = {}
         self._lease_generations: dict[str, object] = {}
+        self._invocation_tokens: dict[object, set[CancelToken]] = {}
         self._draining: set[str] = set()
         self._drain_events: dict[str, threading.Event] = {}
         self._pending_unloads: dict[object, _PendingUnload] = {}
         self._closed = False
         self._lifecycle_changed = threading.Condition(self._lock)
+        self._shutdown_operation: LifecycleOperation | None = None
+        self._shutdown_rows: dict[object, int] = {}
+        self._shutdown_drain_timeout_ms = 5000
+        self._shutdown_legacy_force = False
+        self._shutdown_cancel_grace_ms: int | None = None
+        self._unavailable: set[str] = set()
+        self._watch_lifecycle: ReloadOptions | None = None
+        self._watch_hook_loop: asyncio.AbstractEventLoop | None = None
+        self._watched_replacements: dict[Path, _WatchedReplacement] = {}
         self._reload_state: ContextVar[tuple[str, dict[str, Any]] | None] = ContextVar("reload_state", default=None)
 
         # Deferred-publish: module IDs currently executing on_load (not yet visible).
@@ -733,11 +817,21 @@ class Registry:
             CircularDependencyError: If circular dependencies detected among modules.
             ConfigNotFoundError: If a configured extension root does not exist.
         """
+        return self._discover(path_filter)
+
+    async def discover_async(self, path_filter: str | list[str] | None = None) -> int:
+        """Discover and register modules with lifecycle hooks on the current loop."""
+        loop = asyncio.get_running_loop()
+        return await asyncio.to_thread(self._discover, path_filter, hook_loop_for=lambda _: loop)
+
+    def _discover(
+        self, path_filter: str | list[str] | None = None, *, hook_loop_for: _HookLoopFor | None = None
+    ) -> int:
         with self._lock:
             self._require_open()
         if self._custom_discoverer is not None:
-            return self._discover_custom()
-        return self._discover_default(path_filter=path_filter)
+            return self._discover_custom(hook_loop_for)
+        return self._discover_default(path_filter, hook_loop_for)
 
     def discover_multi_class(
         self,
@@ -774,7 +868,7 @@ class Registry:
             pre_approval_hook=self._pre_approval_hook,
         )
 
-    def _discover_custom(self) -> int:
+    def _discover_custom(self, hook_loop_for: _HookLoopFor | None = None) -> int:
         """Run discovery using the custom discoverer."""
         assert self._custom_discoverer is not None  # noqa: S101
 
@@ -834,7 +928,11 @@ class Registry:
                 # D11-006: validator already ran inline above; skip the
                 # re-run inside register() so stateful validators see one
                 # call per module (matching apcore-typescript).
-                self.register(mod_id, mod, _skip_custom_validator=True)
+                loop = hook_loop_for(mod_id) if hook_loop_for is not None else None
+                if loop is None:
+                    self.register(mod_id, mod, _skip_custom_validator=True)
+                else:
+                    self._register(mod_id, mod, skip_custom_validator=True, hook_loop=loop)
                 registered_count += 1
             except Exception as e:
                 logger.warning("Failed to register custom-discovered module '%s': %s", mod_id, e)
@@ -852,6 +950,7 @@ class Registry:
     def _discover_default(
         self,
         path_filter: str | list[str] | None = None,
+        hook_loop_for: _HookLoopFor | None = None,
     ) -> int:
         """Run discovery using the default file-system scanning logic.
 
@@ -885,7 +984,7 @@ class Registry:
         load_order = self._resolve_load_order(valid_classes, raw_metadata)
         valid_classes = self._filter_id_conflicts(load_order, valid_classes)
         source_paths = {module_id: candidate.source.file_path for module_id, candidate in selected.items()}
-        registered_count = self._register_in_order(load_order, valid_classes, raw_metadata, source_paths)
+        registered_count = self._register_in_order(load_order, valid_classes, raw_metadata, source_paths, hook_loop_for)
 
         if registered_count == 0 and discovered:
             logger.warning(
@@ -1216,6 +1315,7 @@ class Registry:
         valid_classes: dict[str, type],
         raw_metadata: dict[str, dict[str, Any]],
         source_paths: dict[str, Path] | None = None,
+        hook_loop_for: _HookLoopFor | None = None,
     ) -> int:
         """Stage 8 — instantiate, register, and run on_load() for each module.
 
@@ -1251,10 +1351,11 @@ class Registry:
                 continue
 
             effective_version = self._effective_version(module, meta)
-            # Pass the instance (not the class) so __init__-set attributes
-            # are picked up; getattr falls through to class attrs anyway.
-            # Aligned with manual register() / register_internal().
-            merged_meta = merge_module_metadata(module, meta)
+            try:
+                merged_meta = _prepare_discovered_module(mod_id, module, meta)
+            except Exception as error:
+                logger.warning("Discovery rejected module '%s': %s", mod_id, error)
+                continue
 
             dependencies = parse_dependencies(meta.get("dependencies"))
             # Phase 1: reserve in-flight slot. Skip if already in-flight or
@@ -1279,18 +1380,20 @@ class Registry:
                 logger.warning("Module '%s' is loading without optional dependency '%s'", mod_id, dependency_id)
 
             # Phase 2: run on_load OUTSIDE the lock. Module is NOT visible.
-            if not self._invoke_on_load(mod_id, module):
+            loop = hook_loop_for(mod_id) if hook_loop_for is not None else None
+            if not self._invoke_on_load(mod_id, module, hook_loop=loop):
                 # _invoke_on_load already discarded the in-flight slot and
                 # emitted apcore.registry.module_load_failed. Move on.
                 continue
 
             # Phase 3: atomic publish.
-            with self._lock:
-                self._clear_loading(mod_id)
+            with self._ready_to_publish(mod_id, module, hook_loop=loop) as admitted:
+                if not admitted:
+                    continue
                 error = self._discovery_dependency_error(mod_id, dependencies)
                 if error is None:
                     self._versioned_modules.add(
-                        mod_id, effective_version, _ModuleRegistration(module, merged_meta, meta)
+                        mod_id, effective_version, _ModuleRegistration(module, merged_meta, meta, loop)
                     )
                     self._modules[mod_id] = module
                     self._module_meta[mod_id] = merged_meta
@@ -1298,7 +1401,8 @@ class Registry:
                     if source_paths is not None and mod_id in source_paths:
                         self._module_sources[mod_id] = source_paths[mod_id]
             if error is not None:
-                self._call_on_unload(mod_id, module)
+                with _lifecycle_callback(self):
+                    self._call_on_unload(mod_id, module, hook_loop=loop)
                 self._emit_module_load_failed(mod_id, error)
                 continue
 
@@ -1316,8 +1420,10 @@ class Registry:
                 return ModuleLoadError(module_id, f"Required dependency '{dependency.module_id}' did not load")
             if dependency.version:
                 versions = self._versioned_modules.list_versions(dependency.module_id)
-                actual = versions[-1] if versions else self._effective_version(
-                    provider, self._module_meta.get(dependency.module_id, {})
+                actual = (
+                    versions[-1]
+                    if versions
+                    else self._effective_version(provider, self._module_meta.get(dependency.module_id, {}))
                 )
                 if not matches_version_hint(actual, dependency.version):
                     return DependencyVersionMismatchError(module_id, dependency.module_id, dependency.version, actual)
@@ -1333,7 +1439,14 @@ class Registry:
             resolved = str(resolved)
         return resolved
 
-    def _invoke_on_load(self, mod_id: str, module: Any) -> bool:
+    def _invoke_on_load(
+        self,
+        mod_id: str,
+        module: Any,
+        *,
+        clear_reservation_on_error: bool = True,
+        hook_loop: asyncio.AbstractEventLoop | None = None,
+    ) -> bool:
         """Call ``module.on_load()`` if defined; clean up in-flight slot on failure.
 
         Returns True when ``on_load`` succeeded (or no callback was defined)
@@ -1354,26 +1467,69 @@ class Registry:
         as it was before the registration attempt began.
         """
         try:
-            self._initialize_module(mod_id, module)
+            self._initialize_module(
+                mod_id, module, clear_reservation_on_error=clear_reservation_on_error, hook_loop=hook_loop
+            )
         except Exception as e:
             logger.error("on_load() failed for module '%s': %s", mod_id, e)
             return False
         return True
 
-    def _initialize_module(self, module_id: str, module: Any) -> None:
+    def _initialize_module(
+        self,
+        module_id: str,
+        module: Any,
+        *,
+        clear_reservation_on_error: bool = True,
+        hook_loop: asyncio.AbstractEventLoop | None = None,
+    ) -> None:
         """Run load and any reload state transfer before making a module visible."""
         try:
-            if hasattr(module, "on_load") and callable(module.on_load):
-                _run_on_load(module, module_id)
-            reload_state = self._reload_state.get()
-            if reload_state is not None and reload_state[0] == module_id:
-                self._call_on_resume(module_id, module, reload_state[1])
+            with _lifecycle_callback(self):
+                self._validate_hook_adapter(module_id, module, hook_loop)
+                if hasattr(module, "on_load") and callable(module.on_load):
+                    if hook_loop is None:
+                        _run_on_load(module, module_id)
+                    else:
+                        _call_lifecycle_hook(module.on_load, (), hook_loop, module_id, "on_load")
+                reload_state = self._reload_state.get()
+                if reload_state is not None and reload_state[0] == module_id:
+                    self._call_on_resume(module_id, module, reload_state[1], hook_loop)
         except BaseException as exc:
-            with self._lock:
-                self._clear_loading(module_id)
+            if clear_reservation_on_error:
+                with self._lock:
+                    self._clear_loading(module_id)
             if isinstance(exc, Exception):
                 self._emit_module_load_failed(module_id, exc)
             raise
+
+    @contextmanager
+    def _ready_to_publish(
+        self, module_id: str, module: Any, *, hook_loop: asyncio.AbstractEventLoop | None = None
+    ) -> Iterator[bool]:
+        """Hold the Registry lock for publication or release an initialized, rejected instance."""
+        with self._lock:
+            if not self._closed:
+                self._clear_loading(module_id)
+                yield True
+                return
+        try:
+            with _lifecycle_callback(self):
+                self._call_on_unload(module_id, module, hook_loop=hook_loop)
+        finally:
+            with self._lock:
+                self._clear_loading(module_id)
+        yield False
+
+    @staticmethod
+    def _validate_hook_adapter(module_id: str, module: Any, loop: asyncio.AbstractEventLoop | None) -> None:
+        if loop is not None:
+            return
+        for name in _LIFECYCLE_HOOKS:
+            # on_load checks both async def and awaitable results with its
+            # established synchronous registration diagnostic.
+            if name != "on_load" and inspect.iscoroutinefunction(getattr(module, name, None)):
+                raise ModuleLoadError(module_id, f"Module defines async {name}; use register_async or discover_async")
 
     @contextmanager
     def _resume_on_load(self, module_id: str, state: dict[str, Any] | None) -> Iterator[None]:
@@ -1431,6 +1587,21 @@ class Registry:
         (ordered)", D-86): module_id → structure/streaming → custom validator
         → duplicate.
         """
+        self._register(
+            module_id, module, version, metadata, context=context, skip_custom_validator=_skip_custom_validator
+        )
+
+    def _register(
+        self,
+        module_id: str,
+        module: Any,
+        version: str | None = None,
+        metadata: dict[str, Any] | None = None,
+        *,
+        context: Any = None,
+        skip_custom_validator: bool = False,
+        hook_loop: asyncio.AbstractEventLoop | None = None,
+    ) -> None:
         _validate_module_id(module_id, allow_reserved=False)
         # ``ephemeral.*`` registrations only land via this programmatic
         # entry point — the filesystem discoverer rejects matching IDs
@@ -1453,9 +1624,9 @@ class Registry:
         # apcore-typescript; Python previously ran the validator first, so a
         # module that was both streaming-malformed and validator-rejected
         # reported a different error here than in the other two SDKs.
-        _validate_streaming_annotation(module_id, module)
+        _validate_streaming_annotation(module_id, module, getattr(module, "annotations", None))
 
-        if not _skip_custom_validator and self._custom_validator is not None:
+        if not skip_custom_validator and self._custom_validator is not None:
             errors = self._custom_validator.validate(module)
             if errors:
                 raise InvalidInputError(message=f"Custom validator rejected module '{module_id}': {'; '.join(errors)}")
@@ -1528,14 +1699,15 @@ class Registry:
         # Phase 2: call on_load() OUTSIDE the lock.
         # The module is not visible during this phase. Concurrent same-ID
         # registrations will see module_id in _in_flight and raise DUPLICATE_MODULE_ID.
-        self._initialize_module(module_id, module)
+        self._initialize_module(module_id, module, hook_loop=hook_loop)
 
         # Phase 3: atomically insert into visible store.
-        with self._lock:
-            self._clear_loading(module_id)
+        with self._ready_to_publish(module_id, module, hook_loop=hook_loop) as admitted:
+            if not admitted:
+                raise InvalidInputError(message="The module registry is shut down")
 
             # Store in versioned store
-            registration = _ModuleRegistration(module, merged_meta, dict(metadata or {}))
+            registration = _ModuleRegistration(module, merged_meta, dict(metadata or {}), hook_loop)
             self._versioned_modules.add(module_id, effective_version, registration)
 
             # Always point the primary map to the latest version
@@ -1555,6 +1727,18 @@ class Registry:
         """Register modules in input order. Prior entries remain registered after an error."""
         for module_id, module in entries:
             self.register(module_id, module)
+
+    async def register_async(
+        self, module_id: str, module: Any, version: str | None = None, metadata: dict[str, Any] | None = None
+    ) -> None:
+        """Register a module with async lifecycle hooks bound to this live loop."""
+        loop = asyncio.get_running_loop()
+        await asyncio.to_thread(self._register, module_id, module, version, metadata, hook_loop=loop)
+
+    async def register_many_async(self, entries: Iterable[tuple[str, Any]]) -> None:
+        """Register modules in order with support for async lifecycle hooks."""
+        for module_id, module in entries:
+            await self.register_async(module_id, module)
 
     def _require_open(self) -> None:
         if self._closed:
@@ -1597,15 +1781,24 @@ class Registry:
             if pending is None:
                 return False
         if not leases:
-            self._finish_unload(pending)
+            self._finalize_detached(pending)
         return True
 
-    def _notify_unregistered(self, module_id: str, registration: _RegistrationSnapshot, context: Any = None) -> None:
+    def _notify_unregistered(
+        self,
+        module_id: str,
+        registration: _RegistrationSnapshot,
+        context: Any = None,
+        hook_progress: Callable[[bool], None] | None = None,
+    ) -> LifecycleError | None:
+        error = None
         for module in registration.instances():
-            self._call_on_unload(module_id, module)
+            current_error = self._call_on_unload(module_id, module, hook_progress, registration.hook_loop(module))
+            error = error or current_error
         self._trigger_event("unregister", module_id, registration.module)
         if _is_ephemeral(module_id):
             self._emit_ephemeral_audit("apcore.registry.module_unregistered", module_id, context)
+        return error
 
     # ----- Query Methods -----
 
@@ -2255,19 +2448,26 @@ class Registry:
             yield registration.module
 
     @contextmanager
-    def _acquire_registration(self, module_id: str, version_hint: str | None) -> Iterator[_ModuleRegistration]:
+    def _acquire_registration(
+        self, module_id: str, version_hint: str | None, cancel_token: CancelToken | None = None
+    ) -> Iterator[_ModuleRegistration]:
         with self._lock:
-            if self._closed or module_id in self._draining:
+            if self._closed or module_id in self._draining or module_id in self._unavailable:
                 raise ModuleNotFoundError(module_id=module_id)
             registration = self._resolve_registration(module_id, version_hint)
             if registration is None:
                 raise ModuleNotFoundError(module_id=module_id)
             generation = self._lease_generations.setdefault(module_id, object())
             self._ref_counts[module_id] = self._ref_counts.get(module_id, 0) + 1
+            if cancel_token is not None:
+                tokens = self._invocation_tokens.get(generation)
+                if tokens is None:
+                    tokens = self._invocation_tokens[generation] = set()
+                tokens.add(cancel_token)
         try:
             yield registration
         finally:
-            self._release_generation(module_id, generation)
+            self._release_generation(module_id, generation, cancel_token)
 
     def release(self, module_id: str) -> None:
         """Release one reference to the current module and notify a waiting unload."""
@@ -2276,8 +2476,12 @@ class Registry:
         if generation is not None:
             self._release_generation(module_id, generation)
 
-    def _release_generation(self, module_id: str, generation: object) -> None:
+    def _release_generation(self, module_id: str, generation: object, cancel_token: CancelToken | None = None) -> None:
         with self._lock:
+            if cancel_token is not None and (tokens := self._invocation_tokens.get(generation)) is not None:
+                tokens.discard(cancel_token)
+                if not tokens and self._lease_generations.get(module_id) is not generation:
+                    self._invocation_tokens.pop(generation, None)
             if self._lease_generations.get(module_id) is generation:
                 count = self._ref_counts.get(module_id, 0)
                 if count > 1:
@@ -2287,6 +2491,7 @@ class Registry:
                     event = self._drain_events.get(module_id)
                     if event is not None:
                         event.set()
+                        self._lifecycle_changed.notify_all()
                 return
 
             pending = self._pending_unloads.get(generation)
@@ -2295,20 +2500,87 @@ class Registry:
             pending.remaining_leases -= 1
             if pending.remaining_leases:
                 return
-        self._finish_unload(pending)
+            if pending.residuals is not None:
+                pending.residuals.set()
+                return
+        self._finalize_detached(pending)
 
-    def _finish_unload(self, pending: _PendingUnload) -> None:
+    def _finalize_detached(self, pending: _PendingUnload) -> None:
+        if _has_running_loop() and any(
+            pending.registration.hook_loop(module) is not None for module in pending.registration.instances()
+        ):
+            threading.Thread(
+                target=self._finish_unload, args=(pending,), name="apcore-module-unload", daemon=True
+            ).start()
+        else:
+            self._finish_unload(pending)
+
+    def _finish_unload(
+        self, pending: _PendingUnload, operation: LifecycleOperation | None = None, index: int = 0
+    ) -> LifecycleError | None:
+        def report_hook(active: bool) -> None:
+            hook = "on_unload" if active else None
+            with self._lock:
+                pending.active_hook = active
+                self._report_shutdown_unload(pending, active_hook=hook)
+            if operation is not None and operation._kind != "shutdown":
+                operation._update_module(index, active_hook=hook)
+
+        error = None
         try:
-            self._notify_unregistered(pending.module_id, pending.registration, pending.context)
+            with self._lock:
+                self._report_shutdown_unload(pending, phase="unloading")
+            with _lifecycle_callback(self, operation._id if operation is not None else None):
+                error = self._notify_unregistered(pending.module_id, pending.registration, pending.context, report_hook)
+                return error
+        except BaseException as failure:
+            error = LifecycleError._from_exception(failure, "unloading")
+            raise
         finally:
             with self._lock:
-                self._pending_unloads.pop(pending.generation, None)
-                pending.finished.set()
+                pending.unload_finished = True
+                pending.error = pending.error or error
+                self._report_joined_removal(pending)
+                if pending.residuals is None:
+                    self._settle_unload(pending)
+
+    def _settle_unload(self, pending: _PendingUnload) -> None:
+        if pending.residuals is not None:
+            self._report_shutdown_unload(pending, cleanup_pending=False)
+        self._pending_unloads.pop(pending.generation, None)
+        pending.finished.set()
+
+    def _report_joined_removal(self, pending: _PendingUnload) -> None:
+        outcome = None
+        if pending.unload_finished:
+            outcome = "failed" if pending.error else "forced_removed" if pending.active_at_unload else "removed"
+        self._report_shutdown_unload(
+            pending,
+            phase="done" if pending.unload_finished else "draining" if pending.remaining_leases > 0 else "unloading",
+            outcome=outcome,
+            active_hook="on_unload" if pending.active_hook else None,
+            active_at_unload=pending.active_at_unload,
+            drain_timed_out=pending.drain_timed_out or pending.active_at_unload is not None,
+            cleanup_pending=pending.unload_finished and pending.remaining_leases > 0,
+            error=pending.error,
+        )
+
+    def _report_shutdown_unload(self, pending: _PendingUnload, **updates: object) -> None:
+        """Mirror a generation's existing removal into the shutdown report under the Registry lock."""
+        operation = self._shutdown_operation
+        if operation is not None and not operation._finished.is_set():
+            index = self._shutdown_rows.get(pending.generation)
+            if index is None:
+                index = operation._add_module(pending.module_id)
+                self._shutdown_rows[pending.generation] = index
+            operation._update_module(index, **updates)
 
     def _capture_state_and_unload(self, pending: _PendingUnload, clean: bool) -> dict[str, Any] | None:
         try:
             if clean:
-                return self._call_on_suspend(pending.module_id, pending.registration.module)
+                with _lifecycle_callback(self):
+                    module = pending.registration.module
+                    return self._call_on_suspend(pending.module_id, module, pending.registration.hook_loop(module))
             return None
         finally:
             self._finish_unload(pending)
@@ -2338,6 +2610,12 @@ class Registry:
             True if the module was cleanly shut down (no in-flight executions
             remaining), False if it was force-unloaded after timeout.
         """
+        if _has_running_loop():
+            registration = self._snapshot_registration(module_id)
+            if registration is not None and any(
+                registration.hook_loop(module) is asyncio.get_running_loop() for module in registration.instances()
+            ):
+                raise InvalidInputError(message="Use safe_unregister_async() for a module with async lifecycle hooks")
         detached = self._detach_after_drain(module_id, timeout_ms=timeout_ms)
         if detached is None:
             return False
@@ -2353,32 +2631,746 @@ class Registry:
         """Drain and unload modules in input order, with one result per ID."""
         return [await self.safe_unregister_async(module_id, timeout_ms=timeout_ms) for module_id in module_ids]
 
+    def start_unregister_many(
+        self, module_ids: Iterable[str], *, options: UnregisterOptions | None = None
+    ) -> LifecycleOperation:
+        """Own an ordered, generation-bound removal independent of its waiters."""
+        _require_lifecycle_loop()
+        if options is not None and not isinstance(options, UnregisterOptions):
+            raise InvalidInputError(message="Expected UnregisterOptions")
+        options = UnregisterOptions() if options is None else options
+        _validate_drain_options(options)
+        if options.cancel_grace_ms is not None and options.on_drain_timeout != "cancel_then_force":
+            raise InvalidInputError(message="cancel_grace_ms requires cancel_then_force")
+        _validate_duration("operation_timeout_ms", options.operation_timeout_ms)
+        if isinstance(module_ids, (str, bytes)):
+            raise InvalidInputError(message="module_ids must be an iterable of module ID strings")
+        try:
+            ids = tuple(module_ids)
+        except TypeError as error:
+            raise InvalidInputError(message="module_ids must be an iterable of module ID strings") from error
+        for module_id in ids:
+            _validate_module_id(module_id, allow_reserved=True)
+
+        operation = LifecycleOperation("unregister_many")
+        operation._set_modules(iter(ids))
+        with self._lock:
+            self._require_open()
+            registrations = self._snapshot_generations(iter(ids))
+        if not ids:
+            operation._complete()
+            return operation
+        operation_deadline = (
+            None if options.operation_timeout_ms is None else time.monotonic() + options.operation_timeout_ms / 1000
+        )
+        drain_timeout_ms = 5000 if options.drain_timeout_ms is None else options.drain_timeout_ms
+        grace = None
+        if options.on_drain_timeout == "cancel_then_force":
+            grace = 1000 if options.cancel_grace_ms is None else options.cancel_grace_ms
+        operation._start(
+            lambda: self._run_removals(
+                operation, registrations, drain_timeout_ms, operation_deadline, cancel_grace_ms=grace
+            ),
+            "unloading",
+        )
+        return operation
+
+    def _snapshot_generations(self, module_ids: Iterator[str]) -> list[tuple[str, object | None]]:
+        """Capture registration identities under the Registry lock."""
+        return [
+            (module_id, self._lease_generations.setdefault(module_id, object()) if module_id in self._modules else None)
+            for module_id in module_ids
+        ]
+
+    def _run_removals(
+        self,
+        operation: LifecycleOperation,
+        registrations: list[tuple[str, object | None]],
+        drain_timeout_ms: int,
+        operation_deadline: float | None = None,
+        *,
+        legacy_force: bool = False,
+        cancel_grace_ms: int | None = None,
+    ) -> None:
+        for index, (module_id, generation) in enumerate(registrations):
+            with self._lock:
+                shutdown = operation._kind == "shutdown"
+                current = generation is not None and self._lease_generations.get(module_id) is generation
+                now = time.monotonic()
+                if operation_deadline is not None and now >= operation_deadline:
+                    operation._stop_batch(index)
+                    break
+                if not current or module_id in self._draining or (self._closed and not shutdown):
+                    if not shutdown:
+                        owned = current or generation in self._pending_unloads
+                        operation._update_module(index, phase="done", outcome="already_removing" if owned else "absent")
+                    continue
+                if shutdown:
+                    index = self._shutdown_rows[generation]
+                ready = self._mark_draining(module_id)
+                deadline = now + drain_timeout_ms / 1000
+                if operation_deadline is not None:
+                    deadline = min(deadline, operation_deadline)
+                operation._update_module(index, phase="draining")
+                registration = self._snapshot_registration(module_id)
+            assert registration is not None and generation is not None
+            self._remove_drained_generation(
+                operation,
+                index,
+                module_id,
+                ready,
+                deadline,
+                drain_timeout_ms,
+                legacy_force,
+                cancel_grace_ms,
+                generation,
+                registration,
+            )
+        if operation._kind == "unregister_many":
+            operation._complete()
+
+    def _remove_drained_generation(
+        self,
+        operation: LifecycleOperation,
+        index: int,
+        module_id: str,
+        ready: threading.Event,
+        deadline: float,
+        drain_timeout_ms: int,
+        legacy_force: bool,
+        cancel_grace_ms: int | None,
+        generation: object,
+        registration: _RegistrationSnapshot,
+    ) -> None:
+        drain_error = None
+        timed_out = False
+        if legacy_force:
+            ready.wait(timeout=max(0, deadline - time.monotonic()))
+        else:
+            _, drain_error, timed_out = self._run_managed_drain(
+                operation,
+                index,
+                module_id,
+                generation,
+                registration,
+                ready,
+                deadline,
+                drain_timeout_ms,
+                "shutdown" if operation._kind == "shutdown" else "unregister",
+                cancel_grace_ms=cancel_grace_ms,
+            )
+        with self._lock:
+            active = self._ref_counts.get(module_id, 0)
+            if legacy_force and active:
+                operation._update_module(index, drain_timed_out=True)
+            residual = active if cancel_grace_ms is not None else 0
+            pending = self._detach_registration(module_id, remaining_leases=residual)
+            if pending is not None and residual:
+                pending.residuals = threading.Event()
+        assert pending is not None
+        forced = active > 0
+        pending.drain_timed_out = timed_out
+        pending.error = drain_error
+        if forced:
+            pending.active_at_unload = active
+            logger.warning("Force-unloading module %s after drain timeout (%d active calls)", module_id, active)
+        operation._update_module(index, phase="unloading", active_at_unload=pending.active_at_unload)
+        unload_error = self._finish_unload(pending, operation, index)
+        error = drain_error or unload_error
+        outcome = "failed" if error is not None else "forced_removed" if forced else "removed"
+        if pending.residuals is not None:
+            operation._update_module(index, phase="done", outcome=outcome, error=error, cleanup_pending=True)
+            pending.residuals.wait()
+            with self._lock:
+                self._settle_unload(pending)
+        operation._update_module(index, phase="done", outcome=outcome, error=error, cleanup_pending=False)
+
+    def _run_managed_drain(
+        self,
+        operation: LifecycleOperation,
+        index: int,
+        module_id: str,
+        generation: object,
+        registration: _RegistrationSnapshot,
+        ready: threading.Event,
+        deadline: float,
+        drain_timeout_ms: int,
+        reason: Literal["unregister", "reload", "shutdown"],
+        *,
+        reload_policy: _ReloadDrainAction = "continue_waiting",
+        cancel_grace_ms: int | None = None,
+    ) -> tuple[_AbortReason | None, LifecycleError | None, bool]:
+        token = CancelToken()
+        context = DrainContext(operation._id, module_id, reason, token, deadline)
+        self._emit_lifecycle(
+            "module_drain_started",
+            operation,
+            module_id,
+            {
+                "reason_kind": reason,
+                "drain_timeout_ms": drain_timeout_ms,
+            },
+        )
+        progress = self._begin_drain_hooks(operation, index, module_id, registration, context)
+        with self._lifecycle_changed:
+            self._lifecycle_changed.wait_for(
+                lambda: progress.finished and (ready.is_set() or (reason == "reload" and progress.error is not None)),
+                timeout=max(0, deadline - time.monotonic()),
+            )
+            active = self._ref_counts.get(module_id, 0)
+            error_won = reason == "reload" and progress.finished and progress.error is not None
+            timed_out = not error_won and (not progress.finished or active > 0)
+            hook_running = not progress.finished
+            scopes = (
+                tuple(self._invocation_tokens.get(generation, ())) if timed_out and cancel_grace_ms is not None else ()
+            )
+        grace_deadline = None
+        if timed_out:
+            operation._update_module(index, drain_timed_out=True)
+            action = "cancel_then_force" if cancel_grace_ms is not None else reload_policy
+            self._emit_lifecycle(
+                "module_drain_timed_out",
+                operation,
+                module_id,
+                {
+                    "reason_kind": reason,
+                    "action": action,
+                    "active_count": active,
+                },
+                severity="warn",
+            )
+            if hook_running:
+                self._signal_lifecycle_token(token)
+            if cancel_grace_ms is not None:
+                grace_deadline = time.monotonic() + cancel_grace_ms / 1000
+                for scope in scopes:
+                    self._signal_lifecycle_token(scope)
+        with self._lifecycle_changed:
+            self._lifecycle_changed.wait_for(lambda: progress.finished)
+        if reason == "reload":
+            if timed_out and reload_policy == "abort_reload":
+                return "drain_timeout", LifecycleError(ErrorCodes.RELOAD_FAILED, "draining"), timed_out
+            if progress.error is not None:
+                return "drain_error", progress.error, timed_out
+        ready.wait(timeout=None if grace_deadline is None else max(0, grace_deadline - time.monotonic()))
+        return None, progress.error, timed_out
+
+    @staticmethod
+    def _signal_lifecycle_token(token: CancelToken) -> None:
+        try:
+            token.cancel()
+        except Exception as error:
+            logger.warning("Lifecycle cancellation listener failed: %s", type(error).__name__)
+
+    def _begin_drain_hooks(
+        self,
+        operation: LifecycleOperation,
+        index: int,
+        module_id: str,
+        registration: _RegistrationSnapshot,
+        context: DrainContext,
+    ) -> _DrainProgress:
+        progress = _DrainProgress()
+
+        def run() -> None:
+            try:
+                for instance in registration.instances():
+                    try:
+                        hook = getattr(instance, "on_drain", None)
+                        if callable(hook):
+                            operation._update_module(index, active_hook="on_drain")
+                            with _lifecycle_callback(self, operation._id):
+                                _call_lifecycle_hook(
+                                    hook, (context,), registration.hook_loop(instance), module_id, "on_drain"
+                                )
+                    except BaseException as error:
+                        progress.error = progress.error or LifecycleError._from_exception(error, "draining")
+            finally:
+                operation._update_module(index, active_hook=None)
+                with self._lifecycle_changed:
+                    progress.finished = True
+                    self._lifecycle_changed.notify_all()
+
+        try:
+            if any(callable(getattr(instance, "on_drain", None)) for instance in registration.instances()):
+                threading.Thread(target=run, name="apcore-module-drain", daemon=True).start()
+            else:
+                progress.finished = True
+        except Exception as error:
+            progress.error = LifecycleError._from_exception(error, "draining")
+            progress.finished = True
+        return progress
+
+    def _emit_lifecycle(
+        self, event: str, operation: LifecycleOperation, module_id: str, data: dict[str, Any], *, severity: str = "info"
+    ) -> None:
+        emitter = self._event_emitter
+        if emitter is not None:
+            from datetime import datetime, timezone
+            from apcore.events.emitter import ApCoreEvent
+
+            try:
+                emitter.emit(
+                    ApCoreEvent(
+                        f"apcore.registry.{event}",
+                        module_id,
+                        datetime.now(timezone.utc).isoformat(),
+                        severity,
+                        {"operation_id": operation._id, **data},
+                    )
+                )
+            except Exception as error:
+                logger.warning("Unable to emit lifecycle event %s: %s", event, type(error).__name__)
+
+    def _start_managed_reload(
+        self,
+        module_ids: list[str],
+        drain_timeout_ms: int,
+        policy: _ReloadDrainAction,
+        on_reloaded: Callable[[str, str, str, str], None],
+        *,
+        exact: bool = False,
+        prepared: _WatchedReplacement | None = None,
+    ) -> LifecycleOperation:
+        with self._lock:
+            self._require_open()
+            plan = [
+                (module_id, generation, self._snapshot_registration(module_id))
+                for module_id, generation in self._snapshot_generations(iter(module_ids))
+            ]
+        for module_id, generation, registration in plan:
+            if generation is None or registration is None:
+                if exact:
+                    raise ModuleNotFoundError(module_id=module_id)
+                continue
+            for module in registration.instances():
+                if callable(getattr(module, "on_drain", None)) and not callable(
+                    getattr(module, "on_drain_aborted", None)
+                ):
+                    raise InvalidInputError(
+                        message=f"Module '{module_id}' must pair on_drain with on_drain_aborted for managed reload"
+                    )
+        operation = LifecycleOperation("reload", registry=self)
+        operation._set_modules(iter(module_ids))
+        if not plan:
+            operation._complete()
+            return operation
+
+        def run() -> None:
+            try:
+                for index, (module_id, generation, registration) in enumerate(plan):
+                    self._run_managed_reload(
+                        operation,
+                        index,
+                        module_id,
+                        generation,
+                        registration,
+                        drain_timeout_ms,
+                        policy,
+                        on_reloaded,
+                        prepared,
+                    )
+                operation._complete()
+            finally:
+                if prepared is not None:
+                    self._finish_watched_replacement(prepared)
+
+        operation._start(run, "loading")
+        return operation
+
+    def _run_managed_reload(
+        self,
+        operation: LifecycleOperation,
+        index: int,
+        module_id: str,
+        generation: object | None,
+        registration: _RegistrationSnapshot | None,
+        timeout_ms: int,
+        policy: _ReloadDrainAction,
+        on_reloaded: Callable[[str, str, str, str], None],
+        prepared: _WatchedReplacement | None,
+    ) -> None:
+        with self._lock:
+            if (
+                self._closed
+                or generation is None
+                or registration is None
+                or (prepared is not None and prepared.generation is not generation)
+                or self._lease_generations.get(module_id) is not generation
+                or module_id in self._draining
+                or module_id in self._in_flight
+                or module_id in self._unavailable
+                or (current := self._snapshot_registration(module_id)) is None
+                or current.module is not registration.module
+                or current.versions.keys() != registration.versions.keys()
+                or any(current.versions[key] is not value for key, value in registration.versions.items())
+            ):
+                error = LifecycleError(ErrorCodes.MODULE_RELOAD_CONFLICT, "draining")
+                operation._update_module(
+                    index, phase="done", outcome="failed", error=error, compensation="not_required"
+                )
+                return
+            ready = self._mark_draining(module_id)
+            deadline = time.monotonic() + timeout_ms / 1000
+            operation._update_module(index, phase="draining")
+        abort, error, timed_out = self._run_managed_drain(
+            operation,
+            index,
+            module_id,
+            generation,
+            registration,
+            ready,
+            deadline,
+            timeout_ms,
+            "reload",
+            reload_policy=policy,
+        )
+        if abort is not None:
+            self._recover_managed_reload(operation, index, module_id, registration, abort, error)
+            return
+
+        with self._lifecycle_changed:
+            if self._closed:
+                self._draining.discard(module_id)
+                self._drain_events.pop(module_id, None)
+                self._lifecycle_changed.notify_all()
+                error = LifecycleError(ErrorCodes.MODULE_RELOAD_CONFLICT, "draining")
+                operation._update_module(
+                    index, phase="done", outcome="failed", error=error, compensation="not_required"
+                )
+                return
+            pending = self._detach_registration(module_id)
+            self._in_flight.add(module_id)
+        assert pending is not None
+        pending.drain_timed_out = timed_out
+        self._replace_managed_generation(operation, index, module_id, pending, on_reloaded, prepared)
+
+    def _recover_managed_reload(
+        self,
+        operation: LifecycleOperation,
+        index: int,
+        module_id: str,
+        registration: _RegistrationSnapshot,
+        abort: _AbortReason,
+        error: LifecycleError | None,
+    ) -> None:
+        operation._update_module(index, phase="recovering", abort_reason=abort)
+        context = DrainAbortedContext(operation._id, module_id, abort, CancelToken())
+        recovery_error = None
+        for module in registration.instances():
+            try:
+                hook = getattr(module, "on_drain_aborted", None)
+                if callable(getattr(module, "on_drain", None)) and callable(hook):
+                    operation._update_module(index, active_hook="on_drain_aborted")
+                    with _lifecycle_callback(self, operation._id):
+                        _call_lifecycle_hook(
+                            hook, (context,), registration.hook_loop(module), module_id, "on_drain_aborted"
+                        )
+            except BaseException as failure:
+                recovery_error = recovery_error or LifecycleError._from_exception(failure, "recovering")
+        with self._lifecycle_changed:
+            ready = recovery_error is None and not self._closed
+            if not ready:
+                self._unavailable.add(module_id)
+            self._draining.discard(module_id)
+            self._drain_events.pop(module_id, None)
+            self._lifecycle_changed.notify_all()
+        outcome = "retained_ready" if ready else "retained_unavailable"
+        operation._update_module(
+            index,
+            phase="done",
+            active_hook=None,
+            outcome=outcome,
+            error=recovery_error or error,
+            compensation="not_required",
+        )
+        self._emit_lifecycle(
+            "module_drain_recovered",
+            operation,
+            module_id,
+            {
+                "abort_reason": abort,
+                "outcome": outcome,
+            },
+            severity="info" if ready else "error",
+        )
+
+    def _replace_managed_generation(
+        self,
+        operation: LifecycleOperation,
+        index: int,
+        module_id: str,
+        pending: _PendingUnload,
+        on_reloaded: Callable[[str, str, str, str], None],
+        prepared: _WatchedReplacement | None,
+    ) -> None:
+        old = pending.registration
+        state = None
+        phase = "unloading"
+        try:
+            operation._update_module(index, phase="unloading")
+            try:
+                if callable(getattr(old.module, "on_suspend", None)):
+                    operation._update_module(index, active_hook="on_suspend")
+                    with _lifecycle_callback(self, operation._id):
+                        state = self._call_on_suspend(module_id, old.module, old.hook_loop(old.module))
+            finally:
+                operation._update_module(index, active_hook=None)
+                unload_error = self._finish_unload(pending, operation, index)
+            if unload_error is not None:
+                raise ModuleError(unload_error.code, "Module unload failed")
+            phase = "loading"
+            operation._update_module(index, phase="loading")
+            if prepared is None:
+                replacement = self._replacement_snapshot(module_id, old)
+            else:
+                with self._lock:
+                    self._require_current_watched_source(module_id, prepared)
+                replacement = prepared.registration
+            self._activate_managed_snapshot(operation, index, module_id, replacement, state, watched=prepared)
+        except BaseException as failure:
+            error = (
+                LifecycleError(ErrorCodes.MODULE_LOAD_ERROR, "loading")
+                if phase == "loading" and not isinstance(failure, ModuleError)
+                else LifecycleError._from_exception(failure, phase)
+            )
+            if prepared is not None and not prepared.source.is_file():
+                # Deletion is terminal for this source. Never republish its old registration.
+                compensation = "not_required"
+            else:
+                restored = self._compensate_managed_reload(operation, index, module_id, old, state, watched=prepared)
+                compensation = "restored" if restored else "failed"
+            operation._update_module(
+                index, phase="done", active_hook=None, outcome="failed", error=error, compensation=compensation
+            )
+            self._emit_lifecycle(
+                "module_reload_failed",
+                operation,
+                module_id,
+                {
+                    "phase": error.phase,
+                    "error_code": error.code,
+                    "compensation": compensation,
+                },
+                severity="error",
+            )
+            return
+        finally:
+            with self._lock:
+                self._clear_loading(module_id)
+
+        previous_version = str(old.metadata.get("version") or DEFAULT_MODULE_VERSION)
+        new_version = str(replacement.metadata.get("version") or DEFAULT_MODULE_VERSION)
+        operation._update_module(index, phase="done", outcome="reloaded", compensation="not_required")
+        try:
+            on_reloaded(module_id, previous_version, new_version, operation._id)
+        except Exception as failure:
+            logger.warning("Could not record successful reload of %s: %s", module_id, type(failure).__name__)
+
+    def _compensate_managed_reload(
+        self,
+        operation: LifecycleOperation,
+        index: int,
+        module_id: str,
+        registration: _RegistrationSnapshot,
+        state: dict[str, Any] | None,
+        *,
+        watched: _WatchedReplacement | None = None,
+    ) -> bool:
+        try:
+            with self._lock:
+                self._require_open()
+            self._activate_managed_snapshot(operation, index, module_id, registration, state, watched=watched)
+            return True
+        except BaseException as failure:
+            logger.error("Managed reload compensation failed for %s: %s", module_id, type(failure).__name__)
+            return False
+
+    def _activate_managed_snapshot(
+        self,
+        operation: LifecycleOperation,
+        index: int,
+        module_id: str,
+        registration: _RegistrationSnapshot,
+        state: dict[str, Any] | None,
+        *,
+        watched: _WatchedReplacement | None = None,
+    ) -> None:
+        initialized = []
+        try:
+            with _lifecycle_callback(self, operation._id):
+                for module in registration.instances():
+                    loop = registration.hook_loop(module)
+                    self._validate_hook_adapter(module_id, module, loop)
+                    hook = getattr(module, "on_load", None)
+                    if callable(hook):
+                        operation._update_module(index, phase="loading", active_hook="on_load")
+                        _call_lifecycle_hook(hook, (), loop, module_id, "on_load")
+                    initialized.append(module)
+                    if (
+                        module is registration.module
+                        and state is not None
+                        and callable(getattr(module, "on_resume", None))
+                    ):
+                        operation._update_module(index, phase="resuming", active_hook="on_resume")
+                        self._call_on_resume(module_id, module, state, loop)
+                operation._update_module(index, active_hook=None)
+                with self._lock:
+                    self._require_open()
+                    if watched is not None and registration is watched.registration:
+                        self._require_current_watched_source(module_id, watched)
+                    elif watched is not None and not watched.source.is_file():
+                        raise ModuleLoadError(module_id, "Watched module source was deleted before restoration")
+                    self._publish_snapshot(module_id, registration)
+                self._trigger_event("register", module_id, registration.module)
+        except BaseException:
+            with _lifecycle_callback(self, operation._id):
+                for module in reversed(initialized):
+                    self._call_on_unload(module_id, module, hook_loop=registration.hook_loop(module))
+            raise
+
+    def _replacement_snapshot(self, module_id: str, old: _RegistrationSnapshot) -> _RegistrationSnapshot:
+        loop = old.hook_loop(old.module)
+        source = None
+        metadata: dict[str, Any] = {}
+        if self._custom_discoverer is not None:
+            roots = [str(root["root"]) for root in self._extension_roots]
+            modules = self._custom_discoverer.discover(roots)
+            match = next(
+                (entry for entry in modules if isinstance(entry, dict) and entry.get("module_id") == module_id), None
+            )
+            if match is None or "module" not in match:
+                raise ModuleLoadError(module_id, "The replacement was not discovered")
+            module = match["module"]
+            errors = validate_module(module, programmatic=True)
+            if not errors and self._custom_validator is not None:
+                errors = self._custom_validator.validate(module)
+            if errors:
+                raise ModuleLoadError(module_id, "The replacement is not a valid module")
+            _ensure_schema_adapter(module, normalize_legacy_none=True)
+        else:
+            candidates = (
+                [self._watched_candidate(old.source_path)]
+                if old.source_path is not None
+                else self._reload_source_candidates(module_id)
+            )
+            target = next((item for item in candidates if item is not None and item.canonical_id == module_id), None)
+            if target is None:
+                raise ModuleLoadError(module_id, "The replacement source was not discovered")
+            selected = self._validate_all(self._resolve_all_entry_points(self._load_all_metadata([target])))
+            if not selected:
+                raise ModuleLoadError(module_id, "The replacement source was invalid")
+            source = target.file_path
+            metadata = selected[0].metadata
+            module = selected[0].entry_point()
+        merged = _prepare_discovered_module(module_id, module, metadata)
+        version = self._effective_version(module, metadata)
+        deps = parse_dependencies(metadata.get("dependencies"))
+        with self._lock:
+            failure = self._discovery_dependency_error(module_id, deps)
+        if failure is not None:
+            raise failure
+        registration = _ModuleRegistration(module, merged, metadata, loop)
+        return _RegistrationSnapshot(module, merged, {version: registration}, source)
+
+    def _reload_source_candidates(self, module_id: str) -> list[DiscoveredModule]:
+        candidates = self._scan_roots(*self._scan_params())
+        self._apply_id_map_overrides(candidates)
+        return [item for item in self._filter_invalid_discovery_ids(candidates) if item.canonical_id == module_id]
+
     def _stop_admission(self) -> None:
         with self._lock:
             self._closed = True
 
-    def _shutdown(self) -> None:
-        """Stop discovery, wait for loading reservations, and release all registrations."""
-        self._stop_admission()
+    def _start_shutdown(
+        self,
+        drain_timeout_ms: int | None,
+        on_drain_timeout: _HostDrainAction | None,
+        cancel_grace_ms: int | None = None,
+        *,
+        legacy: bool,
+    ) -> LifecycleOperation:
+        with self._lock:
+            existing = self._shutdown_operation
+            if existing is not None:
+                if drain_timeout_ms is not None and drain_timeout_ms != self._shutdown_drain_timeout_ms:
+                    raise InvalidInputError(message="Conflicting shutdown drain_timeout_ms")
+                active_policy = "continue_waiting" if self._shutdown_cancel_grace_ms is None else "cancel_then_force"
+                if on_drain_timeout is not None and (self._shutdown_legacy_force or on_drain_timeout != active_policy):
+                    raise InvalidInputError(message="Conflicting shutdown on_drain_timeout")
+                if cancel_grace_ms is not None and cancel_grace_ms != self._shutdown_cancel_grace_ms:
+                    raise InvalidInputError(message="Conflicting shutdown cancel_grace_ms")
+                if not legacy or existing._failure is None:
+                    return existing
+
+            timeout = self._shutdown_drain_timeout_ms if drain_timeout_ms is None else drain_timeout_ms
+            force = legacy if existing is None else self._shutdown_legacy_force
+            grace = self._shutdown_cancel_grace_ms
+            if existing is None:
+                if cancel_grace_ms is not None and on_drain_timeout != "cancel_then_force":
+                    raise InvalidInputError(message="cancel_grace_ms requires cancel_then_force")
+                if on_drain_timeout == "cancel_then_force":
+                    grace = 1000 if cancel_grace_ms is None else cancel_grace_ms
+            operation = LifecycleOperation("shutdown", registry=self)
+            operation._start(lambda: self._run_shutdown(operation, timeout, force, grace), "shutdown")
+            self._shutdown_operation = operation
+            self._shutdown_drain_timeout_ms = timeout
+            self._shutdown_legacy_force = force
+            self._shutdown_cancel_grace_ms = grace
+            self._closed = True
+            self._shutdown_rows.clear()
+            self._track_shutdown_registrations(operation, self._snapshot_generations(reversed(self._modules)))
+            for pending in self._pending_unloads.values():
+                self._report_joined_removal(pending)
+            return operation
+
+    def _track_shutdown_registrations(
+        self, operation: LifecycleOperation, registrations: list[tuple[str, object | None]]
+    ) -> None:
+        for module_id, generation in registrations:
+            if generation is not None and generation not in self._shutdown_rows:
+                index = operation._add_module(module_id)
+                self._shutdown_rows[generation] = index
+                if module_id in self._draining:
+                    operation._update_module(index, phase="draining")
+
+    def _run_shutdown(
+        self, operation: LifecycleOperation, drain_timeout_ms: int, legacy_force: bool, cancel_grace_ms: int | None
+    ) -> None:
+        # Ownership and admission are published under the Registry lock
+        # before the worker can call into an injected watcher.
+        with self._lock:
+            pass
         self.unwatch()
         with self._lifecycle_changed:
             self._lifecycle_changed.wait_for(lambda: not self._in_flight and not self._draining)
-            module_ids = tuple(reversed(self._modules))
-        for module_id in module_ids:
-            self.safe_unregister(module_id)
+            registrations = self._snapshot_generations(reversed(self._modules))
+            self._track_shutdown_registrations(operation, registrations)
+        self._run_removals(
+            operation, registrations, drain_timeout_ms, legacy_force=legacy_force, cancel_grace_ms=cancel_grace_ms
+        )
         with self._lifecycle_changed:
             self._lifecycle_changed.wait_for(lambda: not self._draining)
-        self._wait_for_unloads()
+        self._wait_for_unloads(legacy_force=legacy_force)
+        operation._complete()
 
-    def _wait_for_unloads(self) -> None:
+    def _wait_for_unloads(self, *, legacy_force: bool) -> None:
         with self._lock:
             pending = tuple(self._pending_unloads.values())
         deadline = time.monotonic() + 5
         for removal in pending:
+            if not legacy_force or removal.residuals is not None:
+                removal.finished.wait()
+                continue
             if removal.finished.wait(timeout=max(0, deadline - time.monotonic())):
                 continue
             with self._lock:
                 force = removal.remaining_leases > 0
+                if force:
+                    removal.active_at_unload = removal.remaining_leases
+                    self._report_shutdown_unload(
+                        removal, drain_timed_out=True, active_at_unload=removal.active_at_unload
+                    )
                 removal.remaining_leases = 0
             if force:
                 logger.warning("Force-unloading module %s after shutdown timeout", removal.module_id)
@@ -2402,10 +3394,7 @@ class Registry:
                 return None
             if self._ref_counts.get(module_id, 0) and _has_running_loop():
                 raise InvalidInputError(message="Use safe_unregister_async() to drain an active module from asyncio")
-            self._draining.add(module_id)
-            event = self._drain_events[module_id] = threading.Event()
-            if self._ref_counts.get(module_id, 0) == 0:
-                event.set()
+            event = self._mark_draining(module_id)
 
         clean = event.wait(timeout=timeout_ms / 1000.0)
         with self._lock:
@@ -2414,6 +3403,9 @@ class Registry:
             ref_count = self._ref_counts.get(module_id, 0)
             pending = self._detach_registration(module_id)
             assert pending is not None
+            if not clean:
+                pending.active_at_unload = ref_count
+                self._report_shutdown_unload(pending, drain_timed_out=True, active_at_unload=ref_count)
             if reserve_replacement:
                 self._in_flight.add(module_id)
         if not clean:
@@ -2425,14 +3417,34 @@ class Registry:
             )
         return pending, clean
 
+    def _mark_draining(self, module_id: str) -> threading.Event:
+        """Close admission for a generation under the Registry lock."""
+        self._draining.add(module_id)
+        event = self._drain_events[module_id] = threading.Event()
+        if self._ref_counts.get(module_id, 0) == 0:
+            event.set()
+        return event
+
     # ----- Hot Reload -----
 
-    def watch(self) -> None:
+    def watch(self, *, lifecycle: ReloadOptions | None = None) -> None:
         """Start watching extension directories for file changes.
 
         Requires the optional ``watchdog`` dependency.
         Raises ImportError if watchdog is not installed.
         """
+        hook_loop = None
+        if lifecycle is not None:
+            if not isinstance(lifecycle, ReloadOptions):
+                raise InvalidInputError(message="Expected ReloadOptions for watch lifecycle")
+            _validate_duration("drain_timeout_ms", lifecycle.drain_timeout_ms)
+            if lifecycle.drain_timeout_ms is None or lifecycle.on_drain_timeout not in (
+                "continue_waiting",
+                "abort_reload",
+            ):
+                raise InvalidInputError(message="Invalid watch lifecycle policy")
+            if _has_running_loop():
+                hook_loop = asyncio.get_running_loop()
         try:
             from watchdog.events import FileSystemEventHandler
             from watchdog.observers import Observer  # type: ignore[import-not-found]
@@ -2452,6 +3464,8 @@ class Registry:
                 root_path = root_config.get("root", "")
                 if root_path and os.path.isdir(root_path):
                     observer.schedule(handler, root_path, recursive=True)
+            self._watch_lifecycle = lifecycle
+            self._watch_hook_loop = hook_loop
             observer.start()
             self._observer = observer
 
@@ -2460,6 +3474,9 @@ class Registry:
         with self._lock:
             observer = getattr(self, "_observer", None)
             self._observer = None
+            self._watch_lifecycle = None
+            self._watch_hook_loop = None
+            self._watched_replacements.clear()
         if observer is not None:
             observer.stop()
             observer.join()
@@ -2478,13 +3495,17 @@ class Registry:
         self._lowercase_map.pop(mid.lower(), None)
         self._versioned_modules.remove_all(mid)
         self._draining.discard(mid)
+        self._unavailable.discard(mid)
         event = self._drain_events.pop(mid, None)
         if event is not None:
             event.set()
         self._ref_counts.pop(mid, None)
         generation = self._lease_generations.pop(mid, None) or object()
+        if not self._invocation_tokens.get(generation):
+            self._invocation_tokens.pop(generation, None)
         pending = _PendingUnload(generation, mid, registration, context, remaining_leases)
         self._pending_unloads[generation] = pending
+        self._report_shutdown_unload(pending, phase="draining" if remaining_leases > 0 else "unloading")
         self._lifecycle_changed.notify_all()
         return pending
 
@@ -2511,25 +3532,40 @@ class Registry:
             self._in_flight.add(module_id)
         module = registration.module
         loaded = []
-        for instance in registration.instances():
-            with self._resume_on_load(module_id, suspended_state if instance is module else None):
-                restored = self._invoke_on_load(module_id, instance)
-            if not restored:
-                for initialized in reversed(loaded):
-                    self._call_on_unload(module_id, initialized)
-                return False
-            loaded.append(instance)
-        with self._lock:
-            self._modules[module_id] = module
-            self._module_meta[module_id] = registration.metadata
-            self._lowercase_map[module_id.lower()] = module_id
-            if registration.source_path is not None:
-                self._module_sources[module_id] = registration.source_path
-            for version, entry in registration.versions.items():
-                self._versioned_modules.add(module_id, version, entry)
-            self._clear_loading(module_id)
-        self._trigger_event("register", module_id, module)
-        return True
+        published = False
+        try:
+            for instance in registration.instances():
+                loop = registration.hook_loop(instance)
+                state = suspended_state if instance is module else None
+                with self._resume_on_load(module_id, state):
+                    if not self._invoke_on_load(module_id, instance, clear_reservation_on_error=False, hook_loop=loop):
+                        return False
+                loaded.append(instance)
+            with self._lock:
+                if self._closed:
+                    return False
+                self._publish_snapshot(module_id, registration)
+                published = True
+            with _lifecycle_callback(self):
+                self._trigger_event("register", module_id, module)
+            return True
+        finally:
+            if not published:
+                with _lifecycle_callback(self):
+                    for instance in reversed(loaded):
+                        self._call_on_unload(module_id, instance, hook_loop=registration.hook_loop(instance))
+            with self._lock:
+                self._clear_loading(module_id)
+
+    def _publish_snapshot(self, module_id: str, registration: _RegistrationSnapshot) -> None:
+        """Publish initialized registrations under the Registry lock."""
+        self._modules[module_id] = registration.module
+        self._module_meta[module_id] = registration.metadata
+        self._lowercase_map[module_id.lower()] = module_id
+        if registration.source_path is not None:
+            self._module_sources[module_id] = registration.source_path
+        for version, entry in registration.versions.items():
+            self._versioned_modules.add(module_id, version, entry)
 
     def _watched_candidate(self, path: Path) -> DiscoveredModule | None:
         max_depth, follow_symlinks, ignore_patterns = self._scan_params()
@@ -2568,6 +3604,8 @@ class Registry:
         new instance into all internal maps (``_modules``, ``_module_meta``,
         ``_lowercase_map``, ``_versioned_modules``).
         """
+        if self._defer_watched_change(path):
+            return
         # Phase 1 (outside lock): compile + instantiate + validate new module.
         try:
             candidate = self._watched_candidate(Path(path))
@@ -2579,6 +3617,8 @@ class Registry:
                 if new_id in self._modules and self._module_sources.get(new_id) != source:
                     logger.warning("Hot reload skipped '%s' because it is registered from another source", new_id)
                     return
+                managed = self._watch_lifecycle is not None
+            revision = self._source_revision(source) if managed else None
             metadata = load_metadata(candidate.meta_path) if candidate.meta_path is not None else {}
             cls = resolve_entry_point(source, meta=metadata, pre_approval_hook=self._pre_approval_hook)
         except Exception as e:
@@ -2599,6 +3639,14 @@ class Registry:
                 "; ".join(validation_errors),
             )
             return
+
+        try:
+            effective_version = self._effective_version(instance, metadata)
+            merged_meta = _prepare_discovered_module(new_id, instance, metadata)
+        except Exception as error:
+            logger.warning("Hot reload rejected module from %s: %s", path, error)
+            return
+
         if self._custom_validator is not None:
             try:
                 errors = self._custom_validator.validate(instance)
@@ -2613,21 +3661,35 @@ class Registry:
                 logger.warning("Hot reload rejected module from %s: %s", path, "; ".join(errors))
                 return
 
-        try:
-            effective_version = self._effective_version(instance, metadata)
-            merged_meta = merge_module_metadata(instance, metadata)
-        except Exception as error:
-            logger.warning("Hot reload failed to merge metadata for %s: %s", path, error)
-            return
-
-        # Reserve the new ID, or detach the previous registration after its
-        # leases drain. Hook execution and the drain wait both happen unlocked.
+        # Reuse the registration's adapter on the watcher thread. An opted-in
+        # watcher can also introduce async-capable registrations on its loop.
         with self._lock:
             if self._closed or new_id in self._in_flight or new_id in self._draining:
                 return
             exists = new_id in self._modules
+            current = self._snapshot_registration(new_id)
+            hook_loop = current.hook_loop(current.module) if current is not None else self._watch_hook_loop
+            options = self._watch_lifecycle
+            if exists and options is not None:
+                watched_generation = self._lease_generations.setdefault(new_id, object())
+            else:
+                watched_generation = None
             if not exists:
                 self._in_flight.add(new_id)
+        if watched_generation is not None and options is not None:
+            self._start_watched_replacement(
+                new_id,
+                instance,
+                source,
+                effective_version,
+                metadata,
+                merged_meta,
+                hook_loop,
+                watched_generation,
+                options,
+                revision,
+            )
+            return
         old_registration: _RegistrationSnapshot | None = None
         suspended_state: dict[str, Any] | None = None
         if exists:
@@ -2639,34 +3701,110 @@ class Registry:
             # Phase 3: run hooks on the old module outside the registry lock.
             suspended_state = self._capture_state_and_unload(pending, clean)
 
-        # Phase 4a (outside lock): D-123 — the new instance MUST run `on_load()`
-        # before it becomes visible, the same precondition `Contract:
-        # Registry.register` Side Effects step 8 places on every other
-        # registration. That step is scoped to `register`, and this path writes
-        # the internal maps directly, so it violated no stated rule while
-        # publishing a module that was visible but never initialised — harder to
-        # diagnose than one that is simply absent.
         with self._resume_on_load(new_id, suspended_state):
-            loaded = self._invoke_on_load(new_id, instance)
-        if not loaded:
-            # D-112 rules 2-4, applied here via D-123: restore the previous
-            # instance rather than leaving the module gone. A failed hot reload
-            # must not make a working module disappear.
-            self._restore_after_failed_hot_reload(new_id, old_registration, suspended_state)
-            return
-
-        # Phase 4b (under lock): insert the new instance into every store.
-        with self._lock:
-            self._clear_loading(new_id)
-            self._modules[new_id] = instance
-            self._module_meta[new_id] = merged_meta
-            self._lowercase_map[new_id.lower()] = new_id
-            self._module_sources[new_id] = source
-            registration = _ModuleRegistration(instance, merged_meta, metadata)
-            self._versioned_modules.add(new_id, effective_version, registration)
+            if not self._invoke_on_load(new_id, instance, hook_loop=hook_loop):
+                self._restore_after_failed_hot_reload(new_id, old_registration, suspended_state)
+                return
+            with self._ready_to_publish(new_id, instance, hook_loop=hook_loop) as admitted:
+                if not admitted:
+                    return
+                registration = _ModuleRegistration(instance, merged_meta, metadata, hook_loop)
+                self._publish_snapshot(
+                    new_id, _RegistrationSnapshot(instance, merged_meta, {effective_version: registration}, source)
+                )
 
         # Phase 5 (outside lock): notify observers of the initialized module.
         self._trigger_event("register", new_id, instance)
+
+    def _start_watched_replacement(
+        self,
+        module_id: str,
+        module: Any,
+        source: Path,
+        version: str,
+        metadata: dict[str, Any],
+        merged_meta: dict[str, Any],
+        loop: asyncio.AbstractEventLoop | None,
+        generation: object,
+        options: ReloadOptions,
+        revision: tuple[int, int, int, int] | None,
+    ) -> None:
+        try:
+            self._validate_hook_adapter(module_id, module, loop)
+            if inspect.iscoroutinefunction(getattr(module, "on_load", None)) and (
+                loop is None or not loop.is_running()
+            ):
+                raise ModuleLoadError(module_id, "Async on_load requires an available lifecycle event loop")
+            registration = _ModuleRegistration(module, merged_meta, metadata, loop)
+            replacement = _RegistrationSnapshot(module, merged_meta, {version: registration}, source)
+            watched = _WatchedReplacement(generation, replacement, source, revision)
+            with self._lock:
+                if self._closed or self._watch_lifecycle is not options or source in self._watched_replacements:
+                    return
+                self._watched_replacements[source] = watched
+            try:
+                self._start_managed_reload(
+                    [module_id],
+                    options.drain_timeout_ms,
+                    options.on_drain_timeout,
+                    lambda *_: None,
+                    exact=True,
+                    prepared=watched,
+                )
+            except BaseException:
+                with self._lock:
+                    if self._watched_replacements.get(source) is watched:
+                        self._watched_replacements.pop(source)
+                raise
+        except Exception as error:
+            logger.warning("Watcher could not start reload for '%s': %s", module_id, type(error).__name__)
+
+    @staticmethod
+    def _source_revision(source: Path) -> tuple[int, int, int, int] | None:
+        try:
+            details = source.stat()
+        except OSError:
+            return None
+        return (details.st_dev, details.st_ino, details.st_mtime_ns, details.st_size)
+
+    def _defer_watched_change(self, path: str) -> bool:
+        """Keep one pending refresh per source while its replacement owns admission."""
+        with self._lock:
+            if not self._watched_replacements:
+                return False
+        try:
+            source = Path(path).resolve()
+        except (OSError, RuntimeError):
+            return False
+        with self._lock:
+            watched = self._watched_replacements.get(source)
+            if watched is None:
+                return False
+            watched.refresh |= self._source_revision(source) != watched.revision
+            return True
+
+    def _require_current_watched_source(self, module_id: str, watched: _WatchedReplacement) -> None:
+        """Check the candidate revision and watcher ownership under the Registry lock."""
+        if self._watched_replacements.get(watched.source) is not watched:
+            raise ModuleLoadError(module_id, "Watcher stopped before module replacement")
+        watched.refresh |= self._source_revision(watched.source) != watched.revision
+        if watched.refresh or watched.revision is None:
+            raise ModuleLoadError(module_id, "Watched module source changed during replacement")
+
+    def _finish_watched_replacement(self, watched: _WatchedReplacement) -> None:
+        with self._lock:
+            if self._watched_replacements.get(watched.source) is not watched:
+                return
+            self._watched_replacements.pop(watched.source)
+            if self._closed or self._watch_lifecycle is None:
+                return
+            revision = self._source_revision(watched.source)
+            if not watched.refresh and revision == watched.revision:
+                return
+        if revision is None:
+            self._handle_file_deletion(str(watched.source))
+        else:
+            self._handle_file_change(str(watched.source))
 
     def _restore_after_failed_hot_reload(
         self,
@@ -2710,12 +3848,14 @@ class Registry:
             module_id,
         )
 
-    def _call_on_suspend(self, module_id: str, module: Any) -> dict[str, Any] | None:
+    def _call_on_suspend(
+        self, module_id: str, module: Any, hook_loop: asyncio.AbstractEventLoop | None = None
+    ) -> dict[str, Any] | None:
         """Call on_suspend on ``module`` outside the registry lock; return state dict or None."""
         if not (hasattr(module, "on_suspend") and callable(module.on_suspend)):
             return None
         try:
-            raw_state: Any = module.on_suspend()
+            raw_state: Any = _call_lifecycle_hook(module.on_suspend, (), hook_loop, module_id, "on_suspend")
         except Exception as e:
             logger.error(
                 "on_suspend() failed for module '%s' during hot reload: %s",
@@ -2726,32 +3866,54 @@ class Registry:
         if raw_state is None:
             return None
         if isinstance(raw_state, dict):
-            return raw_state
+            try:
+                json.dumps(raw_state, allow_nan=False)
+            except (TypeError, ValueError):
+                logger.warning("on_suspend() for module '%s' returned non-JSON state; ignoring", module_id)
+            else:
+                return raw_state
         logger.warning("on_suspend() for module '%s' returned non-dict; ignoring", module_id)
         return None
 
-    def _call_on_unload(self, module_id: str, module: Any) -> None:
+    def _call_on_unload(
+        self,
+        module_id: str,
+        module: Any,
+        hook_progress: Callable[[bool], None] | None = None,
+        hook_loop: asyncio.AbstractEventLoop | None = None,
+    ) -> LifecycleError | None:
         """Call on_unload on ``module`` outside the registry lock."""
-        if not hasattr(module, "on_unload"):
-            return
         try:
-            module.on_unload()
+            if hasattr(module, "on_unload"):
+                if hook_progress is not None:
+                    hook_progress(True)
+                try:
+                    _call_lifecycle_hook(module.on_unload, (), hook_loop, module_id, "on_unload")
+                finally:
+                    if hook_progress is not None:
+                        hook_progress(False)
         except Exception as e:
             logger.error(
                 "on_unload() failed for module '%s': %s",
                 module_id,
                 e,
             )
+            return LifecycleError._from_exception(e, "unloading")
+        return None
 
-    def _call_on_resume(self, module_id: str, module: Any, state: dict[str, Any]) -> None:
+    def _call_on_resume(
+        self, module_id: str, module: Any, state: dict[str, Any], hook_loop: asyncio.AbstractEventLoop | None = None
+    ) -> None:
         if hasattr(module, "on_resume") and callable(module.on_resume):
             try:
-                module.on_resume(state)
+                _call_lifecycle_hook(module.on_resume, (state,), hook_loop, module_id, "on_resume")
             except Exception as exc:
                 logger.error("on_resume() failed for module '%s': %s", module_id, exc)
 
     def _handle_file_deletion(self, path: str) -> None:
         """Drain the module, then unload it when its source file is deleted."""
+        if self._defer_watched_change(path):
+            return
         try:
             source = Path(path).resolve()
         except (OSError, RuntimeError):
@@ -2848,7 +4010,7 @@ class Registry:
         # streaming check ran on ``register()`` alone, so a sys module could
         # advertise streaming it cannot do. apcore-rust routes both entry points
         # through the shared ``register_core``, which performs the check.
-        _validate_streaming_annotation(module_id, module)
+        _validate_streaming_annotation(module_id, module, getattr(module, "annotations", None))
 
         _ensure_schema_adapter(module)
 
@@ -2899,8 +4061,9 @@ class Registry:
         self._initialize_module(module_id, module)
 
         # Phase 3: atomically publish into the visible store.
-        with self._lock:
-            self._clear_loading(module_id)
+        with self._ready_to_publish(module_id, module) as admitted:
+            if not admitted:
+                raise InvalidInputError(message="The module registry is shut down")
             self._modules[module_id] = module
             self._module_meta[module_id] = merged_meta
             self._lowercase_map[module_id.lower()] = module_id

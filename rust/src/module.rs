@@ -12,6 +12,7 @@ use std::sync::LazyLock;
 
 use crate::context::Context;
 use crate::errors::ModuleError;
+use crate::lifecycle::{DrainAbortedContext, DrainContext};
 
 /// A stream of output chunks from a streaming module.
 ///
@@ -23,6 +24,15 @@ pub type ChunkStream = Pin<Box<dyn Stream<Item = Result<serde_json::Value, Modul
 /// Core trait that all `APCore` modules must implement.
 #[async_trait]
 pub trait Module: Send + Sync {
+    /// Expose paired drain and recovery hooks to the Registry.
+    fn as_drainable(&self) -> Option<&dyn DrainableModule> {
+        None
+    }
+
+    /// Opt into asynchronous registration and lifecycle hooks.
+    fn as_async_lifecycle(&self) -> Option<&dyn AsyncLifecycleModule> {
+        None
+    }
     /// Returns the JSON Schema describing this module's input.
     fn input_schema(&self) -> serde_json::Value;
 
@@ -278,6 +288,35 @@ pub trait Module: Send + Sync {
     /// but `as_streaming()` returns `None`.
     fn as_streaming(&self) -> Option<&dyn StreamingModule> {
         None
+    }
+}
+
+/// A module that can announce draining and recover from an aborted reload.
+#[async_trait]
+pub trait DrainableModule: Module {
+    async fn on_drain(&self, context: &DrainContext) -> Result<(), ModuleError>;
+    async fn on_drain_aborted(&self, context: &DrainAbortedContext) -> Result<(), ModuleError>;
+}
+
+/// Optional asynchronous hooks selected by asynchronous registration.
+#[async_trait]
+pub trait AsyncLifecycleModule: Module {
+    async fn on_load_async(&self) -> Result<(), ModuleError> {
+        self.on_load()
+    }
+
+    async fn on_unload_async(&self) -> Result<(), ModuleError> {
+        self.on_unload();
+        Ok(())
+    }
+
+    async fn on_suspend_async(&self) -> Result<Option<serde_json::Value>, ModuleError> {
+        Ok(self.on_suspend())
+    }
+
+    async fn on_resume_async(&self, state: serde_json::Value) -> Result<(), ModuleError> {
+        self.on_resume(state);
+        Ok(())
     }
 }
 

@@ -480,7 +480,12 @@ export function registerSysModules(
     } catch (err) {
       const cause = err instanceof Error ? err : new Error(String(err));
       const error = new SysModuleRegistrationError(id, cause);
-      if (failOnError) throw error;
+      if (failOnError) {
+        void result.eventEmitter?.shutdown().catch((cleanupError: unknown) => {
+          console.warn('[apcore:sys-modules] Event emitter cleanup failed after startup error:', cleanupError);
+        });
+        throw error;
+      }
       options?.onRegistrationError?.(error);
       console.error(`[apcore:sys-modules] Failed to register system module '${id}':`, err);
     }

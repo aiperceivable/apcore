@@ -14,6 +14,10 @@ use crate::errors::ModuleError;
 use crate::events::emitter::EventEmitter;
 use crate::events::subscribers::EventSubscriber;
 use crate::executor::Executor;
+use crate::lifecycle::{
+    invalid_lifecycle_input, lifecycle_runtime, LifecycleOperation, ShutdownOptions,
+    UnregisterOptions,
+};
 use crate::middleware::adapters::{AfterMiddleware, BeforeMiddleware};
 use crate::middleware::base::Middleware;
 use crate::middleware::manager::MiddlewareHandle;
@@ -80,7 +84,7 @@ pub struct APCore {
     // The enabled system event bus shared by the client, registry callbacks,
     // system modules, and the Executor the client builds.
     event_emitter: Option<Arc<EventEmitter>>,
-    shutdown_complete: tokio::sync::OnceCell<()>,
+    shutdown_operation: parking_lot::Mutex<Option<ClientShutdown>>,
     metrics_collector: Option<MetricsCollector>,
     sys_modules_context: Option<SysModulesContext>,
     sys_modules_errors: Vec<SysModuleError>,
@@ -92,6 +96,11 @@ pub struct APCore {
     toggle_state: Arc<ToggleState>,
 }
 
+struct ClientShutdown {
+    operation: LifecycleOperation,
+    event_flush_timeout_ms: u32,
+}
+
 impl std::fmt::Debug for APCore {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("APCore")
@@ -99,7 +108,10 @@ impl std::fmt::Debug for APCore {
             .field("executor", &"<Executor>")
             .field("registry", &self.registry)
             .field("event_emitter", &self.event_emitter)
-            .field("shutdown_complete", &self.shutdown_complete.initialized())
+            .field(
+                "shutdown_started",
+                &self.shutdown_operation.lock().is_some(),
+            )
             .field("metrics_collector", &self.metrics_collector)
             .field(
                 "sys_modules_registered",
@@ -239,13 +251,7 @@ impl APCore {
             executor.set_policy(policy);
         }
 
-        // Issue #71: this instance owns exactly one toggle store. Bind it to the
-        // executor so the pipeline `module_lookup` step (read path) consults it,
-        // and hand the same Arc to `register_sys_modules` so
-        // `ToggleFeatureModule` (write path) mutates the same store. Disabling a
-        // module on this instance must not leak into another `APCore`.
-        let toggle_state = Arc::new(ToggleState::new());
-        executor.set_toggle_state(Arc::clone(&toggle_state));
+        let toggle_state = executor.bind_client_toggle_state(executor_supplied);
 
         // Config-driven ACL discovery (D-64, Recommendation A). Resolve
         // `acl.root` and attach an ACL only when the path exists; a missing path
@@ -348,7 +354,7 @@ impl APCore {
             executor: executor.into_shared(),
             registry,
             event_emitter,
-            shutdown_complete: tokio::sync::OnceCell::new(),
+            shutdown_operation: parking_lot::Mutex::new(None),
             metrics_collector,
             sys_modules_context,
             sys_modules_errors: startup.errors,
@@ -613,25 +619,90 @@ impl APCore {
         self.registry.unregister_many(module_ids).await
     }
 
+    /// Start an ordered batch and observe its progress through an operation handle.
+    pub fn start_unregister_many<I, S>(
+        &self,
+        module_ids: I,
+        options: Option<UnregisterOptions>,
+    ) -> Result<LifecycleOperation, ModuleError>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        self.registry.start_unregister_many(module_ids, options)
+    }
+
+    /// Register a module with its asynchronous lifecycle adapter.
+    pub async fn register_async(
+        &self,
+        module_id: &str,
+        module: Box<dyn crate::module::Module>,
+    ) -> Result<(), ModuleError> {
+        self.registry.register_async(module_id, module).await
+    }
+
+    /// Register modules in order, awaiting each asynchronous load.
+    pub async fn register_many_async<I, S>(&self, modules: I) -> Result<(), ModuleError>
+    where
+        I: IntoIterator<Item = (S, Box<dyn crate::module::Module>)>,
+        S: AsRef<str>,
+    {
+        self.registry.register_many_async(modules).await
+    }
+
+    /// Close admission and start or join Registry shutdown with this client's event flush.
+    pub fn start_shutdown(
+        &self,
+        options: Option<ShutdownOptions>,
+    ) -> Result<LifecycleOperation, ModuleError> {
+        self.start_shutdown_with_policy(options.unwrap_or_default(), false)
+    }
+
+    fn start_shutdown_with_policy(
+        &self,
+        options: ShutdownOptions,
+        legacy_force: bool,
+    ) -> Result<LifecycleOperation, ModuleError> {
+        const DEFAULT_EVENT_FLUSH_TIMEOUT_MS: u32 = 5_000;
+        options.validate()?;
+        let mut attached = self.shutdown_operation.lock();
+        if let Some(owner) = attached.as_ref() {
+            if options
+                .event_flush_timeout_ms
+                .is_some_and(|ms| ms != owner.event_flush_timeout_ms)
+            {
+                return Err(invalid_lifecycle_input(
+                    "Conflicting client shutdown event flush policy",
+                ));
+            }
+            self.registry.start_owned_shutdown(options, legacy_force)?;
+            return Ok(owner.operation.clone());
+        }
+
+        let emitter = self
+            .event_emitter
+            .as_ref()
+            .map(|emitter| lifecycle_runtime().map(|runtime| (Arc::clone(emitter), runtime)))
+            .transpose()?;
+        let mut operation = self.registry.start_owned_shutdown(options, legacy_force)?;
+        let event_flush_timeout_ms = options
+            .event_flush_timeout_ms
+            .unwrap_or(DEFAULT_EVENT_FLUSH_TIMEOUT_MS);
+        if let Some((emitter, runtime)) = emitter {
+            operation = operation.with_event_delivery(emitter, event_flush_timeout_ms, &runtime);
+        }
+        *attached = Some(ClientShutdown {
+            operation: operation.clone(),
+            event_flush_timeout_ms,
+        });
+        Ok(operation)
+    }
+
     /// Permanently close the registry, drain current executions, unload modules, and stop client
     /// event delivery. Call after the host stops admitting work and shuts down its task managers.
     pub async fn shutdown(&self) -> Result<(), ModuleError> {
-        self.shutdown_complete
-            .get_or_try_init(|| async {
-                self.registry.shutdown().await;
-                if let Some(emitter) = &self.event_emitter {
-                    if emitter.is_shutdown() {
-                        emitter
-                            .flush(EventEmitter::DEFAULT_FLUSH_TIMEOUT_MS)
-                            .await?;
-                    } else {
-                        emitter
-                            .shutdown(EventEmitter::DEFAULT_FLUSH_TIMEOUT_MS)
-                            .await?;
-                    }
-                }
-                Ok::<(), ModuleError>(())
-            })
+        self.start_shutdown_with_policy(ShutdownOptions::default(), true)?
+            .wait(None)
             .await?;
         Ok(())
     }
@@ -641,13 +712,18 @@ impl APCore {
     /// Returns the number of newly discovered modules, or 0 if no discoverer
     /// is configured on the registry.
     pub async fn discover(&self) -> Result<usize, ModuleError> {
-        match self.registry.discover_internal().await {
-            Ok(count) => Ok(count),
-            Err(e) if e.code == crate::errors::ErrorCode::NoDiscovererConfigured => {
-                // No discoverer configured — not an error, just nothing to discover.
-                Ok(0)
-            }
-            Err(e) => Err(e),
+        Self::discovery_result(self.registry.discover_internal().await)
+    }
+
+    /// Discover from configured roots and select typed async hooks.
+    pub async fn discover_async(&self) -> Result<usize, ModuleError> {
+        Self::discovery_result(self.registry.discover_internal_async().await)
+    }
+
+    fn discovery_result(result: Result<usize, ModuleError>) -> Result<usize, ModuleError> {
+        match result {
+            Err(error) if error.code == crate::errors::ErrorCode::NoDiscovererConfigured => Ok(0),
+            result => result,
         }
     }
 

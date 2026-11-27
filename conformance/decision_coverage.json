@@ -1067,6 +1067,22 @@
         "redaction_config.json#a_combinator_without_a_marker_stays_visible"
       ],
       "discriminates": "The first three are red in all three SDKs (no redaction walk descended into anyOf / oneOf / allOf); the value in the second matches the UNMARKED branch, so an implementation that redacts only when the marked branch validates is red too. a_combinator_without_a_marker_stays_visible is red for the over-correction that redacts every union-typed field."
+    },
+    "D-153": {
+      "title": "managed lifecycle binds admission, cancellation, and recovery to a generation",
+      "kind": "behavioural",
+      "cases": [
+        "module_lifecycle.json#module_lifecycle.phase_b.drain_finishes_call",
+        "module_lifecycle.json#module_lifecycle.phase_b.abort_retains_generation",
+        "module_lifecycle.json#module_lifecycle.phase_b.drain_error_recovers",
+        "module_lifecycle.json#module_lifecycle.phase_b.replacement_failure_compensates",
+        "module_lifecycle.json#module_lifecycle.phase_b.no_match_has_report",
+        "module_lifecycle.json#module_lifecycle.phase_b.cancel_scopes",
+        "module_lifecycle.json#module_lifecycle.phase_b.shutdown_event",
+        "module_lifecycle.json#module_lifecycle.phase_b.drain_finishes_stream",
+        "module_lifecycle.json#module_lifecycle.phase_b.approval_denied_preserves_generation"
+      ],
+      "discriminates": "Requires a drain signal and native stream completion before state capture, bars calls during recovery and replacement, distinguishes retention from compensation and an empty selector match, limits forced cancellation to the retiring invocation, correlates the shutdown event with its operation, and preserves callable state without lifecycle events on approval denial."
     }
   }
 }

@@ -106,7 +106,7 @@
 | `ExtensionManager` | Unified extension point management |
 | `AsyncTaskManager` | Background module execution with pluggable `TaskStore`, retry, and reaper |
 | `TaskStore` / `InMemoryTaskStore` | Pluggable async task persistence backend |
-| `RetryPolicy` / `BackoffStrategy` | **Deprecated (0.21.0)** — per-task retry configuration. Use `RetryConfig` for cross-language field-name parity. |
+| `RetryPolicy` / `BackoffStrategy` | **Deprecated** — per-task retry configuration. Use `RetryConfig` for cross-language field-name parity. |
 | `CancelToken` | Cooperative cancellation token |
 | `BindingLoader` | Load modules from YAML binding files |
 | `ErrorCodeRegistry` | Central registry for structured error codes |
@@ -135,24 +135,16 @@ else:
 
 ## Cross-Language Parity Notes
 
-The Python, TypeScript, and Rust SDKs share one verified contract. As of **v0.22.0**,
-the hardening features that originally landed Python-first are at parity across all
-three SDKs — including `AsyncTaskManager`, `ExtensionManager`, `CircuitBreakerMiddleware`,
-`TaskStore`/`InMemoryTaskStore` (pluggable interface + in-memory backend; Redis/SQL
-backends are shipped by none, by design), and `PrometheusExporter`. `version_hint`
-negotiation is honored by all three executors. As of **v0.23.0**, AI error-recovery
-metadata (per-code `user_fixable` defaults plus filled `ai_guidance`) is also at parity
-across all three SDKs, verified by the shared `error_recovery_metadata.json` conformance fixture.
+The Python, TypeScript, and Rust SDKs share contracts for background tasks,
+extensions, circuit breaking, Prometheus metrics, and error recovery. Their
+`AsyncTaskManager` accepts a pluggable `TaskStore` and ships with an in-memory
+backend.
 
-As of **v0.27.0**, `validate()` withholds module-level introspection from a caller the
-ACL denied (apcore#96, spec v1.13.0 §12.8.5.1). It previously ran `preflight()` and
-`preview()` on the strength of a module lookup alone, so a denied caller still made
-module-authored code run and still received what it returned — for a command-wrapping
-module, the resolved binary and its argv. All three SDKs did it, and all three now
-suppress it; the failed `acl` check is still reported, so a denied caller still learns
-*why*, and a failed `schema` check does **not** suppress introspection. Pinned by
-`preflight_disclosure.json`, whose control case exists so an implementation that never
-introspects at all cannot pass the denial cases for the wrong reason.
+Each SDK withholds module-level preflight and preview when the ACL denies
+access. The result includes the failed ACL check. A permitted call can receive
+module-level preflight and preview even if schema validation fails.
+
+See the [Python changelog](./CHANGELOG.md) for release history.
 
 Intentional cross-language differences (e.g. Python's synchronous `call()` ergonomics,
 the legacy/deprecated `RetryPolicy`/`BackoffStrategy` aliases that exist only in Python,

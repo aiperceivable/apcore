@@ -34,7 +34,8 @@ use crate::pipeline::{
     StepTrace, StrategyInfo,
 };
 use crate::policy::ExecutionPolicy;
-use crate::registry::registry::{module_id_pattern, Registry};
+use crate::registry::registry::{module_id_pattern, ModuleExecutionLease, Registry};
+use crate::runtime::background_runtime;
 use crate::stream_completion::{StreamChunks, StreamCompletionHandle, StreamRecorder};
 use crate::utils::propagate_module_error;
 
@@ -290,6 +291,38 @@ impl StreamSetup {
 
     fn event_emitter(&self) -> Option<&Arc<EventEmitter>> {
         self.pipe_ctx.event_emitter.as_ref()
+    }
+
+    fn settle_retiring_producer(&self, producer: crate::module::ChunkStream, error: &ModuleError) {
+        let Some(token) = self.context().cancel_token.as_ref().filter(|token| {
+            error.code == ErrorCode::ExecutionCancelled && token.retirement_requested()
+        }) else {
+            return;
+        };
+        // A retirement owner uses this time-enabled worker to signal the token.
+        let Ok(runtime) = background_runtime() else {
+            return;
+        };
+        let execution = RetiringProducer {
+            producer,
+            _lease: self.pipe_ctx.module_lease.clone(),
+        };
+        token.spawn_tracked_on(&runtime, execution.settle());
+    }
+}
+
+struct RetiringProducer {
+    // Drop the producer before releasing the generation's lease.
+    producer: crate::module::ChunkStream,
+    _lease: Option<Arc<ModuleExecutionLease>>,
+}
+
+impl RetiringProducer {
+    async fn settle(mut self) {
+        while self.producer.next().await.is_some() {
+            // Cleanup may produce output. The cancelled caller has already left.
+            tokio::task::yield_now().await;
+        }
     }
 }
 
@@ -1096,6 +1129,25 @@ impl Executor {
         Arc::clone(&self.toggle_state)
     }
 
+    pub(crate) fn bind_client_toggle_state(
+        &mut self,
+        reuse_existing: bool,
+    ) -> Arc<crate::sys_modules::ToggleState> {
+        let isolated = if reuse_existing {
+            let state = self.toggle_state();
+            if !Arc::ptr_eq(&state, &crate::sys_modules::global_toggle_state_arc()) {
+                return state;
+            }
+            // Preserve decisions made by a standalone executor while isolating
+            // future client toggles from the process-wide default store.
+            Arc::new(state.snapshot())
+        } else {
+            Arc::new(crate::sys_modules::ToggleState::new())
+        };
+        self.set_toggle_state(Arc::clone(&isolated));
+        isolated
+    }
+
     /// Set the ACL for access control.
     pub fn set_acl(&mut self, acl: ACL) {
         self.set_acl_shared(Arc::new(acl));
@@ -1796,7 +1848,7 @@ impl Executor {
                         Ok(Some(chunk)) => chunk,
                         Ok(None) => break,
                         Err(error) => {
-                            drop(inner);
+                            setup.settle_retiring_producer(inner, &error);
                             Err(error)?;
                             return;
                         }

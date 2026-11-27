@@ -609,20 +609,7 @@ class AsyncTaskManager:
         if info.status not in _ACTIVE_STATUSES:
             return False
 
-        async_task = self._async_tasks.get(task_id)
-        if async_task is not None:
-            async_task.cancel()
-            try:
-                await async_task
-            except asyncio.CancelledError:
-                pass
-            except Exception as exc:
-                _logger.warning(
-                    "Task %s raised while being cancelled: %s",
-                    task_id,
-                    exc,
-                    exc_info=True,
-                )
+        await self._stop_local_task(task_id)
 
         # Re-read after the task settles in case the runner already
         # transitioned to a terminal state inside its cancel-handler.
@@ -634,43 +621,47 @@ class AsyncTaskManager:
 
         return True
 
+    async def _stop_local_task(self, task_id: str) -> None:
+        task = self._async_tasks.get(task_id)
+        if task is None or task.done():
+            return
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        except Exception as exc:
+            _logger.warning("Task %s raised while being cancelled: %s", task_id, exc, exc_info=True)
+
     async def shutdown(self) -> None:
         """Cancel all active tasks and stop the reaper.
 
-        Iterates the **store** (not the local live-handle dict) so that a
-        store-resident active task with no local asyncio handle is still
-        cancelled — required by the spec shutdown postcondition (no active
-        task survives) and matching the TypeScript/Rust SDKs. Every active
-        task goes through :meth:`cancel`, which itself handles the
-        no-local-handle case by skipping the interrupt and still performing
-        the active -> CANCELLED store write.
-
-        Every active task is attempted even after one cancellation fails, and
-        the first failure is re-raised once they all have been (D-122). The two
-        failure modes are not symmetric: if the store is unreachable every
-        cancellation fails and stopping early reaches the same outcome sooner,
-        but if ONE task fails, stopping leaves every remaining task uncancelled
-        when they could have been cancelled. An uncancelled task in a shared
-        store is a lasting cost — it holds a ``max_tasks`` slot for every
-        manager sharing that store, and outlives the process that could have
-        cancelled it — while a slower shutdown is transient. This method is
-        already an unbounded wait by contract and takes no timeout, so a caller
-        needing a bound already imposes one.
+        Cancel active records in the store, including records without local
+        asyncio tasks. Stop local tasks even when a store operation fails.
+        Attempt every cancellation before raising the first failure (D-122).
 
         Raises:
             The first store failure encountered, re-raised after every active
             task has been attempted.
         """
         await self.stop_reaper()
-        first_error: BaseException | None = None
-        for info in await self._store_list():
-            if info.status not in _ACTIVE_STATUSES:
-                continue
+        first_error: Exception | None = None
+        try:
+            task_ids = [info.task_id for info in await self._store_list() if info.status in _ACTIVE_STATUSES]
+        except Exception as exc:  # noqa: BLE001 — re-raised after the loop
+            first_error = exc
+            task_ids = []
+
+        for task_id in dict.fromkeys([*task_ids, *self._async_tasks]):
             try:
-                await self.cancel(info.task_id)
+                await self.cancel(task_id)
             except Exception as exc:  # noqa: BLE001 — re-raised after the loop
                 if first_error is None:
                     first_error = exc
+                else:
+                    _logger.warning("Could not cancel task %s during shutdown", task_id, exc_info=True)
+            finally:
+                await self._stop_local_task(task_id)
         if first_error is not None:
             raise first_error
 

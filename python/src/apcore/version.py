@@ -28,7 +28,7 @@ _SEMVER_RE = re.compile(
 #: Deprecation warning threshold: if SDK minor exceeds declared minor by more
 #: than this, emit a warning.
 _DEPRECATION_THRESHOLD = 2
-_CURRENT_DOCUMENT_VERSION = "2.0.0"
+_CURRENT_DOCUMENT_VERSION = "2.1.0"
 _LEGACY_DOCUMENT_VERSION = "1.66.0"
 
 

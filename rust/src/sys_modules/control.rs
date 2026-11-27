@@ -17,6 +17,9 @@ use crate::config::{canonical_config_key, Config};
 use crate::context::Context;
 use crate::errors::{ErrorCode, ModuleError};
 use crate::events::emitter::EventEmitter;
+use crate::lifecycle::{
+    invalid_lifecycle_input, lifecycle_worker, LifecycleOutcome, LifecycleStatus, ReloadOptions,
+};
 use crate::module::Module;
 use crate::observability::redaction::{RedactionConfig, DEFAULT_REPLACEMENT};
 use crate::registry::dependencies::resolve_dependencies;
@@ -33,6 +36,9 @@ use super::{
     augment_with_context_identity, emit_event, is_sensitive_key, missing_field_error,
     require_string, ToggleState, RESTRICTED_KEYS,
 };
+
+const RELOAD_MODULE_ID: &str = "system.control.reload_module";
+const TOGGLE_MODULE_ID: &str = "system.control.toggle_feature";
 
 fn is_restricted_config_key(key: &str) -> bool {
     key == "apcore"
@@ -512,7 +518,7 @@ impl ReloadModule {
 
     /// A failed reload restores only those registrations that were removed
     /// but were not replaced. The original error remains the public failure.
-    fn restore_after_failed_reload(
+    async fn restore_after_failed_reload(
         registry: &Registry,
         module_id: &str,
         previous: crate::registry::registry::ReloadRegistration,
@@ -520,7 +526,7 @@ impl ReloadModule {
         if registry.has(module_id) {
             return;
         }
-        if let Err(error) = registry.restore_reload(module_id, previous) {
+        if let Err(error) = registry.restore_reload(module_id, previous).await {
             tracing::error!(
                 module_id,
                 error = %error.message,
@@ -529,7 +535,7 @@ impl ReloadModule {
         }
     }
 
-    fn restore_each_after_failed_reload(
+    async fn restore_each_after_failed_reload(
         registry: &Registry,
         module_ids: &[String],
         previous: &mut std::collections::HashMap<
@@ -539,7 +545,7 @@ impl ReloadModule {
     ) {
         for id in module_ids {
             if let Some(registration) = previous.remove(id) {
-                Self::restore_after_failed_reload(registry, id, registration);
+                Self::restore_after_failed_reload(registry, id, registration).await;
             }
         }
     }
@@ -632,7 +638,7 @@ impl ReloadModule {
         emit_event(
             &self.emitter,
             "apcore.config.reloaded",
-            "system.control.reload_module",
+            RELOAD_MODULE_ID,
             &chrono::Utc::now().to_rfc3339(),
             json!({"reason": reason}),
         )
@@ -695,7 +701,7 @@ impl ReloadModule {
     )]
     async fn execute_single(
         &self,
-        registry: &Registry,
+        registry: &Arc<Registry>,
         module_id: String,
         reason: &str,
         ctx: &Context<serde_json::Value>,
@@ -703,7 +709,7 @@ impl ReloadModule {
         let start = std::time::Instant::now();
         let previous = registry
             .unload_for_reload(&module_id)
-            .await
+            .await?
             .ok_or_else(|| ModuleError::module_not_found(&module_id))?;
         let previous_version = previous.removed.descriptor.version.clone();
 
@@ -714,7 +720,7 @@ impl ReloadModule {
             .into_iter()
             .collect();
         if let Err(error) = registry.discover_with_resume(&states).await {
-            Self::restore_after_failed_reload(registry, &module_id, previous);
+            Self::restore_after_failed_reload(registry, &module_id, previous).await;
             return Err(ModuleError::new(
                 ErrorCode::ReloadFailed,
                 format!(
@@ -725,7 +731,7 @@ impl ReloadModule {
         }
 
         if !registry.has(&module_id) {
-            Self::restore_after_failed_reload(registry, &module_id, previous);
+            Self::restore_after_failed_reload(registry, &module_id, previous).await;
             return Err(ModuleError::new(
                 ErrorCode::ReloadFailed,
                 format!("Reload of '{module_id}': module was not restored by re-discovery"),
@@ -828,6 +834,7 @@ impl ReloadModule {
                 .map_or_else(|| previous_version.clone(), |d| d.version);
             let event_data = augment_with_context_identity(
                 json!({
+                    "module_id": mid,
                     "previous_version": previous_version,
                     "new_version": new_version,
                     "reason": reason,
@@ -847,9 +854,10 @@ impl ReloadModule {
         (reloaded, missing)
     }
 
+    #[allow(clippy::too_many_lines)] // keep legacy bulk detach, replacement and compensation together
     async fn execute_bulk(
         &self,
-        registry: &Registry,
+        registry: &Arc<Registry>,
         path_filter: String,
         reason: &str,
         ctx: &Context<serde_json::Value>,
@@ -868,7 +876,7 @@ impl ReloadModule {
         let mut previous_versions = std::collections::HashMap::new();
         let mut previous_modules = std::collections::HashMap::new();
         for id in order {
-            if let Some(previous) = registry.unload_for_reload(&id).await {
+            if let Some(previous) = registry.unload_for_reload(&id).await? {
                 previous_versions.insert(id.clone(), previous.removed.descriptor.version.clone());
                 previous_modules.insert(id.clone(), previous);
                 unregistered.push(id);
@@ -890,14 +898,20 @@ impl ReloadModule {
                     .map(|state| (id.clone(), state.clone()))
             })
             .collect();
-        if let Err(e) = registry.discover_with_resume(&states).await {
+        let discovery_error = if unregistered.is_empty() {
+            None
+        } else {
+            registry.discover_with_resume(&states).await.err()
+        };
+        if let Some(e) = discovery_error {
             tracing::error!(
                 error = %e.message,
                 path_filter = %path_filter,
                 count = unregistered.len(),
                 "Bulk reload: re-discovery failed after unregistering"
             );
-            Self::restore_each_after_failed_reload(registry, &unregistered, &mut previous_modules);
+            Self::restore_each_after_failed_reload(registry, &unregistered, &mut previous_modules)
+                .await;
             return Err(ModuleError::new(
                 ErrorCode::ReloadFailed,
                 format!(
@@ -921,7 +935,7 @@ impl ReloadModule {
                 missing = %missing.join(", "),
                 "Bulk reload: modules absent after re-discovery"
             );
-            Self::restore_each_after_failed_reload(registry, &missing, &mut previous_modules);
+            Self::restore_each_after_failed_reload(registry, &missing, &mut previous_modules).await;
             return Err(ModuleError::new(
                 ErrorCode::ReloadFailed,
                 format!(
@@ -975,10 +989,148 @@ impl ReloadModule {
     }
 }
 
+impl ReloadModule {
+    async fn execute_managed(
+        &self,
+        registry: Arc<Registry>,
+        selection: (Option<&str>, Option<&str>),
+        options: ReloadOptions,
+        reason: &str,
+        ctx: &Context<serde_json::Value>,
+        config_reloaded: bool,
+    ) -> Result<serde_json::Value, ModuleError> {
+        let (exact, filter) = selection;
+        let ids = if let Some(id) = exact {
+            if !registry.has(id) {
+                return Err(ModuleError::module_not_found(id));
+            }
+            vec![id.to_owned()]
+        } else {
+            let filter = filter.ok_or_else(|| {
+                invalid_lifecycle_input("Lifecycle reload requires a module selector")
+            })?;
+            let matched: Vec<_> = registry
+                .module_ids()
+                .into_iter()
+                .filter(|id| match_glob(filter, id))
+                .collect();
+            Self::topo_sort_modules(&registry, &matched)
+        };
+        let previous: std::collections::HashMap<_, _> = ids
+            .iter()
+            .map(|id| {
+                (
+                    id.clone(),
+                    registry
+                        .get_definition(id)
+                        .ok()
+                        .flatten()
+                        .map(|descriptor| descriptor.version),
+                )
+            })
+            .collect();
+        let start = std::time::Instant::now();
+        let operation = registry.start_managed_reload(ids, options)?;
+        let emitter = Arc::clone(&self.emitter);
+        let audit = self.audit_store.clone();
+        let ctx = ctx.clone();
+        let reason = reason.to_owned();
+        let exact = exact.map(str::to_owned);
+        lifecycle_worker()?
+            .spawn(async move {
+                let report = operation.wait(None).await?;
+                let reloaded: Vec<_> = report
+                    .modules
+                    .iter()
+                    .filter(|row| row.outcome == Some(LifecycleOutcome::Reloaded))
+                    .map(|row| row.module_id.clone())
+                    .collect();
+                let versions = Self::observe_managed_reload(
+                    &registry,
+                    &emitter,
+                    audit.as_ref(),
+                    &ctx,
+                    &reason,
+                    &reloaded,
+                    &previous,
+                )
+                .await;
+                let mut result = json!({
+                    "success": report.status == LifecycleStatus::Completed,
+                    "module_id": exact,
+                    "reload_duration_ms": start.elapsed().as_secs_f64() * 1000.0,
+                    "config_reloaded": config_reloaded,
+                    "lifecycle_report": report,
+                });
+                if let Some(id) = exact {
+                    result["previous_version"] = json!(previous.get(&id).and_then(Option::as_ref));
+                    result["new_version"] = json!(versions.get(&id).and_then(Option::as_ref));
+                } else {
+                    result["reloaded_modules"] = json!(reloaded);
+                }
+                Ok(result)
+            })
+            .await
+            .map_err(|_| {
+                ModuleError::new(ErrorCode::ReloadFailed, "Managed reload did not complete")
+            })?
+    }
+
+    #[allow(clippy::too_many_arguments)] // existing success event and audit use the same execution metadata
+    async fn observe_managed_reload(
+        registry: &Registry,
+        emitter: &Arc<EventEmitter>,
+        audit: Option<&Arc<dyn AuditStore>>,
+        ctx: &Context<serde_json::Value>,
+        reason: &str,
+        reloaded: &[String],
+        previous: &std::collections::HashMap<String, Option<String>>,
+    ) -> std::collections::HashMap<String, Option<String>> {
+        let correlation_id = uuid::Uuid::new_v4().to_string();
+        let mut versions = std::collections::HashMap::new();
+        for id in reloaded {
+            let old = previous.get(id).and_then(Option::as_ref);
+            let new = registry
+                .get_definition(id)
+                .ok()
+                .flatten()
+                .map(|descriptor| descriptor.version);
+            let data = augment_with_context_identity(
+                json!({"module_id": id, "previous_version": old, "new_version": new, "reason": reason}),
+                ctx,
+            );
+            emit_event(
+                emitter,
+                "apcore.module.reloaded",
+                id,
+                &chrono::Utc::now().to_rfc3339(),
+                data,
+            )
+            .await;
+            record_audit(
+                audit,
+                crate::sys_modules::audit::build_correlated_audit_entry(
+                    AuditAction::ReloadModule,
+                    id,
+                    ctx,
+                    AuditChange {
+                        before: json!(old),
+                        after: json!(new),
+                    },
+                    correlation_id.clone(),
+                ),
+            )
+            .await;
+            versions.insert(id.clone(), new);
+        }
+        versions
+    }
+}
+
 #[async_trait]
 impl Module for ReloadModule {
     fn description(&self) -> &'static str {
-        "Hot-reload a module by safe unregister (re-registration must be done explicitly in Rust)"
+        "Reload registered modules and transfer their state"
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -999,51 +1151,29 @@ impl Module for ReloadModule {
         silent no-op."
                 },
                 "reload_config":     {"type": "boolean", "default": false},
+                "lifecycle": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "drain_timeout_ms": {"type": "integer", "minimum": 0, "maximum": 2_147_483_647},
+                        "on_drain_timeout": {"enum": ["abort_reload", "continue_waiting"]}
+                    }
+                },
                 "reason":            {"type": "string"}
             }
         })
     }
 
     fn output_schema(&self) -> serde_json::Value {
-        json!({
-            "type": "object",
-            "required": ["success", "module_id"],
-            "additionalProperties": false,
-            "properties": {
-                "success":            {"type": "boolean"},
-                "module_id":          {"type": ["string", "null"]},
-                "previous_version":   {"type": ["string", "null"]},
-                "new_version":        {"type": ["string", "null"]},
-                "reload_duration_ms": {"type": "number"},
-                "reloaded_modules":   {"type": "array", "items": {"type": "string"}},
-                "config_reloaded":    {"type": "boolean"}
-            },
-            "oneOf": [
-                {"properties": {"module_id": {"type": "string"}, "reloaded_modules": false}},
-                {
-                    "required": ["reloaded_modules"],
-                    "properties": {
-                        "module_id": {"type": "null"},
-                        "reloaded_modules": {"type": "array"},
-                        "previous_version": false,
-                        "new_version": false
-                    }
-                },
-                {
-                    "required": ["config_reloaded"],
-                    "properties": {
-                        "module_id": {"type": "null"},
-                        "config_reloaded": {"type": "boolean"},
-                        "reloaded_modules": false,
-                        "previous_version": false,
-                        "new_version": false,
-                        "reload_duration_ms": false
-                    }
-                }
-            ]
-        })
+        static SCHEMA: std::sync::LazyLock<serde_json::Value> = std::sync::LazyLock::new(|| {
+            // INVARIANT: the embedded JSON is validated against canonical reload conformance.
+            serde_json::from_str(include_str!("reload_output_schema.json"))
+                .expect("embedded reload output schema")
+        });
+        SCHEMA.clone()
     }
 
+    #[allow(clippy::too_many_lines)] // legacy and optional managed selectors share validation and config handling
     async fn execute(
         &self,
         inputs: serde_json::Value,
@@ -1070,6 +1200,26 @@ impl Module for ReloadModule {
             ));
         }
 
+        if (module_id_input == Some(RELOAD_MODULE_ID)
+            || path_filter_input.is_some_and(|filter| match_glob(filter, RELOAD_MODULE_ID)))
+            && self.registry.get()?.has(RELOAD_MODULE_ID)
+        {
+            return Err(ModuleError::new(
+                ErrorCode::ReloadFailed,
+                format!("'{RELOAD_MODULE_ID}' cannot reload itself"),
+            ));
+        }
+
+        let lifecycle = inputs
+            .get("lifecycle")
+            .map(ReloadOptions::from_wire)
+            .transpose()?;
+        if lifecycle.is_some() && module_id_input.is_none() && path_filter_input.is_none() {
+            return Err(invalid_lifecycle_input(
+                "Lifecycle reload requires a module selector",
+            ));
+        }
+
         let reload_config_flag = inputs
             .get("reload_config")
             .and_then(serde_json::Value::as_bool)
@@ -1090,19 +1240,21 @@ impl Module for ReloadModule {
             false
         };
 
-        if let Some(filter) = path_filter_input {
-            let registry = self.registry.get()?;
-            let mut result = self
-                .execute_bulk(&registry, filter.to_string(), &reason, ctx)
-                .await?;
-            if let Some(obj) = result.as_object_mut() {
-                obj.insert("config_reloaded".to_string(), json!(config_reloaded));
-            }
-            return Ok(result);
+        if let Some(options) = lifecycle {
+            return self
+                .execute_managed(
+                    self.registry.get()?,
+                    (module_id_input, path_filter_input),
+                    options,
+                    &reason,
+                    ctx,
+                    config_reloaded,
+                )
+                .await;
         }
 
         // A configuration-only request reports just the outcome of that reload.
-        if module_id_input.is_none() && reload_config_flag {
+        if module_id_input.is_none() && path_filter_input.is_none() && reload_config_flag {
             return Ok(json!({
                 "success": config_reloaded,
                 "module_id": serde_json::Value::Null,
@@ -1110,7 +1262,7 @@ impl Module for ReloadModule {
             }));
         }
 
-        let module_id = module_id_input.ok_or_else(|| {
+        let selector = module_id_input.or(path_filter_input).ok_or_else(|| {
             ModuleError::new(
                 ErrorCode::GeneralInvalidInput,
                 "'module_id', 'path_filter', or 'reload_config' is required",
@@ -1118,13 +1270,33 @@ impl Module for ReloadModule {
         })?;
 
         let registry = self.registry.get()?;
-        let mut result = self
-            .execute_single(&registry, module_id.to_string(), &reason, ctx)
-            .await?;
-        if let Some(obj) = result.as_object_mut() {
-            obj.insert("config_reloaded".to_string(), json!(config_reloaded));
-        }
-        Ok(result)
+        let owner = Self::new(Arc::clone(&registry), Arc::clone(&self.emitter))
+            .with_audit_store(self.audit_store.clone());
+        let selector = selector.to_owned();
+        let bulk = path_filter_input.is_some();
+        let context = ctx.clone();
+        // Keep the legacy unload, migration and compensation together when the
+        // Executor stops waiting for its response.
+        lifecycle_worker()?
+            .spawn(async move {
+                let mut result = if bulk {
+                    owner
+                        .execute_bulk(&registry, selector, &reason, &context)
+                        .await?
+                } else {
+                    owner
+                        .execute_single(&registry, selector, &reason, &context)
+                        .await?
+                };
+                if let Some(obj) = result.as_object_mut() {
+                    obj.insert("config_reloaded".to_string(), json!(config_reloaded));
+                }
+                Ok(result)
+            })
+            .await
+            .map_err(|_| {
+                ModuleError::new(ErrorCode::ReloadFailed, "Reload owner did not complete")
+            })?
     }
 }
 
@@ -1237,6 +1409,13 @@ impl Module for ToggleFeatureModule {
             return Err(ModuleError::new(
                 ErrorCode::ModuleNotFound,
                 format!("Module '{module_id}' not found"),
+            ));
+        }
+
+        if !enabled && module_id == TOGGLE_MODULE_ID {
+            return Err(ModuleError::new(
+                ErrorCode::GeneralInvalidInput,
+                format!("'{TOGGLE_MODULE_ID}' cannot disable itself"),
             ));
         }
 

@@ -15,23 +15,38 @@ for preflight, and ``stream()`` for chunked results.
 from __future__ import annotations
 
 import asyncio
+import logging
 import threading
+from datetime import datetime, timezone
 from collections.abc import AsyncGenerator, Callable as CallableABC, Iterable
 from contextlib import aclosing
 from typing import Any, Callable
 
 from apcore.config import Config
 from apcore.context import Context
-from apcore.errors import SysModulesDisabledError
+from apcore.errors import InvalidInputError, SysModulesDisabledError
 from apcore.decorator import module as decorator_module
 from apcore.events.emitter import ApCoreEvent, EventEmitter, EventSubscriber
 from apcore.executor import Executor
+from apcore.lifecycle import (
+    LifecycleError,
+    LifecycleOperation,
+    ShutdownOptions,
+    UnregisterOptions,
+    _EventFlush,
+    _require_lifecycle_loop,
+    _validate_drain_options,
+    _validate_duration,
+)
 from apcore.module import PreflightResult
 from apcore.policy import ExecutionPolicy
 from apcore.observability.metrics import MetricsCollector
 from apcore.registry import Registry
 from apcore.streaming import StreamExecution
 from apcore.sys_modules.control import ToggleState
+
+
+logger = logging.getLogger(__name__)
 
 
 class APCore:
@@ -70,7 +85,8 @@ class APCore:
         """
         self.config = config
         self._shutdown_lock = threading.Lock()
-        self._shutdown_complete = False
+        self._shutdown_operation: LifecycleOperation | None = None
+        self._event_flush_timeout_ms = 5000
 
         # The control module and executor must use the same toggle state.
         self.toggle_state = executor._adopt_client_toggle_state() if executor is not None else ToggleState()
@@ -168,9 +184,7 @@ class APCore:
                 if fail_on_error:
                     raise
                 self._sys_modules_errors.append(exc)
-                import logging
-
-                logging.getLogger(__name__).warning(
+                logger.warning(
                     "Failed to register sys modules",
                     exc_info=True,
                 )
@@ -240,9 +254,27 @@ class APCore:
         """Register modules in order, retaining entries loaded before an error."""
         self.registry.register_many(entries)
 
+    async def register_async(self, module_id: str, module_obj: Any) -> None:
+        """Register an async-capable module on the running lifecycle loop."""
+        await self.registry.register_async(module_id, module_obj)
+
+    async def register_many_async(self, entries: Iterable[tuple[str, Any]]) -> None:
+        """Register async-capable modules in order."""
+        await self.registry.register_many_async(entries)
+
+    async def discover_async(self) -> int:
+        """Discover modules with async lifecycle hooks on the running loop."""
+        return await self.registry.discover_async()
+
     async def unregister_many(self, module_ids: Iterable[str], *, timeout_ms: int = 5000) -> list[bool]:
         """Drain and unload modules in order, with one result per ID."""
         return await self.registry.unregister_many(module_ids, timeout_ms=timeout_ms)
+
+    def start_unregister_many(
+        self, module_ids: Iterable[str], *, options: UnregisterOptions | None = None
+    ) -> LifecycleOperation:
+        """Start ordered, generation-bound removal and return its operation handle."""
+        return self.registry.start_unregister_many(module_ids, options=options)
 
     def call(
         self,
@@ -577,17 +609,98 @@ class APCore:
         stop, including users of an explicitly supplied registry or executor.
         Hosts manage resources they create separately, such as task managers.
         """
-        await asyncio.to_thread(self._shutdown)
+        operation = self._start_shutdown(ShutdownOptions(), legacy=True)
+        await operation.wait()
+        if operation._failure is not None:
+            raise operation._failure
+
+    def start_shutdown(self, *, options: ShutdownOptions | None = None) -> LifecycleOperation:
+        """Start or rejoin Registry shutdown and this client's event flush."""
+        _require_lifecycle_loop()
+        if options is not None and not isinstance(options, ShutdownOptions):
+            raise InvalidInputError(message="Expected ShutdownOptions")
+        options = ShutdownOptions() if options is None else options
+        _validate_drain_options(options)
+        _validate_duration("event_flush_timeout_ms", options.event_flush_timeout_ms)
+        return self._start_shutdown(options, legacy=False)
 
     def _shutdown(self) -> None:
+        operation = self._start_shutdown(ShutdownOptions(), legacy=True)
+        operation._join_blocking()
+        if operation._failure is not None:
+            raise operation._failure
+
+    def _start_shutdown(self, options: ShutdownOptions, *, legacy: bool) -> LifecycleOperation:
         with self._shutdown_lock:
-            if self._shutdown_complete:
-                return
+            existing = self._shutdown_operation
+            if existing is not None:
+                if (
+                    options.event_flush_timeout_ms is not None
+                    and options.event_flush_timeout_ms != self._event_flush_timeout_ms
+                ):
+                    raise InvalidInputError(message="Conflicting shutdown event_flush_timeout_ms")
+                if not legacy or existing._failure is None:
+                    self.registry._start_shutdown(
+                        options.drain_timeout_ms, options.on_drain_timeout, options.cancel_grace_ms, legacy=False
+                    )
+                    return existing
+
+            emitter = self.events
+            operation = LifecycleOperation(
+                "shutdown",
+                event_flush="pending" if emitter is not None else "not_applicable",
+                registry=self.registry,
+                is_delivery_thread=emitter._is_delivery_thread if emitter is not None else None,
+            )
+            timeout = options.event_flush_timeout_ms
+            if timeout is None:
+                timeout = self._event_flush_timeout_ms
+            operation._start(lambda: self._finish_shutdown(operation, emitter, timeout), "event_flush")
+            source = self.registry._start_shutdown(
+                options.drain_timeout_ms, options.on_drain_timeout, options.cancel_grace_ms, legacy=legacy
+            )
+            operation._attach_source(source)
+            self._event_flush_timeout_ms = timeout
+            self._shutdown_operation = operation
+            return operation
+
+    def _finish_shutdown(self, operation: LifecycleOperation, emitter: EventEmitter | None, timeout_ms: int) -> None:
+        # Do not begin the client stage until Registry ownership is assigned.
+        with self._shutdown_lock:
+            source = operation._source
+        if source is None:
+            return
+        registry_report = source._join_blocking()
+        failure = source._failure
+        error = registry_report.error
+        event_flush: _EventFlush = "not_applicable"
+        try:
             try:
-                self.registry._shutdown()
+                if emitter is not None:
+                    emitter.emit(
+                        ApCoreEvent(
+                            event_type="apcore.client.shutdown_resources_completed",
+                            module_id="system",
+                            timestamp=datetime.now(timezone.utc).isoformat(),
+                            severity="info" if registry_report.status == "completed" else "error",
+                            data={
+                                "operation_id": registry_report.operation_id,
+                                "registry_outcome": registry_report.status,
+                                "forced_count": sum(row.outcome == "forced_removed" for row in registry_report.modules),
+                                "failure_count": sum(row.outcome == "failed" for row in registry_report.modules),
+                            },
+                        )
+                    )
+                    event_flush = "completed" if emitter._shutdown_lifecycle(timeout_ms) else "timeout"
             finally:
-                self._close_owned_resources(terminal=True)
-            self._shutdown_complete = True
+                self.executor.close()
+        except Exception as cleanup_error:
+            logger.exception("Could not release client resources during shutdown")
+            error = error or LifecycleError._from_exception(cleanup_error, "event_flush")
+            failure = failure or cleanup_error
+            if emitter is not None and event_flush == "not_applicable":
+                event_flush = "timeout"
+        operation._complete(error=error, failure=failure, event_flush=event_flush)
 
 
 class _CallbackSubscriber:

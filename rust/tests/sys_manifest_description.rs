@@ -22,6 +22,20 @@ fn dummy_ctx() -> Context<serde_json::Value> {
     ))
 }
 
+#[test]
+fn test_manifest_schema_accepts_null_dependency_version() {
+    let module = ManifestModule::new(
+        Arc::new(Registry::new()),
+        Arc::new(Mutex::new(Config::from_defaults())),
+    );
+    let schema = jsonschema::draft202012::new(&module.output_schema()).unwrap();
+    assert!(schema.is_valid(&json!({
+        "module_id": "demo.mod",
+        "description": "A module",
+        "dependencies": [{"module_id": "demo.dependency", "version": null}]
+    })));
+}
+
 struct DummyModule;
 
 #[async_trait::async_trait]

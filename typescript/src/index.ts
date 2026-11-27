@@ -22,6 +22,7 @@
 // browser-safe runtime modules. Must be imported before any user-facing
 // re-export so the loaders are in place before APCore consumers run.
 import './acl-file.js';
+import './install-lifecycle-context.js';
 import './registry/install-filesystem.js';
 import './sys-modules/overrides-file.js';
 import './sys-modules/install.js';
@@ -29,6 +30,7 @@ import './sys-modules/install.js';
 // Client
 export { APCore } from './client.js';
 export type { APCoreOptions, ModuleOptions } from './client.js';
+export type { DrainAbortedContext, DrainAbortReason, DrainContext, LifecycleError, LifecycleEventFlush, LifecycleModuleReport, LifecycleOperation, LifecycleReport, LifecycleStatus, ShutdownOptions, UnregisterOptions, WatchOptions } from './lifecycle.js';
 
 // Core
 export { CancelToken, ExecutionCancelledError } from './cancel.js';

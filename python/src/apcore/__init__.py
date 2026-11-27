@@ -49,6 +49,17 @@ from apcore.registry.conflicts import (
 )
 from apcore.registry.registry import Discoverer, ModuleValidator
 from apcore.client import APCore
+from apcore.lifecycle import (
+    DrainAbortedContext,
+    DrainContext,
+    LifecycleError,
+    LifecycleModuleReport,
+    LifecycleOperation,
+    LifecycleReport,
+    ReloadOptions,
+    ShutdownOptions,
+    UnregisterOptions,
+)
 from apcore.registry.types import DependencyInfo, DiscoveredModule, ModuleDescriptor
 from apcore.executor import Executor
 from apcore.utils.redaction import REDACTED_VALUE, redact_sensitive
@@ -625,6 +636,15 @@ __all__ = [
     "Registry",
     "Executor",
     "APCore",
+    "DrainAbortedContext",
+    "DrainContext",
+    "LifecycleError",
+    "LifecycleModuleReport",
+    "LifecycleOperation",
+    "LifecycleReport",
+    "ReloadOptions",
+    "ShutdownOptions",
+    "UnregisterOptions",
     "close",
     "call",
     "call_async",

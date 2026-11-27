@@ -11,6 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Protocol 2.1.0 draft, §6.7, §9.16.2, and §12.7.9.** Add managed drain and recovery hooks, async lifecycle adapters, host-directed cancellation before forced removal, opt-in reload reports, and lifecycle events across the three SDKs.
+- Add owned shutdown and ordered removal handles with independent wait budgets and lifecycle reports in Python, TypeScript, and Rust.
 - Expose Prometheus text rendering without starting an HTTP listener in Python and Rust. TypeScript uses the existing exporter render method.
 - Expose a single-invocation stream completion handle in Python, TypeScript, and Rust. The handle reports the output-validation snapshot, post-processing outcomes, and a distinct terminal reason.
 - Expose system-module startup errors and an opt-in fail-fast startup mode on the APCore client. ([#230](https://github.com/aiperceivable/apcore/issues/230))
@@ -27,6 +29,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Keep lifecycle cleanup owned through waiter cancellation and forced retirement. Guard Python cleanup callbacks against waiting on their own shutdown, and prevent stale watcher or late post-shutdown publication.
+- Preserve async hook adapters in Python compatibility reloads. Keep TypeScript managed bulk reloads running through audit-store failures and report the versions actually published.
+- Limit managed reload failure events to structured diagnostics and allow Rust native streams to complete cooperative cleanup during retirement.
 - Verify the declared minimum SDK runtimes in CI and execute the Quick Start and governed-stream documentation examples against the installed distributions. Ship TypeScript type declarations for existing public runtime exports.
 - Match Python event subscriptions by object identity and enforce a single drain budget for the event emitter lifecycle.
 - Document Rust registry watch replacement, removal, state handoff, and recovery.

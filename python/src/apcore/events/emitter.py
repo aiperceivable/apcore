@@ -205,6 +205,13 @@ class _DeliveryWorker:
         with self._condition:
             return self._closed
 
+    def drained(self) -> bool:
+        with self._condition:
+            return self._completed == self._submitted
+
+    def is_delivery_thread(self) -> bool:
+        return threading.current_thread() is self._thread
+
     def submit(self, deliver: Callable[[], Awaitable[None]]) -> None:
         with self._condition:
             if self._deadline is not None:
@@ -470,6 +477,15 @@ class EventEmitter:
     def shutdown(self, timeout: float = 5.0) -> None:
         """Stop accepting events permanently, using one drain timeout."""
         self._release_resources(timeout, terminal=True)
+
+    def _shutdown_lifecycle(self, timeout_ms: int) -> bool:
+        self.shutdown(timeout=timeout_ms / 1000)
+        with self._lock:
+            return self._worker.drained()
+
+    def _is_delivery_thread(self) -> bool:
+        with self._lock:
+            return self._worker.is_delivery_thread()
 
     def close(self, timeout: float = 5.0) -> None:
         """Drain delivery resources while keeping subscriptions for future use."""

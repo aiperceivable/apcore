@@ -138,7 +138,7 @@ Steps 2–5 are ordered intrinsic-then-extrinsic: what is wrong with the module 
 
 - `None` (Python), `Promise<void>` (TypeScript), `Ok(())` (Rust).
 
-`on_load` is synchronous in Python and Rust. TypeScript also accepts an async `onLoad`; its `register` returns a promise that resolves once the hook has run, and the module stays invisible until then. Everything else — ID validation, the duplicate check — throws synchronously. Python refuses an `async def on_load` with `MODULE_LOAD_ERROR` rather than publishing a module whose initialisation never ran.
+Python and Rust's synchronous `register` methods accept synchronous load hooks. Use `register_async` or `register_many_async` for modules with asynchronous lifecycle hooks. TypeScript's `register` accepts synchronous and asynchronous `onLoad`, returns a promise that resolves after the hook, and throws ID validation and duplicate errors synchronously. Each entry point keeps the module invisible until the load hook succeeds. [Lifecycle hook interfaces](./module-interface.md#drain-and-recovery-hooks)
 
 ### Properties
 
@@ -161,7 +161,11 @@ Portable code should register one version per ID. `metadata.dependencies` works 
 
 `register_many(entries)` (`registerMany` in TypeScript) calls the single-item registration API for each pair in input order. If an entry fails, the batch reports that error, keeps earlier registrations available, and skips later entries.
 
-`unregister()` closes admission for the removed registration immediately. Calls that already acquired it can finish before its unload hook runs. Use the awaited `unregister_many(module_ids)` (`unregisterMany` in TypeScript) when the caller needs cleanup to finish. It drains each ID in input order and returns one boolean per ID in that order. A missing ID or a forced removal after the drain deadline returns `false`, and the batch continues with the next ID. Removing a multi-version ID runs the unload hook for every loaded instance. To await a single removal from Python async code, use `safe_unregister_async(module_id)`.
+`unregister()` closes admission for the removed registration immediately. Calls that already acquired it can finish before its unload hook runs. Use the awaited `unregister_many(module_ids)` (`unregisterMany` in TypeScript) when the caller needs cleanup to finish. It drains each ID in input order and returns one boolean per ID in that order. A missing ID or a forced removal after the drain deadline returns `false`, and the batch continues with the next ID. Removing a multi-version ID runs the unload hook for every loaded instance.
+
+Python's batch method and `await registry.safe_unregister_async(module_id, timeout_ms=5000)` accept a keyword timeout in milliseconds. TypeScript's `unregisterMany(moduleIds, timeoutMs?)` and `safeUnregister(moduleId, timeoutMs?)` default to 5,000 ms. Rust's `unregister_many(module_ids)` uses a fixed 5,000 ms per ID, and its single-item `safe_unregister(module_id, timeout_ms)` requires a timeout argument. If a removal already owns the registration, a second safe-unregister call returns `false`. The first caller owns the cleanup.
+
+Use `start_unregister_many` (`startUnregisterMany` in TypeScript) on either a Registry or an APCore client to get an operation handle. The batch records the registration associated with each requested ID at startup. When it reaches an ID, it only removes the captured registration if it is still current. A later registration with that ID remains available. See the [detailed teardown contracts](./apcore-client.md#contract-apcorestart_shutdown-and-apcorestart_unregister_many) for options and report semantics.
 
 See [Batch registration and host shutdown](./apcore-client.md#batch-registration-and-host-shutdown) for runnable examples and the host shutdown sequence.
 
@@ -362,6 +366,8 @@ The scanner locates `<stem>_meta.yaml` beside the module's canonical file, using
 On Rust replacement, the registry closes call admission and waits up to five seconds for in-flight calls before running the old instance's `on_suspend()` and `on_unload()`. Before publication, the replacement runs `on_load()` and receives `on_resume(state)` if the suspend hook returned `Some(state)`. If the replacement cannot register, the registry attempts to register the previous instance again. A failed restoring load leaves the module unavailable. Removing a deleted source also uses the five-second drain timeout.
 
 Python and Rust invoke state migration hooks when a watched module is replaced. TypeScript watch clients can use `file_changed` to arrange replacement themselves. For an explicit reload through the runtime, see [`system.control.reload_module`](./system-modules.md#contract-systemcontrolreload_module).
+
+Python accepts `watch(lifecycle=ReloadOptions(...))` and Rust accepts `watch_with_lifecycle(options)` for managed replacement of a watched source, including drain and recovery hooks. Select `abort_reload` to preserve the old generation when the drain deadline expires, or `continue_waiting` to keep admission closed until the drain completes. In both SDKs, deleting a source uses the ordinary safe-unregister policy. TypeScript accepts `watch({ drainTimeoutMs, onDrainTimeout, cancelGraceMs })` for managed retirement. It emits `file_changed` after retirement and the application remains responsible for importing and publishing the replacement.
 
 === "Python"
     ```python
@@ -631,6 +637,8 @@ A version constraint operand **MUST** begin with a digit; `"latest"`, `"v1.0.0"`
 Each SDK exposes a fallible form that reports it as `VERSION_CONSTRAINT_INVALID` — `VersionConstraintError` in Python and TypeScript, the `try_*` functions (`try_matches_version_hint`, `try_select_best_version`) in Rust — so a caller can tell "this constraint is nonsense" from "this version does not satisfy it". A non-fallible convenience form, where one exists, fails closed (treats the constraint as unsatisfied) and logs a warning.
 
 ## Registry events
+
+Use [EventEmitter lifecycle events](./event-system.md#module-lifecycle-events) to observe drain start, timeout, recovery, and replacement failure.
 
 The event set is **closed** (D-80):
 

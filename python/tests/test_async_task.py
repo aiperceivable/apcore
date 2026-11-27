@@ -996,6 +996,49 @@ class TestShutdownCancelsStoreResidentTasks:
         assert info.status == TaskStatus.CANCELLED
         assert info.completed_at is not None
 
+    @pytest.mark.parametrize("store_failure", ["list", "get"])
+    async def test_shutdown_stops_local_task_before_raising_store_failure(self, store_failure: str) -> None:
+        started = asyncio.Event()
+        stopped = asyncio.Event()
+        release = asyncio.Event()
+        failure = RuntimeError("store unavailable")
+        store_unavailable = False
+
+        class ExecutorWithCleanup:
+            async def call_async(self, *args: Any) -> dict[str, Any]:
+                started.set()
+                try:
+                    await release.wait()
+                finally:
+                    stopped.set()
+                return {}
+
+        class FailingStore(InMemoryTaskStore):
+            async def list(self, status: TaskStatus | None = None) -> list[TaskInfo]:
+                if store_unavailable and store_failure == "list":
+                    raise failure
+                return await super().list(status)
+
+            async def get(self, task_id: str) -> TaskInfo | None:
+                if store_unavailable and store_failure == "get":
+                    raise failure
+                return await super().get(task_id)
+
+        manager = AsyncTaskManager(ExecutorWithCleanup(), store=FailingStore())
+        task_id = await manager.submit("mod.x", {})
+        task = manager._async_tasks[task_id]
+        await asyncio.wait_for(started.wait(), 2)
+        store_unavailable = True
+        try:
+            with pytest.raises(RuntimeError) as error:
+                await manager.shutdown()
+            assert error.value is failure
+            assert stopped.is_set()
+        finally:
+            store_unavailable = False
+            release.set()
+            await asyncio.wait_for(asyncio.gather(task, return_exceptions=True), 2)
+
 
 class TestCompletionDoesNotClobberCancel:
     """[async-completion-recheck] a cancel during execution survives completion."""

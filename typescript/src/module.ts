@@ -4,6 +4,7 @@
 
 import { Kind, type TSchema, Type, TypeRegistry } from '@sinclair/typebox';
 import type { Context } from './context.js';
+import type { DrainAbortedContext, DrainContext } from './lifecycle.js';
 
 /**
  * Declared execution budget for one module (PROTOCOL_SPEC §5.2, decision D-11).
@@ -443,9 +444,13 @@ export interface Module {
   /** Optional: Called when module is unloaded from the registry. */
   onUnload?(): void | Promise<void>;
   /** Optional: Capture module state before hot-reload. Return null to skip state transfer. */
-  onSuspend?(): Record<string, unknown> | null;
+  onSuspend?(): Record<string, unknown> | null | Promise<Record<string, unknown> | null>;
   /** Optional: Restore module state after hot-reload. */
-  onResume?(state: Record<string, unknown>): void;
+  onResume?(state: Record<string, unknown>): void | Promise<void>;
+  /** Called after managed lifecycle operations close admission for this generation. */
+  onDrain?(context: DrainContext): void | Promise<void>;
+  /** Restore readiness when an opted-in reload is aborted before unload. */
+  onDrainAborted?(context: DrainAbortedContext): void | Promise<void>;
 }
 
 export interface ModuleDescription {

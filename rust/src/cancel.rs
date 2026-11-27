@@ -24,6 +24,7 @@ struct ExecutionState {
     active: Mutex<HashMap<u64, ExecutionRecord>>,
     changed: tokio::sync::Notify,
     cancelled: tokio::sync::Notify,
+    retirement_requested: AtomicBool,
     timeout_error: OnceLock<Box<ModuleError>>,
     middleware_timings: Mutex<HashMap<usize, std::time::Instant>>,
     tracing_spans: parking_lot::Mutex<Vec<(usize, Span, bool)>>,
@@ -259,6 +260,20 @@ impl CancelToken {
         self.executions.cancelled.notify_waiters();
     }
 
+    /// Cancel the call directly admitted to a retiring registration.
+    pub(crate) fn cancel_for_retirement(&self) {
+        if !self.is_cancelled() {
+            self.executions
+                .retirement_requested
+                .store(true, Ordering::Release);
+            self.cancel();
+        }
+    }
+
+    pub(crate) fn retirement_requested(&self) -> bool {
+        self.executions.retirement_requested.load(Ordering::Acquire)
+    }
+
     /// Publish the call's timeout before signalling its cooperative cancellation.
     pub(crate) fn cancel_after_timeout(&self, error: &ModuleError) {
         let _ = self.executions.timeout_error.set(Box::new(error.clone()));
@@ -271,7 +286,8 @@ impl CancelToken {
     }
 
     /// Wait until this invocation or one of its parents is cancelled.
-    pub(crate) async fn cancelled(&self) {
+    /// Wait for a cooperative cancellation signal from this token or its parent.
+    pub async fn cancelled(&self) {
         let notifications: Vec<_> =
             std::iter::successors(Some(self), |token| token.parent.as_deref())
                 .map(|token| Box::pin(token.executions.cancelled.notified()))
@@ -313,10 +329,22 @@ impl CancelToken {
         F: Future + Send + 'static,
         F::Output: Send + 'static,
     {
+        self.spawn_tracked_on(&tokio::runtime::Handle::current(), future)
+    }
+
+    pub(crate) fn spawn_tracked_on<F>(
+        &self,
+        runtime: &tokio::runtime::Handle,
+        future: F,
+    ) -> tokio::task::JoinHandle<F::Output>
+    where
+        F: Future + Send + 'static,
+        F::Output: Send + 'static,
+    {
         let registration = self.register_execution();
         let id = registration.id;
         let scopes = registration.scopes.clone();
-        let invocation = tokio::spawn(TrackedExecution {
+        let invocation = runtime.spawn(TrackedExecution {
             future: Box::pin(future),
             _registration: registration,
         });

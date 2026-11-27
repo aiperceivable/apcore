@@ -6,7 +6,7 @@ description: "The canonical apcore protocol specification (RFC 2119): module, sc
 
 > **Canonical specification.** This document is the single normative source for the apcore protocol. Where any other document disagrees with it, this document wins.
 
-> Version: 2.0.0
+> Version: 2.1.0
 > Status: Draft
 > Last Updated: 2026-11-26
 
@@ -4871,7 +4871,7 @@ This section documents the canonical `system.*` module catalogue. Conformant SDK
 1. **Registration MUST use `register_internal()`** (or equivalent privileged API) per §6.6.1 — the public `register()` MUST reject any `module_id` starting with `system.`.
 2. **Read modules** (`system.health.*`, `system.usage.*`, `system.manifest.*`) **MUST NOT** mutate framework state. Calling them with any inputs MUST be safe to repeat.
 3. **Write modules** (`system.control.*`) **MUST** emit audit events through the framework `EventEmitter` and **SHOULD** declare `annotations.requires_approval = true` to surface the Approval Gate (§7) for destructive operations.
-4. **`system.control.reload_module`** input **MUST** accept exactly one of `module_id` (exact match) or `path_filter`; supplying both or neither MUST raise a validation error. `path_filter` is a **glob-dialect pattern matched with A25** (§9.2.3) against each registered module ID. Naming the algorithm is what makes one control-plane request reload the same set of modules in every implementation; "glob" alone names no dialect.
+4. **`system.control.reload_module`** input **MUST** accept exactly one of `module_id` (exact match) or `path_filter`; supplying both or neither MUST raise a validation error. `path_filter` is a **glob-dialect pattern matched with A25** (§9.2.3) against each registered module ID. Naming the algorithm is what makes one control-plane request reload the same set of modules in every implementation; "glob" alone names no dialect. The optional `lifecycle` object selects managed reload (§12.7.9).
 5. **`system.control.update_config`** **MUST** redact sensitive keys (per §10.6.1 `obs.redaction.sensitive_keys`) in both `old_value` and `new_value` fields of its output and audit event.
 6. **`system.control.toggle_feature`** state **MUST** persist via the configured `OverridesStore` so toggle state survives process restart; without persistence, toggle decisions revert to the registered defaults on reload.
 
@@ -8185,6 +8185,11 @@ The following are the canonical event type names, payload keys, and severity for
 |----------------|--------------|----------|------------|--------------|
 | `apcore.registry.module_registered` | `module_registered`, `apcore.module.registered` | `info` | Registry bridge | `module_id` |
 | `apcore.registry.module_unregistered` | `module_unregistered`, `apcore.module.unregistered` | `info` | Registry bridge | `module_id` |
+| `apcore.registry.module_drain_started` | — | `info` | Registry | `operation_id`, `reason_kind`, `drain_timeout_ms` |
+| `apcore.registry.module_drain_timed_out` | — | `warn` | Registry | `operation_id`, `reason_kind`, `action`, `active_count` |
+| `apcore.registry.module_drain_recovered` | — | `info` (ready) / `error` (unavailable) | Registry | `operation_id`, `abort_reason`, `outcome` |
+| `apcore.registry.module_reload_failed` | — | `error` | Registry | `operation_id`, `phase`, `error_code`, `compensation` |
+| `apcore.client.shutdown_resources_completed` | — | `info` (completed) / `error` (failed) | APCore client | `operation_id`, `registry_outcome`, `forced_count`, `failure_count` |
 | `apcore.module.toggled` | `module_health_changed` (toggle usage) | `info`/`warn` | `system.control.toggle_feature` | `module_id`, `enabled` |
 | `apcore.module.reloaded` | `config_changed` (reload usage) | `info` | `system.control.reload_module` | `module_id`, `previous_version`, `new_version` |
 | `apcore.config.updated` | `config_changed` (key-update usage) | `info` | `system.control.update_config` | `key`, `old_value`, `new_value` |
@@ -9563,6 +9568,9 @@ class CounterModule(Module):
 
 **Problem**: During `unregister()`, module might be executing in other threads.
 
+This section defines the compatibility `unregister()` entry point. The opt-in managed
+operations use the policies in §12.7.9.
+
 **Safe Unload Algorithm (MUST)**:
 
 ```text
@@ -9743,6 +9751,89 @@ class DatabaseModule:
     def on_unload(self):
         self.pool.close()  # Cleanup long-term resource
 ```
+
+#### 12.7.9 Managed Module Lifecycle
+
+Managed lifecycle operations bind each selected module ID to its loaded generation (D-153).
+An owned operation **MUST** continue when a caller stops waiting or its wait budget expires.
+An expired wait **MUST** return a snapshot, including pending phases. Clients sharing a Registry
+**MUST** join the same Registry shutdown and run teardown once per generation. Each client
+owns its event flush budget and outcome.
+
+The host interfaces use independent monotonic budgets measured in integer milliseconds from
+0 through 2147483647. A wait budget is optional and applies to one waiter. A drain budget
+applies to one generation and defaults to 5000 ms. A batch's optional operation budget
+limits dispatch and caps each entry's drain wait by the remaining time. The coordinator
+**MUST** report an entry that was never dispatched as `not_started` and continue to account
+for any started entry. A shutdown event flush budget defaults to 5000 ms and applies to one
+client's delivery stage. An explicit cancellation grace applies only to `cancel_then_force`
+and defaults to 1000 ms.
+
+When managed shutdown, removal, or reload starts draining a generation, the Registry **MUST**
+close admission before invoking the optional drain hook. Existing invocations retain their
+leases during the drain. The hook receives the operation ID, module ID, reason (`shutdown`,
+`unregister`, or `reload`), a monotonic remaining-time query, and a hook-scoped cancellation
+signal. A successful drain requires both hook settlement and release of the existing leases.
+If the deadline expires while the hook is active, the Registry **MUST** signal that hook and
+await its settlement before recovery, suspension, or unload. Expiry of a caller's wait budget
+**MUST NOT** signal the hook or cancel the operation. A `continue_waiting` policy treats drain
+expiry as an observation threshold and keeps draining. A host that explicitly chooses
+`cancel_then_force` authorizes the Registry to signal only the admitted invocations of the
+retiring generation when drain time expires. The Registry waits up to the configured grace
+for lease release before unloading, and **MUST** report any remaining leases at unload.
+The coordinator **MUST** keep tracking those executions and their finalizers until settlement.
+The cancellation signal **MUST NOT** propagate to the parent invocation or other generations.
+
+For managed reload, a drain-hook failure or an expired deadline under `abort_reload` selects
+recovery before `on_suspend` or `on_unload`. If both observations first occur together, drain
+failure takes priority. A module providing a drain hook **MUST** also expose the paired
+recovery hook to participate in managed reload. The Registry **MUST** validate the selected
+capabilities before closing admission and recheck generation ownership before acting. Recovery
+receives the operation ID, module ID, a fresh hook signal, and the abort reason `drain_timeout`
+or `drain_error`. Admission **MUST** stay closed until recovery completes successfully and the
+same generation still owns the ID in an open Registry. A recovery failure leaves the old
+generation unavailable for calls and available for explicit cleanup. The original generation
+keeps its in-memory state and skips `on_load` during this pre-unload recovery.
+
+After a successful reload drain, existing suspend, unload, load, and resume hooks retain their
+order and semantics (§12.7.3 and §12.7.4). The replacement **MUST NOT** accept calls before load
+and applicable resume have settled. The Registry **MUST** check that it still owns the
+replacement slot and is open before publishing. A replacement load failure after detaching
+the old generation follows D-112 compensation, including a new `on_load` on the old instance
+before republishing it. A managed report records primary failure and compensation separately.
+Async hook adapters **MUST** preserve sequencing and admission boundaries when a hook awaits.
+
+The optional `lifecycle` input of `system.control.reload_module` is a closed object with these
+fields. Normal Executor ACL, approval, validation, and audit apply.
+
+| Field | Type | Default | Meaning |
+|---|---|---|---|
+| `drain_timeout_ms` | Integer from 0 through 2147483647 | 5000 | Per-generation drain deadline in milliseconds. |
+| `on_drain_timeout` | `abort_reload` or `continue_waiting` | `abort_reload` | Recover the original generation or continue draining. |
+
+The Executor **MUST** preserve invocation errors, including absent exact selectors, conflicting
+selectors, failed governance, and invalid lifecycle options. A request selecting a module
+with an unpaired drain hook **MUST** fail with `GENERAL_INVALID_INPUT` before admission changes.
+Omitting `lifecycle` preserves the existing wire result and `RELOAD_FAILED` semantics. For an
+accepted managed reload, a terminal failure **MUST** return normal output with `success: false`
+and `lifecycle_report`. A successful or no-match operation **MUST** return `success: true` and
+`lifecycle_report`. Single-module output carries the exact `module_id`. Bulk output carries
+`module_id: null` and lists only successfully replaced IDs in `reloaded_modules`. A failure
+for one bulk target **MUST NOT** prevent attempts on subsequent targets. The report
+follows `../../schemas/sys-control-reload-module.schema.json`, includes a stable operation ID,
+an ordered row for each selected generation, and records `event_flush` as
+`not_applicable`. A timed-out Executor invocation keeps its regular invocation error. The owned
+operation continues after the caller stops waiting. Reports and lifecycle event data **MUST NOT**
+include call inputs, migration state, cancellation tokens, or hook exception text.
+
+An enabled EventEmitter uses the canonical events in §9.16.2. The Registry emits drain start
+after admission closes, timeout after the deadline wins, recovery after its disposition is
+known, and replacement failure after any compensation settles. It **MUST** emit each
+transition at most once per operation and generation. Module events use the event envelope's
+`module_id`. Each participating client **MUST** emit its resources-completed event once to its
+own enabled emitter before shutting it down. That event carries the shared Registry operation
+ID, and each client report records its own event flush outcome. The `Registry.on()` callback
+set remains the closed set in D-80.
 
 ### 12.8 Executor.validate() Cross-Language Implementation Guide
 
@@ -10174,6 +10265,7 @@ The specification is versioned independently of the SDK release line (`0.x`); `C
 
 | Version | Date | Summary | Records |
 |---|---|---|---|
+| 2.1.0 | Unreleased | Add managed drain and recovery hooks, scoped forced removal, opt-in governed reload reports, and lifecycle events (§6.7, §9.16.2, §12.7.9). | D-153 |
 | 2.0.0 | Unreleased | Resolve every path-typed configuration value against one project root (§9.2.2). Clarify configured redaction for schema-less calls (§6.1.8, §10.6.1). Require invocation-scoped approval resumption and use a non-secret correlation ID in approval telemetry (§7, §9.16.2). Clarify pipeline configuration, preflight, and approval argument scope (§5.16.1, §7.3–7.4, §12.8). Align schema examples with Draft 2020-12 and the unified validation error format (§4.2, §4.14, §8.1). Clarify the APCore trace ID reservation (§10.5). | [#113](https://github.com/aiperceivable/apcore/issues/113) |
 | 1.66.0 | 2026-10-19 | A23 preserves optional enum, const, reference and applicator constraints inside an anyOf-null wrapper; required fields remain unchanged. | [#124](https://github.com/aiperceivable/apcore/issues/124) |
 | 1.65.0 | 2026-10-08 | Add public bare-name canonicalization with structured, non-throwing results in all SDKs; preserve A02, ASCII-only case conversion and existing underscores, and reject non-ASCII, invalid starts and overlong output (§2.2.1). | [Rust #40](https://github.com/aiperceivable/apcore-rust/issues/40) |

@@ -86,6 +86,28 @@ describe('Registry', () => {
     expect(registry.get('test.custom')).toBe(mod);
   });
 
+  it.each(['absent', 'sync', 'async'])('releases a failed publication reservation with %s onLoad', async (loadMode) => {
+    const registry = new Registry();
+    const moduleId = 'test.publication';
+    const onUnload = vi.fn();
+    const onLoad = loadMode === 'absent' ? undefined : () => loadMode === 'async' ? Promise.resolve() : undefined;
+    const module = Object.assign(createMod(moduleId), { onLoad, onUnload });
+    await registry.register(moduleId, module);
+    const previous = registry.snapshotRegistration(moduleId)!;
+    await registry.safeUnregister(moduleId);
+
+    const beforePublishError = new Error('publication hook failed');
+    await expect(registry.restoreRegistration(previous, () => {
+      expect(registry.has(moduleId)).toBe(false);
+      throw beforePublishError;
+    })).rejects.toBe(beforePublishError);
+    expect(registry.has(moduleId)).toBe(false);
+    expect(onUnload).toHaveBeenCalledTimes(loadMode === 'absent' ? 1 : 2);
+
+    await expect(registry.register(moduleId, module)).resolves.toBeUndefined();
+    expect(registry.get(moduleId)).toBe(module);
+  });
+
   it('requires instance schemas before publishing custom discoveries', async () => {
     class StaticSchemaModule {
       static inputSchema = Type.Object({});
@@ -348,6 +370,26 @@ describe('Registry', () => {
     expect(registry.off('register', cb)).toBe(true);
     registry.register('test.a', createMod('test.a'));
     expect(events).toEqual([]);
+  });
+
+  it('takes a callback snapshot before dispatching a registry event', async () => {
+    const registry = new Registry();
+    const last = vi.fn();
+    const next = vi.fn();
+    const first = (): void => {
+      registry.off('register', first);
+      registry.on('register', next);
+    };
+    registry.on('register', first);
+    registry.on('register', last);
+
+    await registry.register('test.first', createMod('test.first'));
+    expect(last).toHaveBeenCalledOnce();
+    expect(next).not.toHaveBeenCalled();
+
+    await registry.register('test.next', createMod('test.next'));
+    expect(last).toHaveBeenCalledTimes(2);
+    expect(next).toHaveBeenCalledOnce();
   });
 
   it('off returns false when callback was not registered', () => {
@@ -1940,12 +1982,12 @@ describe('Registry hot reload (watch/unwatch)', () => {
       notify = listener;
       return watcher as unknown as FSWatcher;
     });
-    const now = Date.now();
-    const clock = vi.spyOn(Date, 'now').mockReturnValueOnce(now).mockReturnValueOnce(now + 400);
+    vi.useFakeTimers();
     try {
       await registry.watch();
       notify('change', filename);
       expect(registry.has(moduleId)).toBe(false);
+      await vi.advanceTimersByTimeAsync(400);
       notify('change', filename);
       expect(onChange).not.toHaveBeenCalled();
       expect(onUnload).not.toHaveBeenCalled();
@@ -1957,7 +1999,52 @@ describe('Registry hot reload (watch/unwatch)', () => {
       release();
       registry.unwatch();
       watch.mockRestore();
-      clock.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  it('honors managed watcher drain options and leaves replacement to the host', async () => {
+    const filename = 'managed_watch.js';
+    writeFileSync(join(tempDir, filename), `export default {
+      execute() { return {}; }, description: 'Managed watch source',
+      inputSchema: { type: 'object' }, outputSchema: { type: 'object' },
+    };`);
+    const registry = new Registry({ extensionsDir: tempDir });
+    await expect(registry.discover()).resolves.toBe(1);
+    const moduleId = 'managed_watch';
+    const old = registry.get(moduleId) as Record<string, unknown>;
+    const onDrain = vi.fn();
+    const onSuspend = vi.fn();
+    const onUnload = vi.fn();
+    Object.assign(old, { onDrain, onSuspend, onUnload });
+    const release = registry.acquireExecution(moduleId, old);
+    const changed = vi.fn();
+    const registered = vi.fn();
+    registry.on('file_changed', changed);
+    registry.on('register', registered);
+    let notify!: (eventType: string, filename: string | null) => void;
+    const watcher = Object.assign(new NodeEventEmitter(), { close: vi.fn() });
+    const watch = vi.spyOn(registryNodeFilesystem.fs, 'watch').mockImplementation((_root, _opts, listener) => {
+      notify = listener;
+      return watcher as unknown as FSWatcher;
+    });
+    try {
+      await registry.watch({ drainTimeoutMs: 0 });
+      notify('change', filename);
+      await vi.waitFor(() => expect(onDrain).toHaveBeenCalledOnce());
+      expect(registry.has(moduleId)).toBe(false);
+      expect(changed).not.toHaveBeenCalled();
+      expect(onUnload).not.toHaveBeenCalled();
+      release();
+      await vi.waitFor(() => expect(changed).toHaveBeenCalledOnce());
+      expect(onUnload).toHaveBeenCalledOnce();
+      expect(onSuspend).not.toHaveBeenCalled();
+      expect(registered).not.toHaveBeenCalled();
+      expect(registry.has(moduleId)).toBe(false);
+    } finally {
+      release();
+      registry.unwatch();
+      watch.mockRestore();
     }
   });
 
@@ -1973,6 +2060,38 @@ describe('Registry hot reload (watch/unwatch)', () => {
     registry.watch();
     expect(() => registry.watch()).not.toThrow();
     registry.unwatch();
+  });
+
+  it('forgets expired debounce entries and clears current entries on unwatch', async () => {
+    const registry = new Registry({ extensionsDir: tempDir });
+    const onChange = vi.fn();
+    registry.on('file_changed', onChange);
+    let notify!: (eventType: string, filename: string | null) => void;
+    const watcher = Object.assign(new NodeEventEmitter(), { close: vi.fn() });
+    const watch = vi.spyOn(registryNodeFilesystem.fs, 'watch').mockImplementation((_root, _opts, listener) => {
+      notify = listener;
+      return watcher as unknown as FSWatcher;
+    });
+    vi.useFakeTimers();
+    try {
+      await registry.watch();
+      notify('change', 'transient.js');
+      notify('change', 'transient.js');
+      expect(onChange).toHaveBeenCalledOnce();
+      expect(vi.getTimerCount()).toBe(1);
+
+      await vi.advanceTimersByTimeAsync(300);
+      expect(vi.getTimerCount()).toBe(0);
+      notify('change', 'transient.js');
+      expect(onChange).toHaveBeenCalledTimes(2);
+      expect(vi.getTimerCount()).toBe(1);
+      registry.unwatch();
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      registry.unwatch();
+      vi.useRealTimers();
+      watch.mockRestore();
+    }
   });
 
   it('matches a namespaced source by its discovered file path', async () => {
@@ -2453,8 +2572,9 @@ describe('Registry hot-reload API (acquire/release/drain)', () => {
     const module = Object.assign(createMod('test.mod'), { onLoad, onUnload });
     await registry.register('test.mod', module);
     const release = registry.acquireExecution('test.mod', module);
+    const removed = new Promise<void>((resolve) => { registry.on('unregister', () => resolve()); });
     expect(registry.unregister('test.mod')).toBe(true);
-    const removed = registry.safeUnregister('test.mod');
+    await expect(registry.safeUnregister('test.mod')).resolves.toBe(false);
 
     expect(() => registry.register('test.mod', module)).toThrow(DuplicateModuleIdError);
     expect(onLoad).toHaveBeenCalledOnce();
@@ -2463,7 +2583,7 @@ describe('Registry hot-reload API (acquire/release/drain)', () => {
     expect(onUnload).toHaveBeenCalledOnce();
     expect(() => registry.register('test.mod', module)).toThrow(DuplicateModuleIdError);
     resolveUnload();
-    await expect(removed).resolves.toBe(true);
+    await removed;
 
     await registry.register('test.mod', module);
     expect(onLoad).toHaveBeenCalledTimes(2);
@@ -2476,7 +2596,6 @@ describe('Registry hot-reload API (acquire/release/drain)', () => {
       const module = createMod('test.mod');
       await registry.register('test.mod', module);
       const releaseOriginal = registry.acquireExecution('test.mod', module);
-      expect(registry.unregister('test.mod')).toBe(true);
       const removal = registry.safeUnregister('test.mod');
       expect(vi.getTimerCount()).toBe(1);
 
@@ -2494,23 +2613,37 @@ describe('Registry hot-reload API (acquire/release/drain)', () => {
     }
   });
 
-  it('joins overlapping safe unregister calls through asynchronous cleanup', async () => {
-    const registry = new Registry();
-    let finishCleanup!: () => void;
-    const cleanup = new Promise<void>((resolve) => { finishCleanup = resolve; });
-    const onUnload = vi.fn(() => cleanup);
-    await registry.register('test.mod', Object.assign(createMod('test.mod'), { onUnload }));
-    const outcomes: boolean[] = [];
-    const remove = () => registry.safeUnregister('test.mod').then((result) => outcomes.push(result));
+  it('leaves ordinary removal unbounded until the execution releases its lease', async () => {
+    vi.useFakeTimers();
+    try {
+      const registry = new Registry();
+      const onUnload = vi.fn();
+      const module = Object.assign(createMod('test.mod'), { onUnload });
+      await registry.register('test.mod', module);
+      const release = registry.acquireExecution('test.mod', module);
 
-    const first = remove();
-    const second = remove();
-    await new Promise<void>((resolve) => { setImmediate(resolve); });
-    expect(onUnload).toHaveBeenCalledTimes(1);
-    expect(outcomes).toEqual([]);
-    finishCleanup();
-    await Promise.all([first, second]);
-    expect(outcomes).toEqual([true, true]);
+      expect(registry.unregister('test.mod')).toBe(true);
+      expect(registry.get('test.mod')).toBeNull();
+      await vi.advanceTimersByTimeAsync(5001);
+      expect(vi.getTimerCount()).toBe(0);
+      expect(onUnload).not.toHaveBeenCalled();
+
+      release();
+      await Promise.resolve();
+      expect(onUnload).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not wait on itself when its onUnload hook calls safeUnregister again', async () => {
+    const registry = new Registry();
+    const onUnload = vi.fn(() => registry.safeUnregister('test.mod'));
+    await registry.register('test.mod', Object.assign(createMod('test.mod'), { onUnload }));
+
+    await expect(registry.safeUnregister('test.mod')).resolves.toBe(true);
+    expect(onUnload).toHaveBeenCalledOnce();
+    await expect(onUnload.mock.results[0]?.value).resolves.toBe(false);
   });
 
   it('safeUnregister force-unloads and warns after timeout', async () => {

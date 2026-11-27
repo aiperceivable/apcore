@@ -1,0 +1,222 @@
+{
+  "type": "object",
+  "required": [
+    "success",
+    "module_id"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "success": {
+      "type": "boolean",
+      "description": "Whether the module reload succeeded."
+    },
+    "module_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "Canonical ID for a single-module reload. Null for bulk and configuration-only reloads."
+    },
+    "previous_version": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "Version string before reload, or null if unversioned."
+    },
+    "new_version": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "Version string after reload, or null if unversioned."
+    },
+    "reload_duration_ms": {
+      "type": "number",
+      "description": "Time taken for the reload operation in milliseconds."
+    },
+    "reloaded_modules": {
+      "type": "array",
+      "description": "Module IDs reloaded in bulk mode. An empty array means no modules matched.",
+      "items": {
+        "type": "string"
+      }
+    },
+    "config_reloaded": {
+      "type": "boolean",
+      "description": "Whether the Rust SDK reloaded its configuration."
+    },
+    "lifecycle_report": {
+      "description": "Terminal result of an accepted module reload with lifecycle options.",
+      "$ref": "#/$defs/lifecycleReport"
+    }
+  },
+  "oneOf": [
+    {
+      "properties": {
+        "module_id": {
+          "type": "string",
+          "description": "Canonical ID of the single reloaded module."
+        },
+        "reloaded_modules": false
+      }
+    },
+    {
+      "required": [
+        "reloaded_modules"
+      ],
+      "properties": {
+        "module_id": {
+          "type": "null",
+          "description": "Bulk reload has no single module ID."
+        },
+        "previous_version": false,
+        "new_version": false
+      }
+    },
+    {
+      "required": [
+        "config_reloaded"
+      ],
+      "properties": {
+        "module_id": {
+          "type": "null",
+          "description": "Configuration-only reload has no module ID."
+        },
+        "reloaded_modules": false,
+        "previous_version": false,
+        "new_version": false,
+        "reload_duration_ms": false,
+        "lifecycle_report": false
+      }
+    }
+  ],
+  "$defs": {
+    "lifecycleError": {
+      "type": "object",
+      "required": [
+        "code",
+        "phase"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "code": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Error code without exception text or user data."
+        },
+        "phase": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Stage in which the error occurred."
+        }
+      }
+    },
+    "moduleReport": {
+      "type": "object",
+      "required": [
+        "module_id",
+        "phase",
+        "outcome"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "module_id": {
+          "type": "string",
+          "description": "Canonical module ID."
+        },
+        "phase": {
+          "enum": [
+            "pending",
+            "draining",
+            "recovering",
+            "unloading",
+            "loading",
+            "resuming",
+            "done"
+          ],
+          "description": "Stage recorded by the reload coordinator."
+        },
+        "outcome": {
+          "enum": [
+            "reloaded",
+            "retained_ready",
+            "retained_unavailable",
+            "failed",
+            "absent",
+            "already_removing",
+            "not_started"
+          ],
+          "description": "Disposition of the selected module generation."
+        },
+        "drain_timed_out": {
+          "type": "boolean",
+          "description": "Whether the drain deadline elapsed."
+        },
+        "abort_reason": {
+          "enum": [
+            "drain_timeout",
+            "drain_error"
+          ],
+          "description": "Reason for aborting before unloading the old generation."
+        },
+        "compensation": {
+          "enum": [
+            "not_required",
+            "restored",
+            "failed"
+          ],
+          "description": "Disposition of compensation for a failed replacement."
+        },
+        "error": {
+          "$ref": "#/$defs/lifecycleError",
+          "description": "Primary error for this module, when available."
+        }
+      }
+    },
+    "lifecycleReport": {
+      "type": "object",
+      "required": [
+        "operation_id",
+        "kind",
+        "status",
+        "modules",
+        "event_flush"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "operation_id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Opaque identifier shared with lifecycle events."
+        },
+        "kind": {
+          "const": "reload",
+          "description": "Lifecycle operation kind."
+        },
+        "status": {
+          "enum": [
+            "completed",
+            "failed"
+          ],
+          "description": "Terminal status of the reload operation."
+        },
+        "modules": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/moduleReport"
+          },
+          "description": "Ordered dispositions of the selected modules."
+        },
+        "event_flush": {
+          "const": "not_applicable",
+          "description": "Reload does not close or flush the client's emitter."
+        },
+        "error": {
+          "$ref": "#/$defs/lifecycleError",
+          "description": "Primary operation error, when available."
+        }
+      }
+    }
+  }
+}

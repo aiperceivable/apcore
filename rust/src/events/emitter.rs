@@ -1,19 +1,38 @@
 // APCore Protocol — Event emitter
 // Spec reference: Event types and emission
 
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
 use parking_lot::{Mutex, RwLock};
 use serde::{Deserialize, Serialize};
+use tokio::runtime::Handle;
 use tokio::task::JoinHandle;
 
 use super::subscribers::EventSubscriber;
 use crate::errors::{ErrorCode, ModuleError};
+use crate::runtime::background_runtime;
 
 /// Event type for dead-letter-queue notifications emitted on delivery exhaustion.
 const DLQ_EVENT_TYPE: &str = "apcore.event.delivery_failed";
+
+tokio::task_local! {
+    static DELIVERY_EMITTER: usize;
+}
+
+fn delivery_runtime() -> Option<Handle> {
+    if let Ok(handle) = Handle::try_current() {
+        return Some(handle);
+    }
+    match background_runtime() {
+        Ok(runtime) => Some(runtime),
+        Err(error) => {
+            tracing::error!(%error, "Failed to initialize event delivery runtime");
+            None
+        }
+    }
+}
 
 /// An event emitted by the `APCore` system.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -79,6 +98,7 @@ pub struct EventEmitter {
     /// deliveries to drain (sync findings A-D-024 / A-D-027). Completed
     /// handles are pruned lazily on each `emit`/`flush`.
     pending: Mutex<Vec<JoinHandle<()>>>,
+    active_deliveries: Arc<AtomicUsize>,
     flush_lock: tokio::sync::Mutex<()>,
     next_handle: AtomicU64,
 }
@@ -98,6 +118,21 @@ struct PendingFlush<'a> {
     handles: Vec<JoinHandle<()>>,
 }
 
+struct ActiveDelivery(Arc<AtomicUsize>);
+
+impl ActiveDelivery {
+    fn begin(counter: &Arc<AtomicUsize>) -> Self {
+        counter.fetch_add(1, Ordering::SeqCst);
+        Self(Arc::clone(counter))
+    }
+}
+
+impl Drop for ActiveDelivery {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
 impl Drop for PendingFlush<'_> {
     fn drop(&mut self) {
         if !self.handles.is_empty() {
@@ -115,6 +150,7 @@ impl EventEmitter {
             max_workers: 4,
             is_shutdown: Arc::new(AtomicBool::new(false)),
             pending: Mutex::new(Vec::new()),
+            active_deliveries: Arc::new(AtomicUsize::new(0)),
             flush_lock: tokio::sync::Mutex::new(()),
             next_handle: AtomicU64::new(0),
         }
@@ -334,11 +370,16 @@ impl EventEmitter {
     pub async fn flush(&self, timeout_ms: u64) -> Result<(), ModuleError> {
         let deadline = (timeout_ms > 0)
             .then(|| tokio::time::Instant::now() + Duration::from_millis(timeout_ms));
+        self.flush_pending(deadline).await;
+        Ok(())
+    }
+
+    async fn flush_pending(&self, deadline: Option<tokio::time::Instant>) {
         let _flush = match deadline {
             Some(deadline) => {
                 let Ok(guard) = tokio::time::timeout_at(deadline, self.flush_lock.lock()).await
                 else {
-                    return Ok(());
+                    return;
                 };
                 guard
             }
@@ -363,7 +404,28 @@ impl EventEmitter {
             }
             pending.handles.pop();
         }
-        Ok(())
+    }
+
+    pub(crate) fn delivery_scope(&self) -> usize {
+        std::ptr::from_ref(self) as usize
+    }
+
+    pub(crate) fn in_delivery_callback(scope: usize) -> bool {
+        DELIVERY_EMITTER
+            .try_with(|id| *id == scope)
+            .unwrap_or(false)
+    }
+
+    /// Seal event admission and report whether all tracked deliveries settled.
+    pub(crate) async fn shutdown_lifecycle(&self, timeout: Duration) -> bool {
+        let deadline = tokio::time::Instant::now() + timeout;
+        self.is_shutdown.store(true, Ordering::SeqCst);
+        // Synchronize with any dispatcher that accepted work before the seal.
+        drop(self.pending.lock());
+        if !timeout.is_zero() && self.active_deliveries.load(Ordering::SeqCst) > 0 {
+            self.flush_pending(Some(deadline)).await;
+        }
+        self.active_deliveries.load(Ordering::SeqCst) == 0
     }
 
     /// Fire-and-forget dispatch: spawns one `tokio::task` per matching
@@ -451,6 +513,12 @@ impl EventEmitter {
             .filter(|subscriber| Self::subscriber_matches(subscriber.as_ref(), &event.event_type))
             .map(Arc::clone)
             .collect::<Vec<_>>();
+        if matching.is_empty() {
+            return;
+        }
+        let Some(runtime) = delivery_runtime() else {
+            return;
+        };
 
         // Schedule and record together so shutdown cannot flush between them.
         let mut pending = self.pending.lock();
@@ -458,21 +526,26 @@ impl EventEmitter {
             return;
         }
         pending.retain(|handle| !handle.is_finished());
+        let emitter_scope = self.delivery_scope();
         for subscriber in matching {
             let event = event.clone();
             let dlq_subscribers = retry.then(|| all_subscribers.clone());
-            pending.push(tokio::spawn(async move {
-                if let Some(dlq_subscribers) = dlq_subscribers {
-                    Self::deliver_with_dlq(subscriber, event, dlq_subscribers).await;
-                } else if let Err(error) = subscriber.on_event(&event).await {
-                    tracing::warn!(
-                        subscriber_id = %subscriber.subscriber_id(),
-                        event_type = %event.event_type,
-                        error = %error,
-                        "emit_spawn: subscriber on_event failed"
-                    );
-                }
-            }));
+            let activity = ActiveDelivery::begin(&self.active_deliveries);
+            pending.push(
+                runtime.spawn(DELIVERY_EMITTER.scope(emitter_scope, async move {
+                    let _activity = activity;
+                    if let Some(dlq_subscribers) = dlq_subscribers {
+                        Self::deliver_with_dlq(subscriber, event, dlq_subscribers).await;
+                    } else if let Err(error) = subscriber.on_event(&event).await {
+                        tracing::warn!(
+                            subscriber_id = %subscriber.subscriber_id(),
+                            event_type = %event.event_type,
+                            error = %error,
+                            "emit_spawn: subscriber on_event failed"
+                        );
+                    }
+                })),
+            );
         }
     }
 

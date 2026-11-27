@@ -22,6 +22,8 @@ use apcore::module::Module;
 use apcore::registry::registry::Registry;
 use async_trait::async_trait;
 use serde_json::{json, Value};
+use std::sync::{mpsc, Arc, Weak};
+use std::time::Duration;
 
 /// Overrides `describe()` with a STRING — the author's own text.
 #[derive(Debug)]
@@ -154,4 +156,82 @@ fn describe_returns_the_module_not_found_code_for_an_unknown_id() {
     let reg = Registry::new();
     let err = reg.describe("probe.absent").expect_err("unknown id");
     assert_eq!(err.code, apcore::errors::ErrorCode::ModuleNotFound);
+}
+
+struct ReentrantIntrospection(Weak<Registry>);
+
+#[async_trait]
+impl Module for ReentrantIntrospection {
+    fn input_schema(&self) -> Value {
+        json!({"type": "object"})
+    }
+
+    fn output_schema(&self) -> Value {
+        json!({"type": "object"})
+    }
+
+    fn description(&self) -> &'static str {
+        "Reentrant introspection"
+    }
+
+    fn describe(&self) -> Value {
+        self.0
+            .upgrade()
+            .unwrap()
+            .unregister("probe.absent")
+            .unwrap();
+        json!("reentrant description")
+    }
+
+    fn tags(&self) -> Vec<String> {
+        self.0
+            .upgrade()
+            .unwrap()
+            .unregister("probe.absent")
+            .unwrap();
+        vec!["reentrant".to_owned()]
+    }
+
+    async fn execute(&self, _i: Value, _c: &Context<Value>) -> Result<Value, ModuleError> {
+        Ok(json!({}))
+    }
+}
+
+#[test]
+fn test_describe_allows_registry_writes_from_module_hook() {
+    assert_introspection_completes(|registry| {
+        assert_eq!(
+            registry.describe("probe.reentrant").unwrap(),
+            "reentrant description"
+        );
+    });
+}
+
+#[test]
+fn test_list_full_allows_registry_writes_from_tags_hook() {
+    assert_introspection_completes(|registry| {
+        assert_eq!(
+            registry.list_full(Some(&["reentrant"]), None, None),
+            ["probe.reentrant"]
+        );
+    });
+}
+
+fn assert_introspection_completes(operation: impl FnOnce(&Registry) + Send + 'static) {
+    let registry = Arc::new(Registry::new());
+    registry
+        .register_module(
+            "probe.reentrant",
+            Box::new(ReentrantIntrospection(Arc::downgrade(&registry))),
+        )
+        .unwrap();
+    let (done, finished) = mpsc::channel();
+    let operation = std::thread::spawn(move || {
+        operation(&registry);
+        done.send(()).unwrap();
+    });
+    finished
+        .recv_timeout(Duration::from_secs(2))
+        .expect("module introspection could not re-enter the registry");
+    operation.join().unwrap();
 }

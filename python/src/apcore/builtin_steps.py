@@ -476,7 +476,12 @@ class BuiltinModuleLookup(BaseStep):
         resolve = getattr(type(self._registry), "_resolve_registration", None)
         if resolve is not None:
             if ctx.execution_scope is not None:
-                lease = self._registry._acquire_registration(ctx.module_id, version_hint)
+                token = (
+                    ctx._stream_observation.cancel_token
+                    if ctx._stream_observation is not None
+                    else getattr(ctx.context, "cancel_token", None)
+                )
+                lease = self._registry._acquire_registration(ctx.module_id, version_hint, token)
                 registration = lease.__enter__()
 
                 def release_lease() -> None:
@@ -1348,19 +1353,32 @@ class BuiltinExecute(BaseStep):
                 timeout_s = remaining
 
         try:
-            is_async = inspect.iscoroutinefunction(module.execute)
+            execute = module.execute
+            managed_reload = False
+            if ctx.module_id == "system.control.reload_module" and "lifecycle" in inputs:
+                from apcore.sys_modules.control import ReloadModule
+
+                if isinstance(module, ReloadModule):
+                    execute = module._execute_managed
+                    managed_reload = True
+            is_async = inspect.iscoroutinefunction(execute)
             if is_async:
-                coro = module.execute(inputs, ctx.context)
+                coro = execute(inputs, ctx.context)
             else:
                 loop = asyncio.get_event_loop()
-                coro = loop.run_in_executor(None, module.execute, inputs, ctx.context)
+                coro = loop.run_in_executor(None, execute, inputs, ctx.context)
 
             task = ctx.module_task = asyncio.ensure_future(coro)
             # Consume late failures even when the call was cancelled while
             # waiting and no request remains to observe the result.
             task.add_done_callback(_discard_late_execution)
             if timeout_s is not None:
-                completed, _ = await asyncio.wait({task}, timeout=timeout_s)
+                try:
+                    completed, _ = await asyncio.wait({task}, timeout=timeout_s)
+                except asyncio.CancelledError:
+                    if managed_reload:
+                        task.cancel()
+                    raise
                 if not completed:
                     # Cancellation is cooperative: do not wait for cleanup or
                     # forcibly cancel the module's coroutine. Consume a late

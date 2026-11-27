@@ -143,7 +143,7 @@ describe('Module.onResume()', () => {
 // ---------------------------------------------------------------------------
 
 describe('suspend → resume round-trip', () => {
-  it('state captured by onSuspend is faithfully delivered to onResume', () => {
+  it('state captured by onSuspend is faithfully delivered to onResume', async () => {
     const originalState: Record<string, unknown> = {
       requestCount: 17,
       lastError: 'timeout',
@@ -162,15 +162,15 @@ describe('suspend → resume round-trip', () => {
     };
 
     // Simulate the hand-off that ReloadModule performs:
-    const suspendedState = oldModule.onSuspend!();
+    const suspendedState = await oldModule.onSuspend!();
     if (suspendedState !== null) {
-      newModule.onResume!(suspendedState);
+      await newModule.onResume!(suspendedState);
     }
 
     expect(resumedWith).toEqual(originalState);
   });
 
-  it('round-trip with complex nested state preserves all fields', () => {
+  it('round-trip with complex nested state preserves all fields', async () => {
     const state: Record<string, unknown> = {
       metrics: { calls: 50, errors: 2, p99: 120 },
       featureFlags: { darkMode: true, betaFeature: false },
@@ -188,9 +188,9 @@ describe('suspend → resume round-trip', () => {
       onResume: (s) => { restored = s; },
     };
 
-    const captured = oldModule.onSuspend!();
+    const captured = await oldModule.onSuspend!();
     if (captured !== null) {
-      newModule.onResume!(captured);
+      await newModule.onResume!(captured);
     }
 
     expect(restored).toBe(state); // same reference — no copy made in the hand-off
@@ -198,7 +198,7 @@ describe('suspend → resume round-trip', () => {
     expect(restored!['sessionIds']).toEqual(['abc', 'def']);
   });
 
-  it('onResume is NOT called when onSuspend returns null', () => {
+  it('onResume is NOT called when onSuspend returns null', async () => {
     const oldModule: Module = {
       ...makeBaseModule(),
       onSuspend: () => null,
@@ -211,15 +211,15 @@ describe('suspend → resume round-trip', () => {
     };
 
     // Mirror the guard used by ReloadModule
-    const captured = oldModule.onSuspend!();
+    const captured = await oldModule.onSuspend!();
     if (captured !== null) {
-      newModule.onResume!(captured);
+      await newModule.onResume!(captured);
     }
 
     expect(resumeFn).not.toHaveBeenCalled();
   });
 
-  it('onResume is NOT called when old module has no onSuspend', () => {
+  it('onResume is NOT called when old module has no onSuspend', async () => {
     const oldModule: Module = makeBaseModule(); // no onSuspend
 
     const resumeFn = vi.fn();
@@ -230,10 +230,10 @@ describe('suspend → resume round-trip', () => {
 
     // Mirror the guard: only call onSuspend when it exists
     const captured = typeof oldModule.onSuspend === 'function'
-      ? oldModule.onSuspend()
+      ? await oldModule.onSuspend()
       : null;
     if (captured !== null) {
-      newModule.onResume!(captured);
+      await newModule.onResume!(captured);
     }
 
     expect(resumeFn).not.toHaveBeenCalled();

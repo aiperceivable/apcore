@@ -1,0 +1,73 @@
+{
+  "feature": "module-lifecycle",
+  "created": "2026-11-26T17:00:37+08:00",
+  "updated": "2026-11-26T09:46:54Z",
+  "status": "completed",
+  "execution_order": [
+    "python",
+    "typescript",
+    "rust",
+    "managed-lifecycle"
+  ],
+  "progress": {
+    "total_tasks": 4,
+    "completed": 4,
+    "in_progress": 0,
+    "pending": 0,
+    "skipped": 0,
+    "blocked": 0
+  },
+  "tasks": [
+    {
+      "id": "python",
+      "file": "tasks/python.md",
+      "title": "Python lifecycle operations",
+      "status": "completed",
+      "started_at": "2026-11-26T09:02:01Z",
+      "completed_at": "2026-11-26T09:17:55Z"
+    },
+    {
+      "id": "typescript",
+      "file": "tasks/typescript.md",
+      "title": "TypeScript lifecycle operations",
+      "status": "completed",
+      "started_at": "2026-11-26T09:02:01Z",
+      "completed_at": "2026-11-26T09:19:43Z"
+    },
+    {
+      "id": "rust",
+      "file": "tasks/rust.md",
+      "title": "Rust lifecycle operations",
+      "status": "completed",
+      "started_at": "2026-11-26T09:02:01Z",
+      "completed_at": "2026-11-26T09:19:43Z"
+    },
+    {
+      "id": "managed-lifecycle",
+      "file": "tasks/managed-lifecycle.md",
+      "title": "Managed lifecycle across all SDKs",
+      "status": "completed",
+      "started_at": "2026-11-26T09:32:49Z",
+      "completed_at": "2026-11-26T09:46:54Z",
+      "dependencies": [
+        "python",
+        "typescript",
+        "rust"
+      ]
+    }
+  ],
+  "metadata": {
+    "source_doc": "planning/module-lifecycle/tech-design.md",
+    "created_by": "code-forge",
+    "fixes": [
+      {
+        "bug": "Cross-SDK lifecycle review remediation",
+        "root_cause_level": 1,
+        "root_cause": "Hook ownership, publication and event delivery were inconsistent across compatibility and managed lifecycle paths.",
+        "commits": [],
+        "doc_updates": ["planning/module-lifecycle/plan.md", "docs/features/apcore-client.md", "docs/features/event-system.md"],
+        "fixed_at": "2026-11-26T10:34:49Z"
+      }
+    ]
+  }
+}

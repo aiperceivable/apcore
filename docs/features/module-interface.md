@@ -92,21 +92,37 @@ The `metadata` dict MAY carry ecosystem-standard keys to aid AI orchestration. S
 |------|---------|
 | `on_load()` | Called once when the module is registered. Initialize resources here (DB connections, pools). |
 | `on_unload()` | Called when the module is removed or the application shuts down. Clean up resources. |
-| `on_suspend() -> dict \| None` | Called before hot-reload. Return JSON-serializable state to preserve. |
-| `on_resume(state: dict)` | Called after hot-reload with the dict returned by `on_suspend()`. |
+| `on_suspend() -> dict \| None` | Called after the drain wait, before unloading for hot reload. Return JSON-serializable state to preserve. |
+| `on_resume(state: dict)` | Called on the replacement before publication with the dict returned by `on_suspend()`. |
+| `on_drain(context)` | Called after a managed operation closes admission. Notify streams and background producers that it is time to finish. Keep resources available for calls still running. |
+| `on_drain_aborted(context)` | Called when a managed reload aborts before unloading. Restore readiness before the Registry reopens admission on the existing generation. |
 
 **Hooks during a successful replacement**
 
 ```text
+Close admission and wait for active calls, subject to the drain deadline
 old.on_suspend() → state          ← export state
 old.on_unload()                   ← release resources
 new.on_load()                     ← acquire resources
 new.on_resume(state)              ← restore state (only if state is not None)
+Publish the replacement
 ```
 
 `on_suspend()` return values MUST be JSON-serializable. `on_resume()` MUST tolerate missing or extra keys (versions may differ). Publication of the replacement requires a successful `on_load()`.
 
 The Python and Rust watchers run the state handoff when they replace a module. In Rust the discoverer or its factory supplies the replacement instance. TypeScript emits a notification so the application can arrange its own replacement. An explicit `system.control.reload_module` also supports state handoff in every SDK. See [Registry hot reload](./registry-system.md#hot-reload-development-mode).
+
+#### Drain and recovery hooks
+
+Managed reload requires both hooks when the module exposes `on_drain`. The drain context includes the operation ID, module ID, reason, remaining drain time, and a hook-specific cancellation signal. The recovery context includes the operation ID, module ID, a fresh signal, and `drain_timeout` or `drain_error` as the abort reason. A managed operation awaits the drain hook before recovery or teardown, even when the drain deadline expires and signals the hook. An active call can finish while the module is draining.
+
+| SDK | Declare and register hooks |
+|---|---|
+| Python | Define `on_drain` and `on_drain_aborted` as methods receiving `DrainContext` and `DrainAbortedContext`. Use `register_async`, `register_many_async`, or `discover_async` for modules with asynchronous hooks. Keep the registration event loop live while these hooks may run. |
+| TypeScript | Implement `onDrain(context: DrainContext)` and `onDrainAborted(context: DrainAbortedContext)` with a `void` or `Promise<void>` result. Register through `await register(...)` or `await registerMany(...)`. Load, unload, suspend, and resume can also return promises. |
+| Rust | Implement both async hooks on `DrainableModule` and expose the typed capability with `Module::as_drainable`. For asynchronous load, unload, suspend, or resume, implement `AsyncLifecycleModule`, expose it with `Module::as_async_lifecycle`, and use `register_async`, `register_many_async`, or `discover_async`. |
+
+See [managed lifecycle sequencing](../spec/protocol-spec.md#1279-managed-module-lifecycle) and [managed reload results](./system-modules.md#managed-reload).
 
 ### Optional Methods
 
@@ -135,7 +151,7 @@ The `@module(...)` decorator (or the call form `module(callable, ...)`) lets unm
 | `documentation` | `documentation` parameter |
 | `execute()` | The function itself |
 | `name`, `tags`, `version`, `annotations`, `metadata` | Decorator parameters |
-| `on_load`, `on_unload`, `on_suspend`, `on_resume` | Not supported in function form |
+| `on_load`, `on_unload`, `on_suspend`, `on_resume`, `on_drain`, `on_drain_aborted` | Use a class module to define lifecycle hooks. |
 
 If a parameter is declared as `context: Context`, the framework auto-injects the Context object. The `context` parameter is excluded from the generated `input_schema`.
 

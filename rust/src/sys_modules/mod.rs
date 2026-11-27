@@ -109,6 +109,12 @@ impl ToggleState {
     pub fn clear(&self) {
         self.disabled.write().clear();
     }
+
+    pub(crate) fn snapshot(&self) -> Self {
+        Self {
+            disabled: RwLock::new(self.disabled.read().clone()),
+        }
+    }
 }
 
 impl Default for ToggleState {
@@ -889,8 +895,8 @@ pub(crate) fn register_sys_modules_for_client(
     // name per the v0.22.0 spec MUST; the legacy bare-name aliases
     // (`module_registered`, `module_unregistered`) were removed (apcore#78).
     //
-    // Registry callbacks are synchronous, so each hook spawns a task to
-    // dispatch the async emit — fire-and-forget, error-isolated.
+    // Schedule tracked deliveries directly from the synchronous callbacks so
+    // shutdown can flush events for the registrations it just unloaded.
     if events_enabled {
         let emitter_for_register = Arc::clone(&emitter_arc);
         registry.set_event_emitter(Arc::clone(&emitter_arc));
@@ -904,19 +910,12 @@ pub(crate) fn register_sys_modules_for_client(
                         return;
                     }
                     tracing::info!(module_id = %module_id, "module_registered");
-                    let emitter = Arc::clone(&emitter_for_register);
-                    let module_id_owned = module_id.to_string();
-                    if let Ok(handle) = tokio::runtime::Handle::try_current() {
-                        handle.spawn(async move {
-                            let canonical = ApCoreEvent::with_module(
-                                "apcore.registry.module_registered",
-                                json!({}),
-                                &module_id_owned,
-                                "info",
-                            );
-                            emitter.emit(&canonical).await;
-                        });
-                    }
+                    emitter_for_register.emit_delivery_semantics(ApCoreEvent::with_module(
+                        "apcore.registry.module_registered",
+                        json!({}),
+                        module_id,
+                        "info",
+                    ));
                 }),
             )
             .unwrap_or_else(|e| {
@@ -934,19 +933,12 @@ pub(crate) fn register_sys_modules_for_client(
                         return;
                     }
                     tracing::info!(module_id = %module_id, "module_unregistered");
-                    let emitter = Arc::clone(&emitter_for_unregister);
-                    let module_id_owned = module_id.to_string();
-                    if let Ok(handle) = tokio::runtime::Handle::try_current() {
-                        handle.spawn(async move {
-                            let canonical = ApCoreEvent::with_module(
-                                "apcore.registry.module_unregistered",
-                                json!({}),
-                                &module_id_owned,
-                                "info",
-                            );
-                            emitter.emit(&canonical).await;
-                        });
-                    }
+                    emitter_for_unregister.emit_delivery_semantics(ApCoreEvent::with_module(
+                        "apcore.registry.module_unregistered",
+                        json!({}),
+                        module_id,
+                        "info",
+                    ));
                 }),
             )
             .unwrap_or_else(|e| {

@@ -2,8 +2,9 @@
   "description": "Configuration and module-schema file loaders negotiate declared protocol versions (spec §13.3).",
   "test_cases": [
     {"id": "legacy_config", "format": "config", "version": "1.0", "expected": {"error_code": null}},
-    {"id": "current_config", "format": "config", "version": "2.0.0", "expected": {"error_code": null}},
-    {"id": "future_config_minor", "format": "config", "version": "2.1.0", "expected": {"error_code": "VERSION_INCOMPATIBLE"}},
+    {"id": "current_config", "format": "config", "version": "2.1.0", "expected": {"error_code": null}},
+    {"id": "previous_config_minor", "format": "config", "version": "2.0.0", "expected": {"error_code": null}},
+    {"id": "future_config_minor", "format": "config", "version": "2.2.0", "expected": {"error_code": "VERSION_INCOMPATIBLE"}},
     {"id": "unknown_config_major", "format": "config", "version": "9.0.0", "expected": {"error_code": "VERSION_INCOMPATIBLE"}},
     {"id": "prerelease_schema", "format": "schema", "version": "2.0.0-rc.1", "expected": {"error_code": null}},
     {"id": "unversioned_schema", "format": "schema", "expected": {"error_code": null}},

@@ -1602,6 +1602,8 @@ calculate_specificity()         ←── ExecutionPolicy rule selection
 
 **Purpose**: Unregister a module that may be executing, without racing in-flight calls or leaking resources.
 
+The signature below describes the state-capturing path used internally for hot reload. The public Registry safe-unregister methods run the drain and unload steps and report the outcome as a boolean.
+
 **Signature**:
 
 ```text

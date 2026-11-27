@@ -32,11 +32,7 @@
 
 ## Cross-Language Feature Parity
 
-The Rust SDK tracks the apcore protocol spec and ships full feature parity
-with the Python and TypeScript SDKs. The table below covers the v0.23
-hardening items (#60–#65), the v0.24–v0.26 governance surfaces, the v0.27
-authorization and descriptor fixes, and the long-standing background-task and
-extension surfaces.
+The Python, TypeScript, and Rust SDKs share these protocol contracts. See the [Rust changelog](./CHANGELOG.md) for release history.
 
 | Feature | Python | TypeScript | Rust |
 |---------|:------:|:----------:|:----:|
@@ -51,15 +47,7 @@ extension surfaces.
 | `validate()` withholds introspection from a denied caller (apcore#96) | Yes | Yes | Yes |
 | `get_definition().dependencies` is a parsed field (apcore#90) | Yes | Yes | Yes |
 
-**v0.27.0, BREAKING (security).** `validate()` used to run `preflight()` and
-`preview()` on the strength of a module lookup alone, so a caller the ACL had
-just denied still made module-authored code run and still received what it
-returned — for a command-wrapping module, the resolved binary and its argv. All
-three SDKs did it; all three now suppress it when the `acl` check fails, while
-still reporting that failed check so a denied caller learns *why*. A failed
-`schema` check does **not** suppress introspection: a permitted caller is
-entitled to the module's account of what would happen even when its inputs are
-malformed. See spec v1.13.0 §12.8.5.1 and `preflight_disclosure.json`.
+All three SDKs withhold module-level preflight and preview when the ACL denies access. Validation still reports the failed ACL check. A permitted call can receive the module's preflight or preview even if schema validation fails.
 
 See the [`AsyncTaskManager`](./src/async_task.rs) and
 [`ExtensionManager`](./src/extensions.rs) source, plus the corresponding
@@ -462,75 +450,16 @@ let mut loader = BindingLoader::new();
 loader.load_from_yaml(std::path::Path::new("binding.yaml")).unwrap();
 ```
 
-### Annotation overlay (cross-SDK difference)
+### Discovery metadata and programmatic registration
 
-The Python and TypeScript SDKs support `*_meta.yaml` sidecar files that override
-code-defined module annotations at load time (PROTOCOL_SPEC.md  §4.13: field-level
-merge, YAML wins over code). The Rust SDK **does not** implement this feature.
+The default discoverer reads a module's `<stem>_meta.yaml` companion file.
+It merges the file's `annotations` with the annotations returned by the
+module. YAML values override matching fields, and other fields keep their
+code-defined values.
 
-This is a deliberate design choice:
-
-- **Spec §4.13 is conditional**: it mandates field-level merge only "*when both* YAML
-  metadata file and code define Annotations". If the SDK never loads YAML metadata
-  files, the rule is never triggered.
-- **Rust favours explicit configuration**: annotations are declared via
-  `ModuleAnnotations` in code and are type-checked at compile time. YAML-based
-  override introduces implicit, late-bound behavior that conflicts with Rust's
-  "explicit > implicit" philosophy.
-- **No user demand**: as of v0.18.0 there are zero issues or RFCs requesting YAML
-  annotation overlays for the Rust SDK.
-
-If you need runtime-configurable annotations (e.g., ops teams toggling `readonly` or
-`requires_approval` without recompiling), you can load a YAML/JSON file yourself and
-construct `ModuleAnnotations` via `serde`:
-
-The Rust `Registry` exposes two registration entry points:
-
-- `register_module(module_id, module)` — **spec-compliant two-argument form**
-  (parity with `apcore-python.Registry.register` and
-  `apcore-typescript.Registry.register`). The `ModuleDescriptor` is
-  auto-generated from the module's `input_schema()` / `output_schema()` /
-  `description()` / annotations.
-- `register(module_id, module, descriptor)` — **extended three-argument form**
-  for supplying a pre-built descriptor (e.g. one with overlay annotations
-  loaded from YAML).
-
-```rust
-use apcore::module::{Module, ModuleAnnotations};
-use apcore::registry::{ModuleDescriptor, Registry};
-use std::collections::HashMap;
-
-// (1) Auto descriptor — parity with Python / TypeScript `register`.
-let registry = Registry::new();
-registry.register_module("my.module", Box::new(MyModule))?;
-
-// (2) Explicit descriptor — Rust-only extended form. Construct the
-// descriptor fully (there is no `Default` impl that matches every field);
-// the literal below mirrors the one used by `APCore::register` internally
-// (see src/client.rs).
-let yaml: serde_json::Value = serde_yaml_ng::from_reader(file)?;
-let annotations: ModuleAnnotations = serde_json::from_value(yaml)?;
-
-let module = Box::new(MyModule);
-let descriptor = ModuleDescriptor {
-    module_id: "my.module".to_string(),
-    name: None,
-    description: module.description().to_string(),
-    documentation: None,
-    input_schema: module.input_schema(),
-    output_schema: module.output_schema(),
-    version: "1.0.0".to_string(),
-    tags: vec![],
-    annotations: Some(annotations), // overlay annotations from YAML
-    examples: vec![],
-    metadata: HashMap::new(),
-    display: None,
-    sunset_date: None,
-    dependencies: vec![],
-    enabled: true,
-};
-registry.register("my.module", module, descriptor)?;
-```
+For programmatic registration, use `register_module(module_id, module)`
+to derive the descriptor from the module, or
+`register(module_id, module, descriptor)` to supply a descriptor explicitly.
 
 ## Examples
 

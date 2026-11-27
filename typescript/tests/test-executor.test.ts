@@ -731,6 +731,23 @@ describe('Executor.call — middleware RetrySignal retry semantics', () => {
 });
 
 describe('Executor execution lifetime', () => {
+  it('rejects a call at lookup when shutdown starts before the lookup body', async () => {
+    const registry = new Registry();
+    await registry.register('test.shutdown', createSimpleModule('test.shutdown'));
+    const executor = new Executor({ registry });
+    let shutdown: Promise<void> | undefined;
+    const beforeStep = vi.fn((stepName: string) => {
+      if (stepName === 'module_lookup') {
+        queueMicrotask(() => { shutdown = registry.shutdown(); });
+      }
+    });
+    executor.addStepMiddleware({ beforeStep });
+
+    await expect(executor.call('test.shutdown')).rejects.toBeInstanceOf(ModuleNotFoundError);
+    await shutdown;
+    expect(beforeStep.mock.calls.map(([stepName]) => stepName)).not.toContain('acl_check');
+  });
+
   it('preserves opaque module output values when collecting observability data', async () => {
     const registry = new Registry();
     registry.register('test.opaque', {

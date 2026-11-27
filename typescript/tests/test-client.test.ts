@@ -90,6 +90,23 @@ describe('APCore construction', () => {
     expect(registry.has('system.health.module')).toBe(!failOnError);
   });
 
+  it('shuts down event delivery when strict startup fails after creating the emitter', () => {
+    const config = new Config({ sys_modules: { enabled: true, events: { enabled: true } } });
+    const registry = new Registry();
+    const registerInternal = registry.registerInternal.bind(registry);
+    vi.spyOn(registry, 'registerInternal').mockImplementation((moduleId, module) => {
+      if (moduleId === 'system.control.update_config') throw new Error('control registration failed');
+      return registerInternal(moduleId, module);
+    });
+    const shutdown = vi.spyOn(EventEmitter.prototype, 'shutdown');
+    try {
+      expect(() => new APCore({ registry, config, failOnError: true })).toThrow(SysModuleRegistrationError);
+      expect(shutdown).toHaveBeenCalledOnce();
+    } finally {
+      shutdown.mockRestore();
+    }
+  });
+
   it('creates default Registry and Executor', () => {
     const client = new APCore();
     expect(client.registry).toBeInstanceOf(Registry);

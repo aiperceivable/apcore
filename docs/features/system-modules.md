@@ -540,8 +540,13 @@ Hot-reload one module from disk — or every module matching a pattern — witho
 | `module_id` | string | one of `module_id` / `path_filter` | Single module to reload |
 | `path_filter` | string | one of `module_id` / `path_filter` | Pattern (Algorithm A25: `*` and `?` only) matched against registered module IDs, for a bulk reload |
 | `reason` | string | *(required)* | Audit reason |
+| `lifecycle` | object | omitted | Opt into [managed reload](#managed-reload) with a configurable drain policy and a structured result |
 
 `module_id` and `path_filter` are mutually exclusive (`MODULE_RELOAD_CONFLICT`). Supply one for a module reload. A `path_filter` matching nothing is a no-op with an empty `reloaded_modules`. Bulk reloads run in dependency order, leaves first. `reload_dependents` is deprecated and ignored (it warns once). To reload dependents, use a `path_filter` that covers them (D-121).
+
+A selector that includes the reload controller itself returns `RELOAD_FAILED` before the operation changes any registration. Choose a module ID or glob that excludes `system.control.reload_module`.
+
+See the [shared lifecycle conformance cases](../spec/conformance.md#81-fixture-inventory) for exact and wildcard self-reload coverage.
 
 Rust accepts `reload_config: true` with a `reason` and optionally a module target. A refresh re-reads each bound file-backed configuration from its own source and reapplies persisted overrides. When a supplied Executor uses in-memory configuration, its startup settings are the base for persisted overrides. Without an override store, that Executor keeps its current settings. The refreshed snapshots become visible before `apcore.config.reloaded` is emitted. If refresh fails, the current snapshots remain active and `config_reloaded` is `false`. A requested module reload can continue and reports its own success separately.
 
@@ -574,6 +579,7 @@ Emits `apcore.module.reloaded` for each reloaded module.
 
 ### Inputs
 - `module_id` or `path_filter` (exactly one), `reason` (required, non-empty)
+- Optional `lifecycle` with `drain_timeout_ms` and `on_drain_timeout`
 
 ### Preconditions
 - For a single reload, `module_id` is registered — else `MODULE_NOT_FOUND`
@@ -591,13 +597,16 @@ If step 4 or 5 fails, see [Reload failure semantics](#reload-failure-semantics).
 
 ### Errors
 - `InvalidInputError` (`GENERAL_INVALID_INPUT`) — `reason` missing, or a module reload without either `module_id` or `path_filter`
+- `InvalidInputError` (`GENERAL_INVALID_INPUT`) — a managed reload targets a module with a drain hook and no paired recovery hook
+- `SCHEMA_VALIDATION_ERROR` — `lifecycle` has invalid fields through the Executor
 - `ModuleReloadConflictError` (`MODULE_RELOAD_CONFLICT`) — both `module_id` and `path_filter`
 - `ModuleNotFoundError` (`MODULE_NOT_FOUND`) — `module_id` is not registered
-- `ReloadFailedError` (`RELOAD_FAILED`) — discovery failed or the module was missing afterwards
+- `ReloadFailedError` (`RELOAD_FAILED`) — the selector includes the reload controller, or a legacy reload's discovery failed or lost the module
 
 ### Returns
 - Single: `{success, module_id, previous_version, new_version, reload_duration_ms}`
 - Bulk: `{success, module_id: null, reloaded_modules, reload_duration_ms}`
+- Accepted managed reloads include `lifecycle_report` even when `success` is `false`.
 - Rust adds `config_reloaded` to both module reload results. A Rust configuration-only call returns `{success, module_id: null, config_reloaded}`, with `success` equal to `config_reloaded`.
 
 ### Properties
@@ -633,7 +642,7 @@ Disable or enable a module without unloading it.
 }
 ```
 
-A disabled module stays registered; calls to it fail with `MODULE_DISABLED` at the module-lookup step. Toggle state is held by a thread-safe `ToggleState` that belongs to the owning `APCore` instance — disabling a module on one instance does not affect another in the same process — and survives reloads of that module. Emits `apcore.module.toggled`.
+A disabled module stays registered; calls to it fail with `MODULE_DISABLED` at the module-lookup step. Toggle state is held by a thread-safe `ToggleState` that belongs to the owning `APCore` instance — disabling a module on one instance does not affect another in the same process — and survives reloads of that module. Emits `apcore.module.toggled`. Disabling `system.control.toggle_feature` through its own API returns `GENERAL_INVALID_INPUT` so the controls remain available.
 
 ## Contract: system.control.toggle_feature
 
@@ -658,7 +667,7 @@ A disabled module stays registered; calls to it fail with `MODULE_DISABLED` at t
 - The state persists across reloads of the module and is isolated to the owning `APCore` instance
 
 ### Errors
-- `InvalidInputError` (`GENERAL_INVALID_INPUT`) — invalid input as above
+- `InvalidInputError` (`GENERAL_INVALID_INPUT`) — invalid input as above, or `enabled=false` for `system.control.toggle_feature`
 - `ModuleNotFoundError` (`MODULE_NOT_FOUND`) — `module_id` is not registered
 
 ### Returns
@@ -690,8 +699,16 @@ When a reload fails after the old instance was removed, the previous instance is
 | SDK | Single-module failure | Bulk (`path_filter`) failure |
 |---|---|---|
 | Python | restore, raise `RELOAD_FAILED`; a failed restore is logged and the module stays unavailable | restore the failing module and raise; earlier modules stay reloaded |
-| TypeScript | restore, raise `RELOAD_FAILED`; a failed restore propagates its own error | restore every module missing after discovery and raise `RELOAD_FAILED` naming them; modules that did reload stay reloaded |
+| TypeScript | restore, raise `RELOAD_FAILED`; a failed restore is logged and the module stays unavailable | attempt to restore every module missing after discovery and raise `RELOAD_FAILED`; modules that did reload stay reloaded |
 | Rust | restore, return `RELOAD_FAILED` | restore every affected module and return `RELOAD_FAILED` if discovery fails or any module is missing |
+
+### Managed reload
+
+Pass `lifecycle` to `system.control.reload_module` to receive a structured `lifecycle_report` through the normal Executor response. `drain_timeout_ms` accepts an integer from 0 through 2,147,483,647, with a default of 5,000. `on_drain_timeout` defaults to `abort_reload`; use `continue_waiting` to keep waiting after the threshold. Managed reload goes through the same ACL and approval pipeline as other administrative calls.
+
+An abort before suspend or unload can retain the original generation and all its in-memory state. Admission reopens after its optional paired recovery hook completes. The report uses `retained_ready` on successful recovery or `retained_unavailable` when recovery fails. A replacement load failure after unload uses compensating restoration and records the primary error and compensation result. Affected calls receive `MODULE_NOT_FOUND` while admission is closed.
+
+For an accepted operation, `success: false` indicates a failed reload and is delivered through normal output handling. Managed bulk reload attempts all selected targets, and `lifecycle_report.modules` records the individual outcomes. A bulk selector that matches no modules returns `success: true` with empty `reloaded_modules` and `lifecycle_report.modules`. Invocation errors such as invalid selectors, denied approval, and the Executor's own timeout use the normal error path. An accepted operation keeps running if that call times out. [Managed lifecycle protocol](../spec/protocol-spec.md#1279-managed-module-lifecycle)
 
 ## Registration
 

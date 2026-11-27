@@ -6,11 +6,23 @@ import type { TSchema } from '@sinclair/typebox';
 import { ACL, _isAclDiscovererInstalled } from './acl.js';
 import type { Config } from './config.js';
 import type { Context } from './context.js';
-import { FunctionModule, module as createModule } from './decorator.js';
-import { SysModulesDisabledError } from './errors.js';
-import type { ApCoreEvent, EventSubscriber } from './events/emitter.js';
-import { EventEmitter } from './events/emitter.js';
+import { type FunctionModule, module as createModule } from './decorator.js';
+import { InvalidInputError, SysModulesDisabledError } from './errors.js';
+import { createEvent, type ApCoreEvent, type EventEmitter, type EventSubscriber } from './events/emitter.js';
 import { Executor } from './executor.js';
+import {
+  freezeLifecycleReport,
+  lifecycleCallbackWaitError,
+  lifecycleError,
+  lifecycleHandle,
+  LifecycleCompletion,
+  type LifecycleError,
+  type LifecycleEventFlush,
+  type LifecycleOperation,
+  type ShutdownOptions,
+  type UnregisterOptions,
+  validateLifecycleOptions,
+} from './lifecycle.js';
 import type { StepMiddleware } from './pipeline.js';
 import type { ExecutionPolicy } from './policy.js';
 import type { Middleware } from './middleware/index.js';
@@ -90,6 +102,13 @@ export interface ModuleOptions {
   execute: (inputs: Record<string, unknown>, context: Context) => Promise<Record<string, unknown>> | Record<string, unknown>;
 }
 
+interface ClientShutdown {
+  readonly operation: LifecycleOperation;
+  readonly completion: Promise<void>;
+  readonly eventFlushTimeoutMs: number;
+  readonly waitError: () => InvalidInputError | undefined;
+}
+
 /**
  * A high-level client that manages Registry and Executor.
  *
@@ -109,7 +128,7 @@ export class APCore {
   private readonly _toggleState: ToggleState;
   private _sysModulesContext: SysModulesContext = {};
   private readonly _sysModulesErrors: Error[] = [];
-  private _shutdown: Promise<void> | undefined;
+  private _shutdown: ClientShutdown | undefined;
 
   constructor(options?: APCoreOptions) {
     this.config = options?.config ?? null;
@@ -266,9 +285,82 @@ export class APCore {
     return this.registry.unregisterMany(moduleIds, timeoutMs);
   }
 
+  /** Start a generation-specific batch with its own lifetime and progress. */
+  startUnregisterMany(moduleIds: Iterable<string>, options?: UnregisterOptions): LifecycleOperation {
+    return this.registry.startUnregisterMany(moduleIds, options);
+  }
+
+  /** Start or join shutdown while retaining progress independently of callers. */
+  startShutdown(options: ShutdownOptions = {}): LifecycleOperation {
+    validateLifecycleOptions(options, 'eventFlushTimeoutMs');
+    const { eventFlushTimeoutMs, ...drainOptions } = options;
+    if (this._shutdown && eventFlushTimeoutMs !== undefined && eventFlushTimeoutMs !== this._shutdown.eventFlushTimeoutMs) {
+      throw new InvalidInputError('eventFlushTimeoutMs conflicts with the active client shutdown');
+    }
+    const registry = this.registry.startShutdown(drainOptions);
+    return (this._shutdown ?? this._joinShutdown(registry, this.registry.shutdown(), eventFlushTimeoutMs ?? 5_000, false)).operation;
+  }
+
   /** Stop the registry watcher, drain modules, and shut down this client's event emitter. */
   shutdown(timeoutMs: number = 5000): Promise<void> {
-    this._shutdown ??= this.registry.shutdown(timeoutMs).finally(() => this.events?.shutdown(timeoutMs));
+    const shutdown = this._shutdown ?? this._joinLegacyShutdown(timeoutMs);
+    const error = shutdown.waitError();
+    return error ? Promise.reject(error) : shutdown.completion;
+  }
+
+  private _joinLegacyShutdown(timeoutMs: number): ClientShutdown {
+    const completion = this.registry.shutdown(timeoutMs);
+    return this._joinShutdown(this.registry.startShutdown(), completion, timeoutMs, true);
+  }
+
+  private _joinShutdown(
+    registry: LifecycleOperation,
+    registryCompletion: Promise<void>,
+    eventFlushTimeoutMs: number,
+    legacy: boolean,
+  ): ClientShutdown {
+    const events = this.events;
+    let eventFlush: LifecycleEventFlush = events ? 'pending' : 'not_applicable';
+    let eventError: LifecycleError | undefined;
+    let complete = false;
+    const settled = new LifecycleCompletion();
+    const callbackOwners = events ? [this.registry, events] : [this.registry];
+    const operation = lifecycleHandle(() => {
+      const report = registry.snapshot();
+      return freezeLifecycleReport({
+        ...report, eventFlush,
+        status: complete ? (eventError ? 'failed' : report.status) : 'pending',
+        ...(eventError && report.error === undefined ? { error: eventError } : {}),
+      });
+    }, settled, callbackOwners);
+    const completion = registryCompletion.finally(async () => {
+      if (!events) return;
+      try {
+        const report = registry.snapshot();
+        events.emit(createEvent('apcore.client.shutdown_resources_completed', null, report.status === 'completed' ? 'info' : 'error', {
+          operation_id: report.operationId, registry_outcome: report.status,
+          forced_count: report.modules.filter(row => row.activeAtUnload !== undefined).length,
+          failure_count: report.modules.filter(row => row.error !== undefined).length,
+        }));
+        if (legacy) {
+          await events.shutdown(eventFlushTimeoutMs);
+          eventFlush = events.hasPendingDeliveries() ? 'timeout' : 'completed';
+        } else {
+          eventFlush = await events.shutdownWithin(eventFlushTimeoutMs);
+        }
+      } catch (error) {
+        eventError = lifecycleError(error, 'event_flush');
+        eventFlush = 'timeout';
+        throw error;
+      }
+    }).finally(() => {
+      complete = true;
+      settled.settle();
+    });
+    void completion.catch(() => {});
+    this._shutdown = { operation, completion, eventFlushTimeoutMs,
+      waitError: () => complete ? undefined : lifecycleCallbackWaitError(callbackOwners),
+    };
     return this._shutdown;
   }
 

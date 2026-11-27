@@ -68,6 +68,37 @@ async fn test_apcore_register_and_call_round_trip() {
 }
 
 #[tokio::test]
+async fn test_supplied_executor_keeps_its_toggle_state() {
+    let state = Arc::new(apcore::sys_modules::ToggleState::new());
+    state.disable("demo.disabled");
+    let mut executor = Executor::new(Registry::new(), Config::default());
+    executor.set_toggle_state(Arc::clone(&state));
+    let client = APCore::with_options(None, Some(executor), None, None);
+    client.register("demo.disabled", Box::new(Echo)).unwrap();
+    assert_eq!(
+        client
+            .call("demo.disabled", json!({}), None, None)
+            .await
+            .unwrap_err()
+            .code,
+        ErrorCode::ModuleDisabled
+    );
+    assert!(Arc::ptr_eq(&client.toggle_state(), &state));
+}
+
+#[tokio::test]
+async fn test_client_copies_supplied_executors_legacy_toggle_defaults() {
+    let id = "demo.legacy_toggle_default";
+    let executor = Executor::new(Registry::new(), Config::default());
+    let defaults = executor.toggle_state();
+    defaults.disable(id);
+    let client = APCore::with_options(None, Some(executor), None, None);
+    defaults.enable(id);
+    assert!(client.toggle_state().is_disabled(id));
+    assert!(!defaults.is_disabled(id));
+}
+
+#[tokio::test]
 async fn test_apcore_registers_and_validates_typed_function_modules() {
     #[derive(serde::Deserialize, schemars::JsonSchema)]
     struct Input {
@@ -440,6 +471,329 @@ fn configured_lifecycle_client() -> APCore {
     .unwrap()
 }
 
+struct UnloadProbe(Box<dyn Fn() + Send + Sync>);
+
+#[async_trait]
+impl Module for UnloadProbe {
+    fn description(&self) -> &str {
+        "Test a managed unload hook"
+    }
+
+    fn input_schema(&self) -> Value {
+        json!({"type": "object"})
+    }
+
+    fn output_schema(&self) -> Value {
+        json!({"type": "object"})
+    }
+
+    fn on_unload(&self) {
+        (self.0)();
+    }
+
+    async fn execute(&self, _: Value, _: &Context<Value>) -> Result<Value, ModuleError> {
+        Ok(json!({}))
+    }
+}
+
+#[tokio::test]
+async fn test_registry_owned_batch_reports_unload_failure_and_continues() {
+    let registry = Registry::new();
+    registry
+        .register_module(
+            "demo.first",
+            Box::new(UnloadProbe(Box::new(|| panic!("private contents")))),
+        )
+        .unwrap();
+    registry
+        .register_module("demo.second", Box::new(Echo))
+        .unwrap();
+
+    let operation = registry
+        .start_unregister_many(["demo.first", "demo.second", "demo.second"], None)
+        .unwrap();
+    drop(registry);
+    let report = json!(operation.wait(None).await.unwrap());
+    assert_eq!(report["status"], "failed");
+    assert_eq!(report["event_flush"], "not_applicable");
+    assert_eq!(
+        report["error"],
+        json!({"code": "GENERAL_INTERNAL_ERROR", "phase": "unloading"})
+    );
+    assert_eq!(report["modules"][0]["outcome"], "failed");
+    assert_eq!(report["modules"][1]["outcome"], "removed");
+    assert_eq!(report["modules"][2]["outcome"], "absent");
+}
+
+#[tokio::test]
+async fn test_managed_shutdown_rejects_wait_from_its_unload_hook() {
+    use futures_util::FutureExt;
+
+    let client = Arc::new(APCore::new());
+    let owner = Arc::downgrade(&client);
+    client
+        .register(
+            "demo.echo",
+            Box::new(UnloadProbe(Box::new(move || {
+                let client = owner.upgrade().unwrap();
+                let operation = client.start_shutdown(None).unwrap();
+                let snapshot = operation.wait(Some(0)).now_or_never().unwrap().unwrap();
+                assert_eq!(snapshot.status, apcore::LifecycleStatus::Pending);
+                assert_eq!(
+                    snapshot.modules[0].active_hook,
+                    Some(apcore::LifecycleHook::OnUnload)
+                );
+                let error = operation.wait(None).now_or_never().unwrap().unwrap_err();
+                assert_eq!(error.code, ErrorCode::GeneralInvalidInput);
+                assert_eq!(
+                    error.message,
+                    "A lifecycle callback cannot wait for its own operation"
+                );
+            }))),
+        )
+        .unwrap();
+    let report = client
+        .start_shutdown(None)
+        .unwrap()
+        .wait(None)
+        .await
+        .unwrap();
+    assert_eq!(report.status, apcore::LifecycleStatus::Completed);
+}
+
+#[tokio::test]
+async fn test_shutdown_flush_budget_is_local_and_subscribers_cannot_wait_on_it() {
+    use apcore::events::subscribers::EventSubscriber;
+    use futures_util::FutureExt;
+
+    #[derive(Debug)]
+    struct HoldingSubscriber {
+        operation: Arc<Mutex<Option<apcore::LifecycleOperation>>>,
+        observed: Arc<tokio::sync::Notify>,
+        release: Arc<tokio::sync::Notify>,
+    }
+
+    #[async_trait]
+    impl EventSubscriber for HoldingSubscriber {
+        async fn on_event(&self, event: &apcore::ApCoreEvent) -> Result<(), ModuleError> {
+            if event.module_id.as_deref() != Some("demo.echo") {
+                return Ok(());
+            }
+            let operation = self.operation.lock().unwrap().clone().unwrap();
+            let result = operation.wait(None).now_or_never().unwrap();
+            assert_eq!(result.unwrap_err().code, ErrorCode::GeneralInvalidInput);
+            self.observed.notify_one();
+            self.release.notified().await;
+            Ok(())
+        }
+    }
+
+    let mut client = configured_lifecycle_client();
+    let peer = APCore::with_options(
+        None,
+        Some(Executor::new(client.registry_arc(), Config::default())),
+        None,
+        None,
+    );
+    let operation_slot = Arc::new(Mutex::new(None));
+    let observed = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::Notify::new());
+    client
+        .on_subscriber(
+            "apcore.registry.module_unregistered",
+            Box::new(HoldingSubscriber {
+                operation: Arc::clone(&operation_slot),
+                observed: Arc::clone(&observed),
+                release: Arc::clone(&release),
+            }),
+        )
+        .unwrap();
+    client.register("demo.echo", Box::new(Echo)).unwrap();
+    let operation = client
+        .start_shutdown(Some(apcore::ShutdownOptions {
+            event_flush_timeout_ms: Some(100),
+            ..Default::default()
+        }))
+        .unwrap();
+    *operation_slot.lock().unwrap() = Some(operation.clone());
+    let peer = peer
+        .start_shutdown(Some(apcore::ShutdownOptions {
+            event_flush_timeout_ms: Some(0),
+            ..Default::default()
+        }))
+        .unwrap();
+    let peer_report = peer.wait(None).await.unwrap();
+    assert_eq!(
+        peer_report.event_flush,
+        apcore::LifecycleEventFlush::NotApplicable
+    );
+    tokio::time::timeout(std::time::Duration::from_secs(2), observed.notified())
+        .await
+        .unwrap();
+    let report = operation.wait(None).await.unwrap();
+    release.notify_one();
+    assert_eq!(report.operation_id, peer_report.operation_id);
+    assert_eq!(report.status, apcore::LifecycleStatus::Completed);
+    assert_eq!(report.event_flush, apcore::LifecycleEventFlush::Timeout);
+}
+
+#[test]
+fn test_missing_runtime_fails_before_admission_changes() {
+    let client = APCore::new();
+    client.register("demo.echo", Box::new(Echo)).unwrap();
+    assert_eq!(
+        client.start_shutdown(None).unwrap_err().code,
+        ErrorCode::GeneralInvalidInput
+    );
+    assert_eq!(
+        client
+            .start_unregister_many(["demo.echo"], None)
+            .unwrap_err()
+            .code,
+        ErrorCode::GeneralInvalidInput
+    );
+    assert!(client.registry().has("demo.echo"));
+    client.register("demo.other", Box::new(Echo)).unwrap();
+}
+
+#[tokio::test]
+async fn test_managed_batch_validates_all_ids_and_honors_zero_operation_budget() {
+    let client = APCore::new();
+    client.register("demo.echo", Box::new(Echo)).unwrap();
+    let invalid = client
+        .start_unregister_many(["demo.echo", "bad/id"], None)
+        .unwrap_err();
+    assert_eq!(invalid.code, ErrorCode::GeneralInvalidInput);
+    let operation = client
+        .start_unregister_many(
+            ["demo.echo"],
+            Some(apcore::UnregisterOptions {
+                operation_timeout_ms: Some(0),
+                ..Default::default()
+            }),
+        )
+        .unwrap();
+    assert_eq!(
+        operation.wait(Some(u32::MAX)).await.unwrap_err().code,
+        ErrorCode::GeneralInvalidInput
+    );
+    let report = operation.wait(None).await.unwrap();
+    assert_eq!(
+        report.stop_reason,
+        Some(apcore::LifecycleStopReason::OperationDeadline)
+    );
+    assert_eq!(
+        report.modules[0].outcome,
+        Some(apcore::LifecycleOutcome::NotStarted)
+    );
+    assert!(client
+        .call("demo.echo", json!({}), None, None)
+        .await
+        .is_ok());
+}
+
+#[tokio::test]
+async fn test_shutdown_flushes_registry_events_from_async_and_sync_callers() {
+    let mut client = configured_lifecycle_client();
+    let received = Arc::new(Mutex::new(Vec::new()));
+    for kind in ["registered", "unregistered"] {
+        let received = Arc::clone(&received);
+        client
+            .on(&format!("apcore.registry.module_{kind}"), move |event| {
+                if let Some(id) = event
+                    .module_id
+                    .as_deref()
+                    .filter(|id| id.starts_with("demo."))
+                {
+                    received.lock().unwrap().push((kind, id.to_owned()));
+                }
+            })
+            .unwrap();
+    }
+    client.register("demo.async", Box::new(Echo)).unwrap();
+    let registry = client.registry_arc();
+    std::thread::spawn(move || {
+        registry
+            .register_module("demo.sync", Box::new(Echo))
+            .unwrap()
+    })
+    .join()
+    .unwrap();
+
+    client.shutdown().await.unwrap();
+    let mut observed = received.lock().unwrap().clone();
+    observed.sort();
+    assert_eq!(
+        observed,
+        [
+            ("registered", "demo.async".to_owned()),
+            ("registered", "demo.sync".to_owned()),
+            ("unregistered", "demo.async".to_owned()),
+            ("unregistered", "demo.sync".to_owned()),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn test_shutdown_rejects_discover_before_running_the_discoverer() {
+    struct MustNotDiscover;
+
+    #[async_trait]
+    impl apcore::registry::Discoverer for MustNotDiscover {
+        async fn discover(
+            &self,
+            _: &[String],
+        ) -> Result<Vec<apcore::registry::DiscoveredModule>, ModuleError> {
+            panic!("closed registry called the discoverer")
+        }
+    }
+
+    let client = APCore::new();
+    client.shutdown().await.unwrap();
+    let error = client
+        .registry()
+        .discover(&MustNotDiscover)
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, ErrorCode::GeneralInvalidInput);
+    assert_eq!(error.message, "Registry is shut down");
+}
+
+#[tokio::test]
+async fn test_registry_callback_panics_do_not_interrupt_registration_or_shutdown() {
+    let client = APCore::new();
+    let observed = Arc::new(Mutex::new(Vec::new()));
+    for event in ["register", "unregister"] {
+        client
+            .registry()
+            .on(event, Box::new(|_, _| panic!("broken registry callback")))
+            .unwrap();
+        let observed = Arc::clone(&observed);
+        client
+            .registry()
+            .on(
+                event,
+                Box::new(move |id, _| {
+                    observed.lock().unwrap().push((event, id.to_owned()));
+                }),
+            )
+            .unwrap();
+    }
+
+    client.register("demo.first", Box::new(Echo)).unwrap();
+    client.register("demo.second", Box::new(Echo)).unwrap();
+    client.shutdown().await.unwrap();
+    assert_eq!(
+        observed.lock().unwrap().as_slice(),
+        [
+            ("register", "demo.first".to_owned()),
+            ("register", "demo.second".to_owned()),
+            ("unregister", "demo.first".to_owned()),
+            ("unregister", "demo.second".to_owned()),
+        ]
+    );
+}
+
 #[tokio::test]
 async fn test_ordinary_unregister_drains_active_invocation() {
     use std::sync::atomic::Ordering::SeqCst;
@@ -556,7 +910,14 @@ async fn test_both_reload_paths_capture_state_after_execution() {
         json!({"module_id": "demo.lifecycle", "reason": "test reload"}),
         json!({"path_filter": "demo.*", "reason": "test reload"}),
     ] {
-        let client = Arc::new(configured_lifecycle_client());
+        let mut client = configured_lifecycle_client();
+        let (send_event, mut reloaded_events) = tokio::sync::mpsc::unbounded_channel();
+        client
+            .on("apcore.module.reloaded", move |event| {
+                send_event.send(event.data.clone()).unwrap();
+            })
+            .unwrap();
+        let client = Arc::new(client);
         let module = LifecycleModule::default();
         let state = Arc::clone(&module.state);
         let id = "demo.lifecycle";
@@ -605,6 +966,11 @@ async fn test_both_reload_paths_capture_state_after_execution() {
         state.release.notify_one();
         assert_eq!(active.await.unwrap().unwrap(), json!({"count": 1}));
         assert_eq!(reload.await.unwrap().unwrap()["success"], true);
+        let event = tokio::time::timeout(Duration::from_secs(2), reloaded_events.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(event["module_id"], id);
         assert_eq!(
             count_at_publication.load(std::sync::atomic::Ordering::SeqCst),
             1
@@ -655,6 +1021,7 @@ struct LoadingLifecycleModule {
     unload_started: Arc<tokio::sync::Notify>,
     finish_loading: Mutex<std::sync::mpsc::Receiver<()>>,
     finish_unloading: Mutex<std::sync::mpsc::Receiver<()>>,
+    panic_on_unload: bool,
 }
 
 #[async_trait]
@@ -688,6 +1055,7 @@ impl Module for LoadingLifecycleModule {
             .unwrap()
             .recv_timeout(std::time::Duration::from_secs(2))
             .unwrap();
+        assert!(!self.panic_on_unload, "broken on_unload hook");
     }
 
     async fn execute(&self, _inputs: Value, _ctx: &Context<Value>) -> Result<Value, ModuleError> {
@@ -697,6 +1065,15 @@ impl Module for LoadingLifecycleModule {
 
 #[tokio::test]
 async fn test_shutdown_waits_for_concurrent_loading_and_unpublished_cleanup() {
+    assert_shutdown_waits_for_unpublished_cleanup(false).await;
+}
+
+#[tokio::test]
+async fn test_shutdown_isolates_unpublished_cleanup_panics() {
+    assert_shutdown_waits_for_unpublished_cleanup(true).await;
+}
+
+async fn assert_shutdown_waits_for_unpublished_cleanup(panic_on_unload: bool) {
     use std::sync::mpsc::channel;
     use std::time::Duration;
 
@@ -714,6 +1091,7 @@ async fn test_shutdown_waits_for_concurrent_loading_and_unpublished_cleanup() {
             unload_started: Arc::clone(&unload_started),
             finish_loading: Mutex::new(loading_gate),
             finish_unloading: Mutex::new(unloading_gate),
+            panic_on_unload,
         };
         move || client.register("demo.loading", Box::new(module))
     });

@@ -21,6 +21,9 @@ import { createEvent } from '../events/emitter.js';
 import { Config, CONSTRAINTS, isConfigurationDataPath } from '../config.js';
 import { FRAMEWORK_CONFIG_KEYS } from '../config-key-surface.js';
 import type { Context } from '../context.js';
+import { LifecycleProgress, lifecycleReportToWire, validateLifecycleDuration, type ModuleLifecycleProgress } from '../lifecycle.js';
+import type { Module } from '../module.js';
+import type { ManagedDrainPolicy } from '../registry/managed-drain.js';
 import { RedactionConfig } from '../observability/context-logger.js';
 import type { AuditStore } from './audit.js';
 import { buildAuditEntry, extractAuditIdentity } from './audit.js';
@@ -30,6 +33,42 @@ import { FileOverridesStore, type OverridesStore } from './overrides.js';
 import { persistOverride, TOGGLE_OVERRIDE_NAMESPACE, TOGGLE_OVERRIDE_PREFIX } from './override-update.js';
 
 const RESTRICTED_KEYS = new Set(['sys_modules.enabled']);
+const RELOAD_MODULE_ID = 'system.control.reload_module';
+
+const reloadLifecycleOptionsSchema = {
+  type: 'object', additionalProperties: false,
+  description: 'Opts in to managed reload and adds a lifecycle report to the result',
+  properties: {
+    drain_timeout_ms: { type: 'integer', minimum: 0, maximum: 2_147_483_647, description: 'Drain budget in milliseconds' },
+    on_drain_timeout: { enum: ['abort_reload', 'continue_waiting'], description: 'Action when the drain budget expires' },
+  },
+};
+
+const reloadLifecycleErrorSchema = {
+  type: 'object', additionalProperties: false, required: ['code', 'phase'],
+  properties: { code: { type: 'string', minLength: 1 }, phase: { type: 'string', minLength: 1 } },
+};
+
+const reloadLifecycleReportSchema = {
+  type: 'object', additionalProperties: false,
+  description: 'Terminal result of an accepted module reload with lifecycle options',
+  required: ['operation_id', 'kind', 'status', 'event_flush', 'modules'],
+  properties: {
+    operation_id: { type: 'string', minLength: 1 }, kind: { const: 'reload' },
+    status: { enum: ['completed', 'failed'] }, event_flush: { const: 'not_applicable' },
+    error: reloadLifecycleErrorSchema,
+    modules: { type: 'array', items: {
+      type: 'object', additionalProperties: false, required: ['module_id', 'phase', 'outcome'],
+      properties: {
+        module_id: { type: 'string' },
+        phase: { enum: ['pending', 'draining', 'recovering', 'unloading', 'loading', 'resuming', 'done'] },
+        outcome: { enum: ['reloaded', 'retained_ready', 'retained_unavailable', 'failed', 'absent', 'already_removing', 'not_started'] },
+        drain_timed_out: { type: 'boolean' }, abort_reason: { enum: ['drain_timeout', 'drain_error'] },
+        compensation: { enum: ['not_required', 'restored', 'failed'] }, error: reloadLifecycleErrorSchema,
+      },
+    } },
+  },
+};
 
 const SENSITIVE_SEGMENTS = ['token', 'secret', 'key', 'password', 'auth', 'credential'] as const;
 
@@ -211,6 +250,7 @@ export class ReloadModule {
           + 'becomes a validation error rather than a silent no-op.',
       },
       reason: { type: 'string' as const, description: 'Audit reason for the reload' },
+      lifecycle: reloadLifecycleOptionsSchema,
     },
     required: ['reason'],
   };
@@ -226,6 +266,7 @@ export class ReloadModule {
       previous_version: { type: ['string', 'null'], description: 'Version before reload' },
       new_version: { type: ['string', 'null'], description: 'Version after reload' },
       reload_duration_ms: { type: 'number' as const, description: 'Reload duration in milliseconds' },
+      lifecycle_report: reloadLifecycleReportSchema,
     },
     required: ['success', 'module_id'],
     oneOf: [
@@ -291,6 +332,10 @@ export class ReloadModule {
     this._warnReloadDependents(inputs);
     const { moduleId, pathFilter, reason } = this._validateInputs(inputs);
     const ctx = context as Context | null;
+    const lifecycle = inputs['lifecycle'];
+    if (lifecycle !== undefined) {
+      return this._reloadManaged(moduleId, pathFilter, reason, ctx, this._validateReloadLifecycle(lifecycle));
+    }
 
     if (pathFilter !== undefined) {
       return this._reloadWithPathFilter(pathFilter, reason, ctx);
@@ -299,10 +344,93 @@ export class ReloadModule {
     return this._reloadSingleModule(moduleId!, reason, ctx);
   }
 
+  private _validateReloadLifecycle(value: unknown): ManagedDrainPolicy {
+    if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+      throw new InvalidInputError('lifecycle must be an object');
+    }
+    for (const key of Object.keys(value)) {
+      if (key !== 'drain_timeout_ms' && key !== 'on_drain_timeout') {
+        throw new InvalidInputError(`Unrecognized reload lifecycle option '${key}'`);
+      }
+    }
+    const options = value as Record<string, unknown>;
+    const timeout = options['drain_timeout_ms'];
+    const action = options['on_drain_timeout'];
+    validateLifecycleDuration('drain_timeout_ms', timeout);
+    if (action !== undefined && action !== 'abort_reload' && action !== 'continue_waiting') {
+      throw new InvalidInputError('on_drain_timeout must be abort_reload or continue_waiting');
+    }
+    return { timeoutMs: (timeout as number | undefined) ?? 5_000, action: action ?? 'abort_reload' };
+  }
+
+  private async _reloadManaged(
+    moduleId: string | undefined, pathFilter: string | undefined, reason: string,
+    context: Context | null, policy: ManagedDrainPolicy,
+  ): Promise<Record<string, unknown>> {
+    const started = performance.now();
+    const matchingIds = moduleId === undefined ? this._matchPathFilter(pathFilter!) : [moduleId];
+    if (matchingIds.includes(RELOAD_MODULE_ID) && this._registry.has(RELOAD_MODULE_ID)) {
+      throw new ReloadFailedError(moduleId ?? pathFilter!, 'The reload controller cannot reload itself');
+    }
+    const snapshots = matchingIds.flatMap(id => {
+      const snapshot = this._registry.snapshotRegistration(id);
+      if (!snapshot && moduleId !== undefined) throw new ModuleNotFoundError(id);
+      if (!snapshot) return [];
+      const instance = snapshot.module as Module;
+      if (typeof instance.onDrain === 'function' && typeof instance.onDrainAborted !== 'function') {
+        throw new InvalidInputError(`onDrainAborted is required to reload '${id}'`, { details: { module_id: id } });
+      }
+      return [snapshot];
+    });
+    const rows = snapshots.map(({ moduleId }): ModuleLifecycleProgress => ({ moduleId, phase: 'pending' }));
+    const lifecycle = new LifecycleProgress('reload', rows, [this._registry]);
+    const versions = new Map<string, string>();
+    const done = await lifecycle.run(async () => {
+      for (const [index, snapshot] of snapshots.entries()) {
+        const version = await this._registry.reloadManagedRegistration(snapshot, policy, lifecycle, rows[index]!, this._emitter);
+        if (version === undefined) continue;
+        versions.set(snapshot.moduleId, version);
+        try {
+          this._auditManagedReload(snapshot, version, context, lifecycle.report.operationId, reason);
+        } catch {
+          console.warn(`[apcore:audit] Could not record successful reload of ${snapshot.moduleId}`);
+        }
+      }
+    }).then(() => lifecycle.operation.snapshot());
+
+    const reloaded = done.modules.filter(row => row.outcome === 'reloaded').map(row => row.moduleId);
+    const single = snapshots[0];
+    return {
+      success: done.status === 'completed', module_id: moduleId ?? null,
+      reload_duration_ms: performance.now() - started, lifecycle_report: lifecycleReportToWire(done),
+      ...(moduleId === undefined ? { reloaded_modules: reloaded } : {
+        previous_version: single ? String(single.metadata['version'] ?? '1.0.0') : null,
+        new_version: versions.get(moduleId) ?? null,
+      }),
+    };
+  }
+
+  private _auditManagedReload(snapshot: RegistrationSnapshot, after: string, context: Context | null, correlationId: string, reason: string): void {
+    const { moduleId, metadata } = snapshot;
+    const before = String(metadata['version'] ?? '1.0.0');
+    const { caller_id, identity } = extractAuditIdentity(context);
+    this._emitter.emit(createEvent('apcore.module.reloaded', moduleId, 'info', {
+      module_id: moduleId, previous_version: before, new_version: after, caller_id,
+      ...(identity === null ? {} : { identity }),
+    }));
+    const entry = buildAuditEntry('reload_module', moduleId, context, { before, after }, correlationId);
+    if (this._auditStore !== null) this._auditStore.append(entry);
+    else console.warn(`[apcore:audit] reload_module ${moduleId} actor=${entry.actorId} reason=${reason}`);
+  }
+
   private async _reloadSingleModule(moduleId: string, reason: string, ctx: Context | null): Promise<Record<string, unknown>> {
+    this._assertLegacyReloadAvailable([moduleId]);
     const existing = this._registry.snapshotRegistration(moduleId);
     if (existing === null) {
       throw new ModuleNotFoundError(moduleId);
+    }
+    if (moduleId === RELOAD_MODULE_ID) {
+      throw new ReloadFailedError(moduleId, 'The reload controller cannot reload itself');
     }
     const existingObj = existing.module as Record<string, unknown>;
     const previousVersion = String(existingObj['version'] ?? '1.0.0');
@@ -323,7 +451,7 @@ export class ReloadModule {
 
     const reloaded = this._registry.get(moduleId);
     if (reloaded === null) {
-      await this._registry.restoreRegistration(existing, beforePublish);
+      await this._restoreMissingRegistrations([existing], beforePublish);
       throw new ReloadFailedError(moduleId, `Module '${moduleId}' was not found after re-discovery`);
     }
 
@@ -402,10 +530,10 @@ export class ReloadModule {
   private async _suspendAndUnload(moduleIds: readonly string[]): Promise<Map<string, Record<string, unknown>>> {
     const states = new Map<string, Record<string, unknown>>();
     for (const id of moduleIds) {
-      await this._registry.safeUnregister(id, undefined, (module) => {
+      await this._registry.safeUnregister(id, undefined, async (module) => {
         const onSuspend = (module as Record<string, unknown>)['onSuspend'];
         if (typeof onSuspend !== 'function') return;
-        const state = onSuspend.call(module) as Record<string, unknown> | null | undefined;
+        const state = await onSuspend.call(module) as Record<string, unknown> | null | undefined;
         if (state != null) states.set(id, state);
       });
     }
@@ -414,13 +542,13 @@ export class ReloadModule {
 
   private _resumeBeforePublish(
     states: ReadonlyMap<string, Record<string, unknown>>,
-  ): (moduleId: string, module: unknown) => void {
-    return (moduleId, module) => {
+  ): (moduleId: string, module: unknown) => Promise<void> {
+    return async (moduleId, module) => {
       const state = states.get(moduleId);
       if (state === undefined) return;
       try {
         const onResume = (module as Record<string, unknown>)['onResume'];
-        if (typeof onResume === 'function') onResume.call(module, state);
+        if (typeof onResume === 'function') await onResume.call(module, state);
       } catch (error) {
         console.warn(`[apcore:control] onResume failed for ${moduleId}:`, error);
       }
@@ -429,27 +557,38 @@ export class ReloadModule {
 
   private async _restoreMissingRegistrations(
     registrations: readonly RegistrationSnapshot[],
-    beforePublish: (moduleId: string, module: unknown) => void,
+    beforePublish: (moduleId: string, module: unknown) => Promise<void>,
   ): Promise<void> {
-    let failure: { error: unknown } | undefined;
     for (const registration of registrations) {
       if (this._registry.has(registration.moduleId)) continue;
       try {
         await this._registry.restoreRegistration(registration, beforePublish);
       } catch (error) {
-        failure ??= { error };
+        console.warn(`[apcore:control] Failed to restore '${registration.moduleId}' after reload failed:`, error);
       }
     }
-    if (failure) throw failure.error;
   }
 
   private async _reloadWithPathFilter(pathFilter: string, reason: string, ctx: Context | null): Promise<Record<string, unknown>> {
     const started = Date.now();
+    if (this._registry.has(RELOAD_MODULE_ID) && matchGlob(pathFilter, RELOAD_MODULE_ID)) {
+      throw new ReloadFailedError(pathFilter, 'The reload controller cannot reload itself');
+    }
+    const matchingIds = this._matchPathFilter(pathFilter);
+    this._assertLegacyReloadAvailable(matchingIds);
+    if (matchingIds.length === 0) {
+      return { success: true, module_id: null, reloaded_modules: [], reload_duration_ms: Date.now() - started };
+    }
+
+    return this._reloadMatching(matchingIds, pathFilter, reason, ctx, started);
+  }
+
+  private _matchPathFilter(pathFilter: string): string[] {
     const allIds = this._registry.list();
     // Alphabetical first so the topo sort has a deterministic input, then
     // dependency order on top (fixture `system_modules_hardening.json`
     // reload_with_path_filter: `reload_order: "topological"`).
-    const matchingIds = this._topoSortModules(
+    return this._topoSortModules(
       // PROTOCOL_SPEC 6.7 clause 4 / 9.2.3: `path_filter` is a GLOB-dialect
       // pattern (A25), not module-ID matching (A08). The two differ on `?`,
       // which A08 treats as a literal — so `executor.?mail.*` reloaded
@@ -457,7 +596,9 @@ export class ReloadModule {
       // zero-match no-op rule made that silent (#117).
       allIds.filter((id) => matchGlob(pathFilter, id)).sort(),
     );
+  }
 
+  private async _reloadMatching(matchingIds: string[], pathFilter: string, reason: string, ctx: Context | null, started: number): Promise<Record<string, unknown>> {
     // Capture existing modules and versions before unregistering
     const existingModules: RegistrationSnapshot[] = [];
     const previousVersions = new Map<string, string>();
@@ -514,7 +655,7 @@ export class ReloadModule {
       await this._restoreMissingRegistrations(existingModules, beforePublish);
       throw new ReloadFailedError(
         pathFilter,
-        `${missing.length} module(s) were not restored by re-discovery and were put back as they were: ${missing.join(', ')}`,
+        `${missing.length} module(s) were not found after re-discovery: ${missing.join(', ')}`,
       );
     }
 
@@ -553,6 +694,11 @@ export class ReloadModule {
       reloaded_modules: reloadedModules,
       reload_duration_ms: Date.now() - started,
     };
+  }
+
+  private _assertLegacyReloadAvailable(moduleIds: string[]): void {
+    const reserved = moduleIds.find(id => this._registry.isManagedReloading(id));
+    if (reserved !== undefined) throw new ReloadFailedError(reserved, 'A managed lifecycle operation owns this reload');
   }
 
   private _validateInputs(inputs: Record<string, unknown>): { moduleId?: string; pathFilter?: string; reason: string } {

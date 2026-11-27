@@ -24,7 +24,7 @@ A schema makes a capability contract machine-readable and validatable. It does n
 
 | Component | Package | Version |
 |---|---|---|
-| Protocol specification | [protocol-spec.md](spec/protocol-spec.md) | `2.0.0` (draft) |
+| Protocol specification | [protocol-spec.md](spec/protocol-spec.md) | `2.1.0` (draft) |
 | Python SDK | `apcore` | `0.33.0` |
 | TypeScript SDK | `apcore-js` | `0.33.0` |
 | Rust SDK | `apcore` | `0.33.0` |

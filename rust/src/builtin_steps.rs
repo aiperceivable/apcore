@@ -333,8 +333,11 @@ impl Step for BuiltinModuleLookup {
         // ERR-004: the guidance-bearing builder — the peers attach a default
         // `ai_guidance` to MODULE_NOT_FOUND on the error class, so every raise
         // site carries it.
-        let (module, lease) =
-            registry.acquire_execution(&ctx.module_id, ctx.version_hint.as_deref())?;
+        let (module, lease) = registry.acquire_execution(
+            &ctx.module_id,
+            ctx.version_hint.as_deref(),
+            ctx.context.cancel_token.as_ref(),
+        )?;
         // Check if the module is disabled before proceeding. Two sources:
         //   1. The registry descriptor's `enabled` flag (direct registry-level
         //      disable).

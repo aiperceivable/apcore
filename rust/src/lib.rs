@@ -29,6 +29,7 @@ pub mod errors;
 pub mod events;
 pub mod executor;
 pub mod extensions;
+pub mod lifecycle;
 pub mod middleware;
 pub mod module;
 pub mod observability;
@@ -36,6 +37,7 @@ pub mod pipeline;
 pub mod pipeline_config;
 pub mod policy;
 pub mod registry;
+mod runtime;
 pub mod schema;
 pub mod stream_completion;
 pub mod sys_modules;
@@ -107,6 +109,13 @@ pub use executor::{
     list_strategies, redact_sensitive, register_strategy, Executor, GovernanceState, REDACTED_VALUE,
 };
 pub use extensions::{ExtensionKind, ExtensionManager, ExtensionPoint};
+pub use lifecycle::{
+    DrainAbortReason, DrainAbortedContext, DrainContext, DrainReasonKind, DrainTimeoutPolicy,
+    LifecycleCompensation, LifecycleEventFlush, LifecycleFailure, LifecycleHook, LifecycleKind,
+    LifecycleModuleReport, LifecycleOperation, LifecycleOutcome, LifecyclePhase, LifecycleReport,
+    LifecycleStatus, LifecycleStopReason, ReloadOptions, ReloadTimeoutPolicy, ShutdownOptions,
+    UnregisterOptions,
+};
 pub use middleware::{
     AfterMiddleware, BeforeMiddleware, CircuitBreakerBuilder, CircuitBreakerConfig,
     CircuitBreakerMiddleware, CircuitBreakerMiddlewareConfig, CircuitBreakerState, ContextWriter,
@@ -117,9 +126,10 @@ pub use middleware::{
     APCORE_KEY_PREFIX, EXT_KEY_PREFIX,
 };
 pub use module::{
-    Change, ChunkStream, Module, ModuleAnnotations, ModuleExample, PreflightCheckResult,
-    PreflightResult, PreviewResult, StreamingModule, ValidationErrorDetail, ValidationResult,
-    ACL_CHECK_NAME, DEFAULT_ANNOTATIONS, MODULE_PREFLIGHT_CHECK_NAME, MODULE_PREVIEW_CHECK_NAME,
+    AsyncLifecycleModule, Change, ChunkStream, DrainableModule, Module, ModuleAnnotations,
+    ModuleExample, PreflightCheckResult, PreflightResult, PreviewResult, StreamingModule,
+    ValidationErrorDetail, ValidationResult, ACL_CHECK_NAME, DEFAULT_ANNOTATIONS,
+    MODULE_PREFLIGHT_CHECK_NAME, MODULE_PREVIEW_CHECK_NAME,
 };
 pub use observability::error_history::{
     compute_fingerprint, compute_fingerprint_from_error, normalize_message, ErrorEntry,

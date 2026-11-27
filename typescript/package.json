@@ -28,6 +28,7 @@
   "sideEffects": [
     "./dist/index.js",
     "./dist/acl-file.js",
+    "./dist/install-lifecycle-context.js",
     "./dist/registry/install-filesystem.js",
     "./dist/sys-modules/install.js",
     "./dist/sys-modules/overrides-file.js"

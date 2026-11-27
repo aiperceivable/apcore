@@ -119,12 +119,17 @@ A supplied Registry or Executor can retain modules and middleware installed befo
 | **Registration** | `module(...)` | decorator (Python) / `FunctionModule` (TS) / `Result<&mut Self, ModuleError>` (Rust) | In TypeScript, await the returned module's `registration` before use |
 | | `register(module_id, module)` | `None` (Python) / `Promise<void>` (TS) / `Result<(), ModuleError>` (Rust) | Await direct registration in TypeScript |
 | | `register_many(entries)` / `registerMany(entries)` | Same as single registration | Register `(module_id, module)` pairs in input order |
+| | `register_async(module_id, module)` / `register_many_async(entries)` (Python and Rust) | Awaited `None` (Python) / `Result<(), ModuleError>` (Rust) | Register modules with asynchronous lifecycle hooks |
 | | `discover()` | `int` (Python) / `Promise<number>` (TS) / `Result<usize, ModuleError>` (Rust, async) | Discover and register modules from `extensions.*` roots |
-| **Teardown** | `unregister_many(module_ids)` / `unregisterMany(moduleIds)` | Async list of booleans, wrapped in `Result` in Rust | One result per ID in input order |
-| | `shutdown()` | `None` (Python) / `Promise<void>` (TS) / `Result<(), ModuleError>` (Rust, async) | Await final cleanup of the client's Registry and event delivery |
+| | `discover_async()` (Python and Rust) | Awaited `int` (Python) / `Result<usize, ModuleError>` (Rust) | Discover modules with asynchronous lifecycle hooks |
+| **Teardown** | `unregister_many(module_ids, *, timeout_ms=5000)` (Python) / `unregisterMany(moduleIds, timeoutMs?)` (TS) / `unregister_many(module_ids)` (Rust) | Async list of booleans, wrapped in `Result` in Rust | One result per ID in input order |
+| | `shutdown()` (Python, Rust) / `shutdown(timeoutMs = 5000)` (TS) | Coroutine resolving to `None` (Python) / `Promise<void>` (TS) / async `Result<(), ModuleError>` (Rust) | Await final cleanup of the client's Registry and event delivery |
+| | `start_shutdown(options?)` / `startShutdown(options?)` | `LifecycleOperation`, wrapped in `Result` in Rust | Start or join shutdown and inspect progress |
+| | `start_unregister_many(module_ids, options?)` / `startUnregisterMany(moduleIds, options?)` | `LifecycleOperation`, wrapped in `Result` in Rust | Start an ordered batch and get one detailed result per input |
 | **Execution** | `call(module_id, inputs?, context?, version_hint?)` | output | Python: synchronous. TypeScript/Rust: async |
 | | `call_async(...)` | output | Python coroutine; TypeScript `callAsync` is an alias of `call`; Rust has none (`call` is async) |
 | | `stream(module_id, inputs?, context?, version_hint?)` | async iterator / `Stream` | Chunked output |
+| | `stream_with_completion(module_id, inputs?, context?, version_hint?)` / `streamWithCompletion(...)` | Chunk iterator and completion handle | Observe the outcome of the same invocation after consuming or closing its chunks |
 | | `validate(module_id, inputs?, context?)` | `PreflightResult` | Non-destructive preflight |
 | | `validate_async(module_id, inputs?, context?, *, version_hint?)` | `PreflightResult` | Python coroutine for non-destructive preflight |
 | **Inspection** | `list_modules(tags?, prefix?)` | sorted list of IDs | |
@@ -163,7 +168,8 @@ A supplied Registry or Executor can retain modules and middleware installed befo
 | `call_async()` | `callAsync()` | Alias of `call()` |
 | `use_before()` / `use_after()` | `useBefore()` / `useAfter()` | camelCase |
 | `list_modules(tags, prefix)` | `listModules({ tags, prefix })` | Options object |
-| Constructor | `new APCore({ registry, executor, config, metricsCollector, policy, toggleState })` | Options object |
+| Step middleware | `addStepMiddleware(middleware)` | Registers Executor step middleware and returns the client |
+| Constructor | `new APCore({ registry, executor, config, metricsCollector, policy, toggleState, failOnError })` | Options object |
 
 **Rust:**
 
@@ -192,6 +198,8 @@ A supplied Registry or Executor can retain modules and middleware installed befo
 | `try_with_options(APCoreOptions)` | Return a `SysModuleError` for system-module registration failures when `fail_on_error` is set. Configuration failures are returned by invocations. |
 | `try_start(APCoreOptions)` | Return an `APCoreStartupError` if ACL or pipeline initialization fails, or if system-module registration fails with `fail_on_error` set. |
 | `reload()` | Re-read the `Config` from its source file. Does **not** re-discover modules — call `discover()` for that |
+| `typed_module(module_id, description, options, handler)` | Register an async function module with schemas derived from its Rust input and output types |
+| `registry_arc()` / `executor_arc()` | Clone a shared `Arc` handle to the Registry or Executor |
 
 ## Usage
 
@@ -204,6 +212,8 @@ Batch unregistration closes each ID to new calls when that entry begins, waits f
 For modules with dependencies, pass providers before their dependents at registration and reverse that order at removal.
 
 During host exit, stop accepting external requests and shut down any background task managers owned by the host. Then await `client.shutdown()`. It closes Registry admission, stops its file watcher, drains and unloads modules including hidden registrations, and shuts down client-owned event delivery. Call it only after every user of an injected Registry is ready to release it. Create a fresh client and Registry to start again.
+
+Python's instance method `client.close()` releases its synchronous call loop and event delivery resources while keeping the client, subscriptions, and registrations available for reuse. The module-level `apcore.close()` ends the default client's lifecycle and clears the singleton. Other module-level calls create a fresh client on demand. From an active asyncio loop, the module-level function defers unloading registrations with in-flight calls until those calls finish.
 
 === "Python"
 
@@ -569,6 +579,22 @@ Python `call_async()` is a coroutine distinct from the blocking `call()`. TypeSc
 - pure: false
 - idempotent: false
 
+## Contract: APCore.stream_with_completion
+
+### Inputs
+
+The inputs are the same as for [APCore.stream](#contract-apcorestream).
+
+### Returns
+
+- Python and TypeScript return a `StreamExecution` containing the chunks and their completion handle. Rust returns `(StreamChunks, StreamCompletionHandle)`.
+- The completion reports the outcome of that invocation, including failures discovered after the last chunk. Drain or close the chunks before awaiting completion. See [Streaming](./streaming.md) for the result fields and error behavior.
+
+### Properties
+
+- Handle creation is synchronous. Chunk iteration and completion are asynchronous.
+- Each handle represents one invocation.
+
 ## Contract: APCore.validate
 
 In Python, `await client.validate_async(...)` runs the same preflight on the calling event loop, including asynchronous `preview()` hooks that use resources bound to that loop.
@@ -659,6 +685,7 @@ In Python, `await client.validate_async(...)` runs the same preflight on the cal
 ### Inputs
 - `id` (str/string, optional in Python) — module ID; derived from the function when absent
 - `description`, `documentation`, `annotations`, `tags`, `version` (default `"1.0.0"`), `metadata`, `display`, `examples` — descriptor fields
+- `resources` (Python, keyword-only, optional) takes a mapping. Set `resources["timeout"]` to specify the module's execution budget in milliseconds.
 - TypeScript additionally requires `inputSchema`, `outputSchema` (TypeBox) and `execute`; Rust takes explicit schemas and a handler closure
 
 ### Errors
@@ -688,11 +715,117 @@ In Python, `await client.validate_async(...)` runs the same preflight on the cal
 ### Returns
 - Python: `None`. TypeScript: `Promise<void>` that settles after an async `onLoad` has run (synchronous validation errors are still thrown synchronously). Rust: `Result<(), ModuleError>`.
 
+Python and Rust offer `register_async` and `register_many_async` for asynchronous lifecycle hooks. Registration waits for the selected load hook before it makes the module visible. [Lifecycle hook interfaces](./module-interface.md#drain-and-recovery-hooks)
+
 ### Properties
 - async: false in Python and Rust; TypeScript returns a promise (see Returns)
 - thread_safe: true
 - pure: false (mutates the registry, fires `register` callbacks)
 - idempotent: false
+
+## Contract: APCore.register_many
+
+### Inputs
+
+- `entries` is an iterable of `(module_id, module)` pairs accepted by [APCore.register](#contract-apcoreregister).
+
+### Errors
+
+- Reports the first registration error. Earlier registrations stay available and subsequent entries are skipped.
+
+### Returns
+
+- `None` in Python, `Promise<void>` in TypeScript, and `Result<(), ModuleError>` in Rust. Each registration completes before the next begins.
+
+## Contract: APCore.unregister_many
+
+### Inputs
+
+- `module_ids` is an iterable of registered IDs in removal order.
+- Python accepts the keyword argument `timeout_ms=5000` and TypeScript accepts an optional second argument `timeoutMs` with the same default. The deadline applies per ID. Rust uses a fixed 5,000 ms deadline per ID.
+
+### Returns
+
+- An awaited list of booleans in input order, wrapped in `Result` in Rust. `true` means the registration drained and was unloaded. `false` means the ID was absent or its removal exceeded the drain deadline.
+
+## Contract: APCore.shutdown
+
+### Inputs
+
+- TypeScript accepts `timeoutMs`, defaulting to 5,000. It sets the Registry drain deadline and the event delivery wait. Python and Rust take no argument and use SDK defaults.
+
+### Side Effects
+
+- Closes Registry admission, stops watchers, waits for active executions up to the drain deadline, unloads registrations, and closes client-owned event delivery. Shutdown also closes an injected Registry, so coordinate any other users of that Registry first.
+
+### Returns
+
+- Await the Python coroutine to get `None`, the TypeScript promise to get `void`, or the Rust future to get `Result<(), ModuleError>`. Repeated successful shutdown calls have no further effect.
+
+## Contract: APCore.start_shutdown and APCore.start_unregister_many
+
+Call these methods when the host needs to observe progress or set separate budgets for waiting and cleanup. Python accepts options as a keyword argument. TypeScript uses camelCase. Rust accepts `Option<ShutdownOptions>` or `Option<UnregisterOptions>`. Start from an active asyncio loop in Python or a Tokio runtime in Rust. The Rust SDK runs the lifecycle timers on its own background runtime.
+
+| Option | Applies to | Effect |
+|---|---|---|
+| `drain_timeout_ms` | Shutdown and batch | Per-registration threshold, default 5,000 ms. The report records any timeout. |
+| `on_drain_timeout` | Shutdown and batch | `continue_waiting` (default) waits for leases to end after the threshold. `cancel_then_force` signals the retiring generation's active calls, then unloads once the cancellation grace expires or the leases end. |
+| `cancel_grace_ms` | Shutdown and batch | Grace for cooperative cancellation after the drain deadline, default 1,000 ms. This option applies only to `cancel_then_force`. |
+| `operation_timeout_ms` | Batch | Optional budget for dispatching the batch. At expiry, unstarted entries become `not_started`. Work already started stays tracked. |
+| `event_flush_timeout_ms` | Shutdown | Budget for the client-owned event delivery stage, default 5,000 ms. Zero seals the emitter and immediately checks for outstanding work. |
+
+The operation handle provides `snapshot()` and async `wait(wait_timeout_ms)` in SDK-native naming. Omit the wait timeout for a terminal report or pass zero for an immediate snapshot. Python accepts the timeout as a keyword argument, and Rust takes `Option<u32>`. An expired wait returns a snapshot. A host can cancel the Python wait task, drop the Rust wait future, or pass an `AbortSignal` as the second argument to TypeScript's `wait()`. The operation keeps running and can be joined again.
+
+Clients sharing a Registry get the same shutdown operation ID and the same module cleanup outcomes. Each client reports an event flush status of `pending`, `completed`, `timeout`, or `not_applicable` when events are disabled. The first start sets the cleanup policy. Later starts join it and conflicting explicit options raise `GENERAL_INVALID_INPUT`.
+
+The report status is `pending`, `completed`, or `failed`. A batch has one row per input. If its dispatch deadline leaves entries unstarted, its final status is `failed` with `stop_reason: operation_deadline`. A forced removal records any leases still active at unload and whether they are still settling. The coordinator waits for an active drain hook before unloading.
+
+Use `snapshot()` inside a lifecycle callback to inspect its operation, and await the handle from the host outside that callback. In the TypeScript browser entry, the reentry guard covers the synchronous part of a callback. After the callback yields, awaiting its own operation can leave both the callback and the operation waiting indefinitely.
+
+=== "Python"
+
+    ```python
+    import asyncio
+
+    from apcore import APCore, ShutdownOptions
+
+    async def main() -> None:
+        client = APCore()
+        shutdown = client.start_shutdown(options=ShutdownOptions(drain_timeout_ms=1000))
+        print(shutdown.snapshot().status)
+        print((await shutdown.wait()).status)
+
+    asyncio.run(main())
+    ```
+
+=== "TypeScript"
+
+    ```typescript
+    import { APCore } from "apcore-js";
+
+    const client = new APCore();
+    const shutdown = client.startShutdown({ drainTimeoutMs: 1000 });
+    console.log(shutdown.snapshot().status);
+    console.log((await shutdown.wait()).status);
+    ```
+
+=== "Rust"
+
+    ```rust
+    use apcore::{APCore, ModuleError, ShutdownOptions};
+
+    #[tokio::main]
+    async fn main() -> Result<(), ModuleError> {
+        let client = APCore::new();
+        let shutdown = client.start_shutdown(Some(ShutdownOptions {
+            drain_timeout_ms: Some(1000),
+            ..ShutdownOptions::default()
+        }))?;
+        println!("{:?}", shutdown.snapshot().status);
+        println!("{:?}", shutdown.wait(None).await?.status);
+        Ok(())
+    }
+    ```
 
 ## Contract: APCore.discover
 

@@ -227,6 +227,7 @@ export class BuiltinModuleLookup implements Step {
   }
 
   async execute(ctx: PipelineContext): Promise<StepResult> {
+    if (this._registry.isClosed) throw new ModuleNotFoundError(ctx.moduleId);
     const mod = this._registry.get(ctx.moduleId, ctx.versionHint);
     if (mod === null || (!ctx.dryRun && this._registry.isDraining(ctx.moduleId))) {
       throw new ModuleNotFoundError(ctx.moduleId);
@@ -240,7 +241,7 @@ export class BuiltinModuleLookup implements Step {
 
     ctx.module = mod;
     const moduleId = ctx.moduleId;
-    moduleExecutionLeases.set(ctx, this._registry.bindExecution(moduleId, mod));
+    moduleExecutionLeases.set(ctx, this._registry.bindExecution(moduleId, mod, ctx.context.cancelToken));
     // PROTOCOL_SPEC §7.4 (D-96): resolve the registry's DECLARED annotations
     // here and hand them to the gate, which has no registry of its own — the
     // same shape as `aclApprovalRequired`, which Step 4 computes and Step 5

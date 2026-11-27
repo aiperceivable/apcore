@@ -429,21 +429,30 @@ def register_sys_modules(
     )
 
     if _cfg_get(sys_cfg, config, "events.enabled", False):
-        _setup_events(
-            registry,
-            executor,
-            config,
-            sys_cfg,
-            metrics_collector,
-            error_history,
-            usage_collector,
-            result,
-            overrides_path=overrides_path,
-            overrides_store=effective_store,
-            audit_store=audit_store,
-            register_module=register_module,
-            toggle_state=toggle_state,
-        )
+        try:
+            _setup_events(
+                registry,
+                executor,
+                config,
+                sys_cfg,
+                metrics_collector,
+                error_history,
+                usage_collector,
+                result,
+                overrides_path=overrides_path,
+                overrides_store=effective_store,
+                audit_store=audit_store,
+                register_module=register_module,
+                toggle_state=toggle_state,
+            )
+        except BaseException:
+            emitter = result.get("event_emitter")
+            if emitter is not None:
+                try:
+                    emitter.shutdown()
+                except Exception:
+                    logger.exception("Could not shut down the event emitter after registration failed")
+            raise
 
     return result
 

@@ -155,7 +155,7 @@ fn manifest_module_schema() -> serde_json::Value {
                     "additionalProperties": false,
                     "properties": {
                         "module_id": {"type": "string"},
-                        "version": {"type": "string"},
+                        "version": {"type": ["string", "null"]},
                         "optional": {"type": "boolean"}
                     }
                 }

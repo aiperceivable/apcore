@@ -5,6 +5,7 @@
 import { resolveRetry, computeDelayMs } from './retry.js';
 import type { RetryConfig } from './retry.js';
 import { matchGlob } from '../utils/pattern.js';
+import { lifecycleCallback, LifecycleCompletion } from '../lifecycle.js';
 
 export interface ApCoreEvent {
   readonly eventType: string;
@@ -136,6 +137,22 @@ export class EventEmitter {
     await this.flush(timeoutMs);
   }
 
+  /** @internal Seal emission and give the whole stage one deadline. */
+  async shutdownWithin(timeoutMs: number): Promise<'completed' | 'timeout'> {
+    this._shutdown = true;
+    if (!this.hasPendingDeliveries()) return 'completed';
+    if (timeoutMs === 0) return 'timeout';
+    const completion = new LifecycleCompletion();
+    void Promise.all([...this._pending, ...this._overflow]).then(() => completion.settle());
+    await completion.wait(timeoutMs);
+    return this.hasPendingDeliveries() ? 'timeout' : 'completed';
+  }
+
+  /** @internal Remaining accepted deliveries, including overflow handling. */
+  hasPendingDeliveries(): boolean {
+    return this._pending.size > 0 || this._overflow.size > 0;
+  }
+
   emit(event: ApCoreEvent): void {
     if (!this.tryEmit(event) && !this._shutdown) {
       console.warn('[apcore:events] Pending deliveries at capacity; event was not accepted:', event.eventType);
@@ -175,7 +192,7 @@ export class EventEmitter {
       settle();
     };
     return () => {
-      void deliver().then(release, error => {
+      void lifecycleCallback([this], deliver).then(release, error => {
         release();
         console.error('[apcore:events] Delivery task failed:', error);
       });

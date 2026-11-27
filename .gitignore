@@ -10,4 +10,5 @@ ideas/
 docs/llms-full.txt
 __pycache__
 /plan.md
-/planning/
+/planning/*
+!/planning/module-lifecycle/

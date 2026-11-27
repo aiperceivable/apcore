@@ -11,8 +11,10 @@ use std::sync::{
     Arc, OnceLock, Weak,
 };
 
+use crate::cancel::CancelToken;
 use crate::errors::ModuleError;
 use crate::events::emitter::{ApCoreEvent, EventEmitter};
+use crate::lifecycle::{lifecycle_runtime, lifecycle_worker, ReloadOptions, REGISTRY_CALLBACK};
 use crate::module::{
     Module, ModuleAnnotations, ModuleExample, ValidationErrorDetail, ValidationResult,
 };
@@ -20,6 +22,11 @@ use crate::registry::conflicts::{detect_id_conflicts, ConflictSeverity, Conflict
 use crate::registry::metadata::parse_dependencies;
 use crate::registry::types::DepInfo;
 use crate::registry::version::try_matches_version_hint;
+
+#[path = "async_lifecycle.rs"]
+mod async_lifecycle;
+#[path = "managed_lifecycle.rs"]
+mod managed_lifecycle;
 
 /// Join the `message` field of each validation error detail into a single
 /// comma-separated string for human-readable error reporting.
@@ -231,6 +238,30 @@ pub trait ModuleValidator: Send + Sync {
 pub type ModuleCallbackFn = dyn Fn(&str, &dyn Module) + Send + Sync;
 type CallbackMap = HashMap<String, Vec<(u64, Arc<ModuleCallbackFn>)>>;
 
+fn run_module_callbacks(
+    event: &str,
+    name: &str,
+    module: &dyn Module,
+    callbacks: Vec<Arc<ModuleCallbackFn>>,
+) {
+    for callback in callbacks {
+        if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| callback(name, module)))
+            .is_err()
+        {
+            tracing::error!(module_id = name, event, "Registry callback panicked");
+        }
+    }
+}
+
+fn run_on_unload(name: &str, module: &dyn Module) -> bool {
+    let completed =
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| module.on_unload())).is_ok();
+    if !completed {
+        tracing::error!(module_id = name, "Module on_unload panicked");
+    }
+    completed
+}
+
 /// Type alias for the on_load_failed callback closure (Issue #65).
 type LoadFailedCallbackFn = dyn Fn(&str, &ModuleError) + Send + Sync;
 
@@ -438,6 +469,8 @@ struct RegistryCore {
     closed: bool,
     /// Modules marked for unload (draining active requests before removal).
     draining: HashSet<String>,
+    unavailable: HashSet<String>,
+    reload_owners: HashMap<String, String>,
     /// Case-insensitive lookup: lowercase name -> canonical name.
     lowercase_map: HashMap<String, String>,
     /// Cached JSON schemas for registered modules.
@@ -458,11 +491,13 @@ struct ModuleReferences {
     state: ParkingLotMutex<ReferenceState>,
     drained: tokio::sync::Notify,
     completed: tokio::sync::Notify,
+    async_runtime: Option<tokio::runtime::Handle>,
 }
 
 #[derive(Default)]
 struct ReferenceState {
     count: usize,
+    execution_tokens: HashMap<u64, CancelToken>,
     removal: Option<PendingRemoval>,
     completed: bool,
 }
@@ -476,15 +511,31 @@ struct PendingRemoval {
 }
 
 impl ModuleReferences {
-    fn release(&self) {
+    fn release(self: &Arc<Self>, execution: Option<u64>) {
         {
             let mut state = self.state.lock();
             state.count = state.count.saturating_sub(1);
+            if let Some(id) = execution {
+                state.execution_tokens.remove(&id);
+            }
         }
         self.finish_removal(false);
     }
 
-    fn finish_removal(&self, force: bool) {
+    fn cancel_executions(&self) {
+        let tokens: Vec<_> = self
+            .state
+            .lock()
+            .execution_tokens
+            .values()
+            .cloned()
+            .collect();
+        for token in tokens {
+            token.cancel_for_retirement();
+        }
+    }
+
+    fn finish_removal(self: &Arc<Self>, force: bool) {
         let removal = {
             let mut state = self.state.lock();
             if state.count == 0 {
@@ -495,25 +546,24 @@ impl ModuleReferences {
             state.removal.take()
         };
         if let Some(removal) = removal {
-            removal.registration.unload(&removal.name);
-            for callback in removal.callbacks {
-                if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    callback(&removal.name, removal.registration.primary.as_ref());
-                }))
-                .is_err()
-                {
-                    tracing::error!(
-                        module_id = removal.name,
-                        "Module unregister callback panicked"
-                    );
-                }
+            if let Some(runtime) = self.async_runtime.as_ref() {
+                let references = Arc::clone(self);
+                runtime.spawn(async move {
+                    let scope = async_lifecycle::HookScope {
+                        registry: removal.core.as_ptr() as usize,
+                        operation: None,
+                    };
+                    if let Err(error) = scope.unload_registration(&removal.registration).await {
+                        tracing::error!(module_id = removal.name, code = %error.wire_code(), "Module unload failed");
+                    }
+                    removal.finish(&references);
+                });
+                return;
             }
-            if let Some((emitter, event)) = removal.event {
-                Registry::deliver_registry_event(&emitter, event);
-            }
-            if let Some(core) = removal.core.upgrade() {
-                self.complete_removal(&core, &removal.name);
-            }
+            REGISTRY_CALLBACK.sync_scope(removal.core.as_ptr() as usize, || {
+                removal.registration.unload(&removal.name);
+            });
+            removal.finish(self);
         }
     }
 
@@ -529,39 +579,81 @@ impl ModuleReferences {
         }
     }
 
-    async fn wait_for_removal(&self, deadline: tokio::time::Instant) {
-        loop {
-            let completed = self.completed.notified();
-            tokio::pin!(completed);
-            completed.as_mut().enable();
+    async fn wait_for_removal(self: &Arc<Self>, deadline: Option<tokio::time::Instant>) {
+        let completed = self.completed.notified();
+        tokio::pin!(completed);
+        completed.as_mut().enable();
+        if self.state.lock().completed {
+            return;
+        }
+        if let Some(deadline) = deadline {
+            if tokio::time::timeout_at(deadline, &mut completed)
+                .await
+                .is_ok()
+            {
+                return;
+            }
+            let references = Arc::clone(self);
+            let _ = tokio::task::spawn_blocking(move || references.finish_removal(true)).await;
+            // An already-running cleanup hook must settle under its owner.
             if self.state.lock().completed {
                 return;
             }
-            if tokio::time::timeout_at(deadline, &mut completed)
-                .await
-                .is_err()
-            {
-                self.finish_removal(true);
-                // The timeout bounds execution draining, not a cleanup hook
-                // that another thread has already begun.
-                if !self.state.lock().completed {
-                    completed.await;
-                }
-                return;
+        }
+        completed.await;
+    }
+
+    async fn wait_for_drain(&self, deadline: Option<tokio::time::Instant>) -> bool {
+        loop {
+            let drained = self.drained.notified();
+            tokio::pin!(drained);
+            drained.as_mut().enable();
+            if self.state.lock().count == 0 {
+                return true;
             }
+            if let Some(deadline) = deadline {
+                if tokio::time::Instant::now() >= deadline {
+                    return self.state.lock().count == 0;
+                }
+                if tokio::time::timeout_at(deadline, drained).await.is_err() {
+                    return self.state.lock().count == 0;
+                }
+            } else {
+                drained.await;
+            }
+        }
+    }
+}
+
+impl PendingRemoval {
+    fn finish(self, references: &ModuleReferences) {
+        REGISTRY_CALLBACK.sync_scope(self.core.as_ptr() as usize, || {
+            run_module_callbacks(
+                "unregister",
+                &self.name,
+                self.registration.primary.as_ref(),
+                self.callbacks,
+            );
+            if let Some((emitter, event)) = self.event {
+                emitter.emit_delivery_semantics(event);
+            }
+        });
+        if let Some(core) = self.core.upgrade() {
+            references.complete_removal(&core, &self.name);
         }
     }
 }
 
 pub(crate) struct ModuleExecutionLease {
     references: Arc<ModuleReferences>,
+    execution: Option<u64>,
     pub declared_annotations: Option<ModuleAnnotations>,
     pub enabled: bool,
 }
 
 impl Drop for ModuleExecutionLease {
     fn drop(&mut self) {
-        self.references.release();
+        self.references.release(self.execution);
     }
 }
 
@@ -614,7 +706,7 @@ impl Drop for LoadingRegistration<'_> {
 
 /// Removes the draining marker if the unregister future is cancelled.
 struct DrainGuard<'a> {
-    registry: &'a Registry,
+    core: &'a Arc<RwLock<RegistryCore>>,
     name: &'a str,
     references: Arc<ModuleReferences>,
 }
@@ -625,28 +717,77 @@ impl DrainGuard<'_> {
             .get(self.name)
             .is_some_and(|current| Arc::ptr_eq(current, &self.references))
     }
+
+    fn detach(&self) -> Option<(RemovedRegistration, RemovalCompletion)> {
+        let mut core = self.core.write();
+        if !self.refers_to_current_registration(&core) {
+            return None;
+        }
+        let removed = core.remove_module(self.name)?;
+        core.pending_removals
+            .entry(self.name.to_owned())
+            .or_default()
+            .push(Arc::clone(&self.references));
+        let completion = RemovalCompletion {
+            core: Arc::clone(self.core),
+            name: self.name.to_owned(),
+            references: Arc::clone(&self.references),
+        };
+        Some((removed, completion))
+    }
+
+    fn modules(&self) -> Vec<Arc<dyn Module>> {
+        let core = self.core.read();
+        let Some(primary) = core.modules.get(self.name) else {
+            return Vec::new();
+        };
+        let mut modules = vec![Arc::clone(primary)];
+        if let Some(versions) = core.versions.get(self.name) {
+            modules.extend(
+                versions
+                    .iter()
+                    .filter(|entry| !Arc::ptr_eq(&entry.module, primary))
+                    .map(|entry| Arc::clone(&entry.module)),
+            );
+        }
+        modules
+    }
+
+    fn apply_recovery(&self, recovered: bool) -> bool {
+        let mut core = self.core.write();
+        if core.closed || !self.refers_to_current_registration(&core) {
+            return false;
+        }
+        if recovered {
+            core.unavailable.remove(self.name);
+        } else {
+            core.unavailable.insert(self.name.to_owned());
+        }
+        recovered
+    }
 }
 
 impl Drop for DrainGuard<'_> {
     fn drop(&mut self) {
-        let mut core = self.registry.core.write();
+        let mut core = self.core.write();
         if self.refers_to_current_registration(&core) {
             core.draining.remove(self.name);
+            self.references.drained.notify_waiters();
         }
     }
 }
 
 // Keep a detached registration visible to host shutdown until its synchronous
 // suspension, unload hooks and callbacks have completed.
-struct RemovalCompletion<'a> {
-    core: &'a RwLock<RegistryCore>,
-    name: &'a str,
+struct RemovalCompletion {
+    core: Arc<RwLock<RegistryCore>>,
+    name: String,
     references: Arc<ModuleReferences>,
 }
 
-impl Drop for RemovalCompletion<'_> {
+impl Drop for RemovalCompletion {
     fn drop(&mut self) {
-        self.references.complete_removal(self.core, self.name);
+        self.references.complete_removal(&self.core, &self.name);
     }
 }
 
@@ -665,16 +806,14 @@ pub(crate) struct RemovedRegistration {
 }
 
 impl RemovedRegistration {
-    fn unload(&self, name: &str) {
+    fn unload(&self, name: &str) -> bool {
+        let mut succeeded = true;
         for module in std::iter::once(&self.primary)
             .chain(self.older_versions.iter().map(|entry| &entry.module))
         {
-            if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| module.on_unload()))
-                .is_err()
-            {
-                tracing::error!(module_id = name, "Module on_unload panicked");
-            }
+            succeeded = run_on_unload(name, module.as_ref()) && succeeded;
         }
+        succeeded
     }
 }
 
@@ -709,10 +848,28 @@ impl RegistryCore {
             pending_removals: HashMap::new(),
             closed: false,
             draining: HashSet::new(),
+            unavailable: HashSet::new(),
+            reload_owners: HashMap::new(),
             lowercase_map: HashMap::new(),
             schema_cache: HashMap::new(),
             versions: HashMap::new(),
             sources: HashMap::new(),
+        }
+    }
+
+    fn check_reload_owner(
+        &self,
+        name: &str,
+        requested_owner: Option<&str>,
+    ) -> Result<(), ModuleError> {
+        match (self.reload_owners.get(name), requested_owner) {
+            (Some(owner), Some(requested)) if owner == requested => Ok(()),
+            (None, None) => Ok(()),
+            (Some(_), None) => Err(ModuleError::duplicate_module_id(name)),
+            _ => Err(ModuleError::new(
+                crate::errors::ErrorCode::ModuleReloadConflict,
+                "The managed reload no longer owns this module ID",
+            )),
         }
     }
 
@@ -729,6 +886,7 @@ impl RegistryCore {
         older_versions.retain(|entry| !Arc::ptr_eq(&entry.module, &primary));
         let source = self.sources.remove(name);
         self.draining.remove(name);
+        self.unavailable.remove(name);
         if let Some(references) = self.ref_counts.remove(name) {
             references.drained.notify_waiters();
         }
@@ -754,13 +912,13 @@ impl RegistryCore {
 /// the core lock before awaiting.
 pub struct Registry {
     core: Arc<RwLock<RegistryCore>>,
-    shutdown_complete: tokio::sync::OnceCell<()>,
+    shutdown_operation: ParkingLotMutex<Option<managed_lifecycle::RegistryShutdown>>,
     /// Event callbacks keyed by event name (e.g. "register", "unregister").
     ///
     /// Callbacks are stored as `(id, Arc)` so they can be cloned out of the lock
     /// before invocation — holding this lock while calling a callback would
     /// deadlock if the callback tried to register or unregister a module.
-    callbacks: RwLock<CallbackMap>,
+    callbacks: Arc<RwLock<CallbackMap>>,
     /// Monotonically increasing counter for callback handle IDs.
     callback_counter: AtomicU64,
     /// D-89: `(module_id, version)` pairs whose deprecation warning has already
@@ -799,7 +957,7 @@ pub struct Registry {
     /// registry emits `apcore.registry.module_load_failed` on `on_load`
     /// failure, mirroring apcore-python `_event_emitter` /
     /// apcore-typescript `_eventEmitter`.
-    event_emitter: RwLock<Option<Arc<EventEmitter>>>,
+    event_emitter: Arc<RwLock<Option<Arc<EventEmitter>>>>,
 }
 
 /// RAII guard that restores a taken-out `Discoverer` back into the registry's
@@ -889,8 +1047,8 @@ impl Registry {
     pub fn new() -> Self {
         Self {
             core: Arc::new(RwLock::new(RegistryCore::new())),
-            shutdown_complete: tokio::sync::OnceCell::new(),
-            callbacks: RwLock::new(HashMap::new()),
+            shutdown_operation: ParkingLotMutex::new(None),
+            callbacks: Arc::new(RwLock::new(HashMap::new())),
             callback_counter: AtomicU64::new(1),
             deprecation_warned: ParkingLotMutex::new(HashSet::new()),
             version_hint_warned: ParkingLotMutex::new(HashSet::new()),
@@ -901,7 +1059,7 @@ impl Registry {
             watch_handle: parking_lot::Mutex::new(None),
             in_flight: LoadingRegistrations::default(),
             load_failed_callbacks: RwLock::new(Vec::new()),
-            event_emitter: RwLock::new(None),
+            event_emitter: Arc::new(RwLock::new(None)),
         }
     }
 
@@ -972,11 +1130,22 @@ impl Registry {
     /// Snapshot the callbacks for a given event name so they can be invoked
     /// without holding the callbacks lock.
     fn snapshot_callbacks(&self, event: &str) -> Vec<Arc<ModuleCallbackFn>> {
-        self.callbacks
+        Self::snapshot_callbacks_from(&self.callbacks, event)
+    }
+
+    fn snapshot_callbacks_from(
+        callbacks: &RwLock<CallbackMap>,
+        event: &str,
+    ) -> Vec<Arc<ModuleCallbackFn>> {
+        callbacks
             .read()
             .get(event)
             .map(|v| v.iter().map(|(_, cb)| cb.clone()).collect())
             .unwrap_or_default()
+    }
+
+    fn notify_callbacks(&self, event: &str, name: &str, module: &dyn Module) {
+        run_module_callbacks(event, name, module, self.snapshot_callbacks(event));
     }
 
     /// Register a module with an explicit `ModuleDescriptor`.
@@ -1043,11 +1212,16 @@ impl Registry {
         module: Box<dyn Module>,
         context: Option<&crate::Context<serde_json::Value>>,
     ) -> Result<(), ModuleError> {
+        let descriptor = Self::descriptor_from_module(name, module.as_ref());
+        self.register_with_context(name, module, descriptor, context)
+    }
+
+    fn descriptor_from_module(name: &str, module: &dyn Module) -> ModuleDescriptor {
         // Read the module's declarations ONCE: `metadata` also feeds
         // `dependencies` below, and `register_core` derives `sunset_date` from
         // `metadata["x-deprecation"]`.
         let metadata = module.metadata();
-        let descriptor = ModuleDescriptor {
+        ModuleDescriptor {
             module_id: name.to_string(),
             name: None,
             description: module.description().to_string(),
@@ -1101,8 +1275,7 @@ impl Registry {
             // …}]}`). Empty when the module declares none.
             dependencies: dependencies_from_metadata(&metadata),
             enabled: true,
-        };
-        self.register_with_context(name, module, descriptor, context)
+        }
     }
 
     /// Register a module with explicit version and metadata — the
@@ -1197,7 +1370,7 @@ impl Registry {
         // explicit version of an ID that is already registered is another
         // version, not a duplicate.
         if version.is_some_and(|v| !v.is_empty()) && self.has(name) {
-            return self.add_version(name, &module.into(), descriptor);
+            return self.add_version(name, &module.into(), descriptor, None);
         }
         self.register(name, module, descriptor)
     }
@@ -1210,7 +1383,11 @@ impl Registry {
         name: &str,
         module: &Arc<dyn Module>,
         descriptor: ModuleDescriptor,
+        reload_owner: Option<&str>,
     ) -> Result<(), ModuleError> {
+        if module.as_async_lifecycle().is_some() {
+            return Err(async_lifecycle::requires_async_registration(name));
+        }
         let mut descriptor = descriptor;
         self.check_registration(name, module, &mut descriptor, false, true)?;
         let version = descriptor.version.clone();
@@ -1225,6 +1402,7 @@ impl Registry {
             if core.closed {
                 return Err(Self::closed_error());
             }
+            core.check_reload_owner(name, reload_owner)?;
             let current = core
                 .descriptors
                 .get(name)
@@ -1243,7 +1421,7 @@ impl Registry {
             (references, reservation)
         };
 
-        if let Err(e) = module.on_load() {
+        if let Err(e) = self.with_callback_scope(|| module.on_load()) {
             drop(reservation);
             self.emit_module_load_failed(name, &e);
             return Err(e);
@@ -1262,7 +1440,7 @@ impl Registry {
                     ModuleError::module_not_found(name)
                 };
                 drop(core);
-                module.on_unload();
+                self.with_callback_scope(|| run_on_unload(name, module.as_ref()));
                 drop(reservation);
                 return Err(error);
             }
@@ -1298,9 +1476,7 @@ impl Registry {
         }
 
         drop(reservation);
-        for cb in self.snapshot_callbacks("register") {
-            cb(name, module.as_ref());
-        }
+        self.notify_callbacks("register", name, module.as_ref());
         Ok(())
     }
 
@@ -1328,7 +1504,8 @@ impl Registry {
             let mut core = self.core.write();
             // A coordinated drain owns the registration until its cleanup
             // begins. Another removal must not steal it before its snapshot.
-            if core.draining.contains(name) {
+            if core.closed || core.draining.contains(name) || core.reload_owners.contains_key(name)
+            {
                 return Ok(false);
             }
             let references = core.ref_counts.get(name).cloned().unwrap_or_default();
@@ -1352,12 +1529,27 @@ impl Registry {
         Ok(true)
     }
 
-    fn notify_unregistered(&self, name: &str, removed: &RemovedRegistration) {
-        removed.unload(name);
-        for callback in self.snapshot_callbacks("unregister") {
-            callback(name, removed.primary.as_ref());
+    fn notify_removal_callbacks(
+        callbacks: &RwLock<CallbackMap>,
+        emitter: &RwLock<Option<Arc<EventEmitter>>>,
+        name: &str,
+        module: &dyn Module,
+    ) {
+        run_module_callbacks(
+            "unregister",
+            name,
+            module,
+            Self::snapshot_callbacks_from(callbacks, "unregister"),
+        );
+        if let Some((emitter, event)) =
+            Self::ephemeral_event_from(emitter, "apcore.registry.module_unregistered", name, None)
+        {
+            emitter.emit_delivery_semantics(event);
         }
-        self.emit_ephemeral_event("apcore.registry.module_unregistered", name, None);
+    }
+
+    fn with_callback_scope<T>(&self, callback: impl FnOnce() -> T) -> T {
+        REGISTRY_CALLBACK.sync_scope(Arc::as_ptr(&self.core) as usize, callback)
     }
 
     /// Get a shared reference to a module by name.
@@ -1472,50 +1664,44 @@ impl Registry {
         let show_public = vis.contains(&"public");
         let show_hidden = vis.contains(&"hidden");
 
-        let core = self.core.read();
-        let mut result: Vec<String> = core
-            .modules
-            .keys()
-            .filter(|name| {
-                let is_disc = descriptor_is_discoverable(core.descriptors.get(name.as_str()));
-                if !((is_disc && show_public) || (!is_disc && show_hidden)) {
-                    return false;
-                }
-                if let Some(pfx) = prefix {
-                    if !name.starts_with(pfx) {
-                        return false;
+        let candidates: Vec<_> = {
+            let core = self.core.read();
+            core.modules
+                .iter()
+                .filter_map(|(name, module)| {
+                    let descriptor = core.descriptors.get(name);
+                    let discoverable = descriptor_is_discoverable(descriptor);
+                    let visible = if discoverable {
+                        show_public
+                    } else {
+                        show_hidden
+                    };
+                    if !visible || prefix.is_some_and(|prefix| !name.starts_with(prefix)) {
+                        return None;
                     }
-                }
-                if let Some(required_tags) = tags {
-                    // D11-003: union descriptor.tags with module.tags() so a
-                    // module declaring `fn tags(&self) -> vec!["a"]` registered
-                    // via register_module(name, module) (which builds an
-                    // empty descriptor.tags) is filtered IN by tag-match
-                    // queries — matches apcore-python (registry.py:1027) and
-                    // apcore-typescript (registry.ts:689) which both union
-                    // module-instance tags with merged-meta tags.
-                    let mut module_tags: Vec<String> = core
-                        .descriptors
-                        .get(name.as_str())
-                        .map(|desc| desc.tags.clone())
-                        .unwrap_or_default();
-                    if let Some(module) = core.modules.get(name.as_str()) {
-                        for t in module.tags() {
-                            if !module_tags.contains(&t) {
-                                module_tags.push(t);
-                            }
-                        }
-                    }
-                    if !required_tags
-                        .iter()
-                        .all(|t| module_tags.contains(&t.to_string()))
-                    {
-                        return false;
-                    }
-                }
-                true
+                    let tag_sources = tags.map(|required| {
+                        let declared = descriptor.map(|desc| desc.tags.clone()).unwrap_or_default();
+                        (required, declared, Arc::clone(module))
+                    });
+                    Some((name.clone(), tag_sources))
+                })
+                .collect()
+        };
+        let mut result: Vec<_> = candidates
+            .into_iter()
+            .filter_map(|(name, tag_sources)| {
+                // D11-003: union descriptor tags and instance tags outside the registry lock.
+                let matches = tag_sources.is_none_or(|(required, declared, module)| {
+                    let instance_tags = module.tags();
+                    required.iter().all(|tag| {
+                        declared
+                            .iter()
+                            .chain(&instance_tags)
+                            .any(|item| item == tag)
+                    })
+                });
+                matches.then_some(name)
             })
-            .cloned()
             .collect();
         // Spec: list() MUST return sorted, unique IDs for cross-language parity
         // with apcore-python and apcore-typescript (sync finding A-D-103).
@@ -1544,9 +1730,12 @@ impl Registry {
     /// scans and nothing else.
     #[allow(clippy::similar_names)] // `discoverer` (param) and `discovered` (result) are semantically distinct
     pub async fn discover(&self, discoverer: &dyn Discoverer) -> Result<usize, ModuleError> {
+        if self.core.read().closed {
+            return Err(Self::closed_error());
+        }
         let roots = self.extension_roots.read().clone();
         let discovered = discoverer.discover(&roots).await?;
-        Ok(self.register_discovered(discovered))
+        Ok(self.register_discovered(discovered).await)
     }
 
     /// Register a sys/internal module that bypasses **only** the reserved
@@ -1857,41 +2046,10 @@ impl Registry {
             run_validator,
         )?;
 
-        let reservation = {
-            let core = self.core.read();
-            if core.closed {
-                return Err(Self::closed_error());
-            }
-            // Full conflict detection (duplicate / reserved / case-collision).
-            let reserved: &[&str] = if allow_reserved { &[] } else { RESERVED_WORDS };
-            let existing_ids: HashSet<String> = core.modules.keys().cloned().collect();
-            if let Some(conflict) =
-                detect_id_conflicts(name, &existing_ids, reserved, Some(&core.lowercase_map))
-            {
-                match conflict.severity {
-                    ConflictSeverity::Error => {
-                        // Use DuplicateModuleId for exact-duplicate conflicts so callers
-                        // can distinguish "already registered" from other error types.
-                        let error_code = if conflict.conflict_type == ConflictType::DuplicateId {
-                            crate::errors::ErrorCode::DuplicateModuleId
-                        } else {
-                            crate::errors::ErrorCode::GeneralInvalidInput
-                        };
-                        return Err(ModuleError::new(error_code, conflict.message));
-                    }
-                    ConflictSeverity::Warning => {
-                        tracing::warn!(
-                            module_id = %name,
-                            conflict = %conflict.message,
-                            "Module registration proceeded despite warning-level ID conflict"
-                        );
-                    }
-                }
-            }
-            self.in_flight
-                .reserve(name)
-                .ok_or_else(|| ModuleError::duplicate_module_id(name))?
-        };
+        if module.as_async_lifecycle().is_some() {
+            return Err(async_lifecycle::requires_async_registration(name));
+        }
+        let reservation = self.reserve_registration(name, allow_reserved, None)?;
 
         let module_arc: Arc<dyn Module> = module;
         let module_clone = Arc::clone(&module_arc);
@@ -1900,10 +2058,12 @@ impl Registry {
         // being visible in core.modules. Only after on_load succeeds do we
         // atomically publish the module (insert into core.modules) and remove
         // from in_flight.
-        match module_clone.on_load() {
+        match self.with_callback_scope(|| module_clone.on_load()) {
             Ok(()) => {
                 if let Some(state) = resume {
-                    resume_reloaded_module(name, module_clone.as_ref(), state);
+                    self.with_callback_scope(|| {
+                        resume_reloaded_module(name, module_clone.as_ref(), state);
+                    });
                 }
                 // Shutdown can close the registry while the lock-free hook runs.
                 let published = {
@@ -1927,7 +2087,7 @@ impl Registry {
 
                 if !published {
                     // on_load succeeded but the registry closed or a competing registration won.
-                    module_clone.on_unload();
+                    self.with_callback_scope(|| run_on_unload(name, module_clone.as_ref()));
                     let error = if self.core.read().closed {
                         Self::closed_error()
                     } else {
@@ -1937,9 +2097,7 @@ impl Registry {
                 }
 
                 drop(reservation);
-                for cb in self.snapshot_callbacks("register") {
-                    cb(name, module_clone.as_ref());
-                }
+                self.notify_callbacks("register", name, module_clone.as_ref());
                 self.emit_ephemeral_event("apcore.registry.module_registered", name, context);
                 Ok(())
             }
@@ -1964,6 +2122,48 @@ impl Registry {
         }
     }
 
+    fn reserve_registration<'a>(
+        &'a self,
+        name: &'a str,
+        allow_reserved: bool,
+        reload_owner: Option<&str>,
+    ) -> Result<LoadingRegistration<'a>, ModuleError> {
+        let core = self.core.read();
+        if core.closed {
+            return Err(Self::closed_error());
+        }
+        core.check_reload_owner(name, reload_owner)?;
+        // Full conflict detection (duplicate / reserved / case-collision).
+        let reserved: &[&str] = if allow_reserved { &[] } else { RESERVED_WORDS };
+        let existing_ids: HashSet<String> = core.modules.keys().cloned().collect();
+        if let Some(conflict) =
+            detect_id_conflicts(name, &existing_ids, reserved, Some(&core.lowercase_map))
+        {
+            match conflict.severity {
+                ConflictSeverity::Error => {
+                    // Use DuplicateModuleId for exact-duplicate conflicts so callers
+                    // can distinguish "already registered" from other error types.
+                    let error_code = if conflict.conflict_type == ConflictType::DuplicateId {
+                        crate::errors::ErrorCode::DuplicateModuleId
+                    } else {
+                        crate::errors::ErrorCode::GeneralInvalidInput
+                    };
+                    return Err(ModuleError::new(error_code, conflict.message));
+                }
+                ConflictSeverity::Warning => {
+                    tracing::warn!(
+                        module_id = %name,
+                        conflict = %conflict.message,
+                        "Module registration proceeded despite warning-level ID conflict"
+                    );
+                }
+            }
+        }
+        self.in_flight
+            .reserve(name)
+            .ok_or_else(|| ModuleError::duplicate_module_id(name))
+    }
+
     fn emit_ephemeral_event(
         &self,
         event_type: &str,
@@ -1971,7 +2171,7 @@ impl Registry {
         context: Option<&crate::Context<serde_json::Value>>,
     ) {
         if let Some((emitter, event)) = self.ephemeral_event(event_type, name, context) {
-            Self::deliver_registry_event(&emitter, event);
+            emitter.emit_delivery_semantics(event);
         }
     }
 
@@ -1981,10 +2181,19 @@ impl Registry {
         name: &str,
         context: Option<&crate::Context<serde_json::Value>>,
     ) -> Option<(Arc<EventEmitter>, ApCoreEvent)> {
+        Self::ephemeral_event_from(&self.event_emitter, event_type, name, context)
+    }
+
+    fn ephemeral_event_from(
+        emitter: &RwLock<Option<Arc<EventEmitter>>>,
+        event_type: &str,
+        name: &str,
+        context: Option<&crate::Context<serde_json::Value>>,
+    ) -> Option<(Arc<EventEmitter>, ApCoreEvent)> {
         if !is_ephemeral_module_id(name) {
             return None;
         }
-        let emitter = self.event_emitter.read().clone()?;
+        let emitter = emitter.read().clone()?;
         // Attribute bags may contain arbitrary credentials; omit them from the snapshot.
         let identity = context
             .and_then(|context| context.identity.as_ref())
@@ -1998,22 +2207,6 @@ impl Registry {
                 .unwrap_or(crate::acl::EXTERNAL_CALLER)});
         let event = ApCoreEvent::with_module(event_type, payload, name, "info");
         Some((emitter, event))
-    }
-
-    fn deliver_registry_event(emitter: &EventEmitter, event: ApCoreEvent) {
-        if tokio::runtime::Handle::try_current().is_ok() {
-            emitter.emit_delivery_semantics(event);
-        } else {
-            match tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-            {
-                Ok(runtime) => runtime.block_on(emitter.emit(&event)),
-                Err(error) => {
-                    tracing::error!(error = %error, "Failed to initialize registry audit runtime");
-                }
-            }
-        }
     }
 
     /// Apply a closure to every registered module.
@@ -2067,27 +2260,26 @@ impl Registry {
     /// when `name` is not registered — never a `"Module not found"` sentinel
     /// string, matching the peers' `ModuleNotFoundError`.
     pub fn describe(&self, name: &str) -> Result<String, ModuleError> {
-        let override_text = {
+        let (module, descriptor) = {
             let core = self.core.read();
             let module = core
                 .modules
                 .get(name)
+                .cloned()
                 .ok_or_else(|| ModuleError::module_not_found(name))?;
-            match module.describe() {
-                serde_json::Value::String(s) => Some(s),
-                _ => None,
-            }
+            (module, core.descriptors.get(name).cloned())
         };
-        if let Some(text) = override_text {
+        if let serde_json::Value::String(text) = module.describe() {
             return Ok(text);
         }
 
         // Auto-generate from the descriptor. A registered module with no
         // descriptor is not reachable through the normal registration paths,
         // but mirror the peers' graceful fallback rather than erroring.
-        let Some(descriptor) = self.get_definition(name)? else {
+        let Some(descriptor) = descriptor else {
             return Ok(format!("Module: {name}\n\nNo description available."));
         };
+        self.warn_if_deprecated(name, &descriptor);
 
         let mut lines: Vec<String> = vec![format!("# {}", descriptor.module_id)];
         if !descriptor.description.is_empty() {
@@ -2136,12 +2328,14 @@ impl Registry {
 
     /// Drain and unregister a module. Returns false if absent or force-unloaded after the timeout.
     pub async fn safe_unregister(&self, name: &str, timeout_ms: u64) -> Result<bool, ModuleError> {
-        let Some((removed, clean, _completion)) =
-            self.detach_after_drain(name, timeout_ms, false).await
+        let clock = lifecycle_worker()?;
+        let Some((removed, clean, completion)) =
+            self.detach_after_drain(name, timeout_ms, &clock).await
         else {
             return Ok(false);
         };
-        self.notify_unregistered(name, &removed);
+        self.finish_detached_removal(removed, completion, false, &clock)
+            .await?;
         Ok(clean)
     }
 
@@ -2171,87 +2365,44 @@ impl Registry {
         Ok(removed)
     }
 
-    /// Close module admissions, stop the watcher and unload every registration.
-    pub(crate) async fn shutdown(&self) {
-        self.shutdown_complete
-            .get_or_init(|| self.close_registry())
-            .await;
-    }
-
-    async fn close_registry(&self) {
-        let module_ids = {
-            let mut core = self.core.write();
-            core.closed = true;
-            let mut module_ids: Vec<_> = core.modules.keys().cloned().collect();
-            module_ids.sort_unstable();
-            module_ids
+    pub(crate) async fn unload_for_reload(
+        &self,
+        name: &str,
+    ) -> Result<Option<ReloadRegistration>, ModuleError> {
+        let clock = lifecycle_worker()?;
+        let Some((removed, clean, completion)) = self.detach_after_drain(name, 5000, &clock).await
+        else {
+            return Ok(None);
         };
-        if let Some(watcher_task) = self.stop_watching() {
-            let _ = watcher_task.await;
-        }
-        self.in_flight.wait_until_empty().await;
-        for name in module_ids {
-            if let Some((removed, _, _completion)) =
-                self.detach_after_drain(&name, 5000, true).await
-            {
-                self.notify_unregistered(&name, &removed);
-            }
-        }
-        let pending: Vec<_> = self
-            .core
-            .read()
-            .pending_removals
-            .values()
-            .flatten()
-            .cloned()
-            .collect();
-        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
-        for removal in pending {
-            removal.wait_for_removal(deadline).await;
-        }
-    }
-
-    pub(crate) async fn unload_for_reload(&self, name: &str) -> Option<ReloadRegistration> {
-        let (removed, clean, _completion) = self.detach_after_drain(name, 5000, false).await?;
-        let state = clean
-            .then(|| {
-                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    removed.primary.on_suspend()
-                }))
-                .unwrap_or_else(|_| {
-                    tracing::warn!(
-                        module_id = name,
-                        "Module on_suspend panicked; continuing reload"
-                    );
-                    None
-                })
-            })
-            .flatten();
-        self.notify_unregistered(name, &removed);
-        Some(ReloadRegistration { removed, state })
+        let (removed, state) = self
+            .finish_detached_removal(removed, completion, clean, &clock)
+            .await?;
+        Ok(Some(ReloadRegistration { removed, state }))
     }
 
     /// Restore all versions and the source association after failed replacement.
-    pub(crate) fn restore_reload(
+    pub(crate) async fn restore_reload(
         &self,
         name: &str,
         previous: ReloadRegistration,
     ) -> Result<(), ModuleError> {
         let ReloadRegistration { removed, state } = previous;
         let primary = Arc::clone(&removed.primary);
-        self.register_core_with_context(
-            name,
-            removed.primary,
-            removed.descriptor,
-            RegistrationOptions {
-                allow_reserved: true,
-                run_validator: false,
-                context: None,
-                resume: state,
-            },
-        )?;
+        let options = RegistrationOptions {
+            allow_reserved: true,
+            run_validator: false,
+            context: None,
+            resume: state,
+        };
+        if primary.as_async_lifecycle().is_some() {
+            self.load_with_hooks(removed.primary, removed.descriptor, None, options, None)
+                .await?;
+        } else {
+            self.register_core_with_context(name, removed.primary, removed.descriptor, options)?;
+        }
+
         for version in removed.older_versions {
-            self.add_version(name, &version.module, version.descriptor)?;
+            self.add_version(name, &version.module, version.descriptor, None)?;
         }
         if let Some(source) = removed.source {
             let mut core = self.core.write();
@@ -2266,63 +2417,44 @@ impl Registry {
         Ok(())
     }
 
-    async fn detach_after_drain<'a>(
-        &'a self,
-        name: &'a str,
+    async fn detach_after_drain(
+        &self,
+        name: &str,
         timeout_ms: u64,
-        shutdown: bool,
-    ) -> Option<(RemovedRegistration, bool, RemovalCompletion<'a>)> {
+        clock: &tokio::runtime::Handle,
+    ) -> Option<(RemovedRegistration, bool, RemovalCompletion)> {
         let references = {
             let mut core = self.core.write();
-            if !core.modules.contains_key(name) {
+            if core.closed
+                || !core.modules.contains_key(name)
+                || core.reload_owners.contains_key(name)
+            {
                 return None;
             }
-            if !core.draining.insert(name.to_string()) && !shutdown {
+            if !core.draining.insert(name.to_string()) {
                 return None;
             }
             Arc::clone(core.ref_counts.entry(name.to_string()).or_default())
         };
         let guard = DrainGuard {
-            registry: self,
+            core: &self.core,
             name,
             references,
         };
         let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
-        let clean = loop {
-            let notified = guard.references.drained.notified();
-            tokio::pin!(notified);
-            notified.as_mut().enable();
-            if !guard.refers_to_current_registration(&self.core.read()) {
-                return None;
-            }
-            let count = guard.references.state.lock().count;
-            if count == 0 {
-                break true;
-            }
-            if tokio::time::timeout_at(deadline, notified).await.is_err() {
-                tracing::warn!(
-                    module_id = name,
-                    timeout_ms,
-                    in_flight = count,
-                    "Force-unloading module after timeout"
-                );
-                break false;
-            }
+        let timed_drain = {
+            let _clock = clock.enter();
+            tokio::time::timeout_at(deadline, guard.references.wait_for_drain(None))
         };
-        let mut core = self.core.write();
-        if !guard.refers_to_current_registration(&core) {
-            return None;
+        let clean = timed_drain.await.is_ok() || guard.references.state.lock().count == 0;
+        if !clean {
+            tracing::warn!(
+                module_id = name,
+                timeout_ms,
+                "Force-unloading module after timeout"
+            );
         }
-        let removed = core.remove_module(name)?;
-        core.pending_removals
-            .entry(name.to_string())
-            .or_default()
-            .push(Arc::clone(&guard.references));
-        let completion = RemovalCompletion {
-            core: &self.core,
-            name,
-            references: Arc::clone(&guard.references),
-        };
+        let (removed, completion) = guard.detach()?;
         Some((removed, clean, completion))
     }
 
@@ -2356,13 +2488,25 @@ impl Registry {
         &self,
         name: &str,
         version_hint: Option<&str>,
+        cancel_token: Option<&CancelToken>,
     ) -> Result<(Arc<dyn Module>, Arc<ModuleExecutionLease>), ModuleError> {
+        static NEXT_EXECUTION: AtomicU64 = AtomicU64::new(1);
         let (module, lease, deprecated) = {
             let mut core = self.core.write();
             let (module, references) = Self::acquire_with_count(&mut core, name)?;
+            let execution = cancel_token.map(|token| {
+                let id = NEXT_EXECUTION.fetch_add(1, Ordering::Relaxed);
+                references
+                    .state
+                    .lock()
+                    .execution_tokens
+                    .insert(id, token.clone());
+                id
+            });
             let descriptor = core.descriptors.get(name);
             let lease = Arc::new(ModuleExecutionLease {
                 references,
+                execution,
                 declared_annotations: descriptor.and_then(|entry| entry.annotations.clone()),
                 enabled: descriptor.is_none_or(|entry| entry.enabled),
             });
@@ -2389,7 +2533,7 @@ impl Registry {
         core: &mut RegistryCore,
         name: &str,
     ) -> Result<(Arc<dyn Module>, Arc<ModuleReferences>), ModuleError> {
-        if core.closed || core.draining.contains(name) {
+        if core.closed || core.draining.contains(name) || core.unavailable.contains(name) {
             return Err(ModuleError::new(
                 crate::errors::ErrorCode::ModuleNotFound,
                 format!("Module '{name}' is draining"),
@@ -2428,7 +2572,7 @@ impl Registry {
             references
         };
         if let Some(references) = references {
-            references.release();
+            references.release(None);
         }
     }
 
@@ -2552,6 +2696,21 @@ impl Registry {
     #[allow(clippy::unused_async)]
     #[allow(clippy::unused_async_trait_impl)]
     pub async fn watch(self: &Arc<Self>) -> Result<(), ModuleError> {
+        self.start_watcher(None)
+    }
+
+    /// Watch configured roots with managed, generation-aware replacement.
+    pub fn watch_with_lifecycle(
+        self: &Arc<Self>,
+        options: ReloadOptions,
+    ) -> Result<(), ModuleError> {
+        self.start_watcher(Some(options.validate()?))
+    }
+
+    fn start_watcher(
+        self: &Arc<Self>,
+        lifecycle: Option<ReloadOptions>,
+    ) -> Result<(), ModuleError> {
         use notify::{RecursiveMode, Watcher};
 
         if self.core.read().closed {
@@ -2604,7 +2763,8 @@ impl Registry {
         }
         let mut watcher_slot = self.watcher.lock();
         if watcher_slot.is_none() {
-            let handle = tokio::spawn(Self::watch_loop(rx, Arc::downgrade(self)));
+            let runtime = lifecycle_runtime()?;
+            let handle = runtime.spawn(Self::watch_loop(rx, Arc::downgrade(self), lifecycle));
             *watcher_slot = Some(watcher);
             *self.watch_handle.lock() = Some(handle);
         }
@@ -2618,6 +2778,7 @@ impl Registry {
     async fn watch_loop(
         mut rx: tokio::sync::mpsc::UnboundedReceiver<notify::Result<notify::Event>>,
         weak: std::sync::Weak<Self>,
+        lifecycle: Option<ReloadOptions>,
     ) {
         use std::time::Duration;
 
@@ -2653,7 +2814,8 @@ impl Registry {
             let Some(reg) = weak.upgrade() else {
                 break;
             };
-            if let Err(e) = reg.apply_file_changes(&paths).await {
+            let task = tokio::spawn(async move { reg.apply_file_changes(&paths, lifecycle).await });
+            if let Ok(Err(e)) = task.await {
                 tracing::warn!(
                     error = %e.message,
                     "Registry watch: applying file changes failed during hot-reload"
@@ -2665,7 +2827,11 @@ impl Registry {
     /// Apply a batch of changed file paths: register new modules, replace the
     /// modules whose source (or `_meta.yaml` sidecar) changed, and unregister
     /// those whose source file is gone.
-    async fn apply_file_changes(&self, paths: &[std::path::PathBuf]) -> Result<(), ModuleError> {
+    async fn apply_file_changes(
+        self: &Arc<Self>,
+        paths: &[std::path::PathBuf],
+        lifecycle: Option<ReloadOptions>,
+    ) -> Result<(), ModuleError> {
         let changed: HashSet<std::path::PathBuf> =
             paths.iter().map(|p| normalize_watched_path(p)).collect();
         let touches = |source: &str| {
@@ -2700,9 +2866,25 @@ impl Registry {
         let batch_ids = discovered.iter().map(|entry| entry.name.clone()).collect();
         for dm in discovered {
             if !self.has(&dm.name) {
-                self.register_discovered_batch(std::iter::once(dm), &batch_ids, &HashMap::new());
+                self.register_discovered_batch(
+                    std::iter::once(dm),
+                    &batch_ids,
+                    &HashMap::new(),
+                    true,
+                )
+                .await;
             } else if touches(&dm.source) {
-                self.replace_discovered(dm, &batch_ids).await?;
+                if let Some(options) = lifecycle {
+                    self.start_managed_reload_with_candidate(
+                        vec![dm.name.clone()],
+                        options,
+                        Some(dm),
+                    )?
+                    .wait(None)
+                    .await?;
+                } else {
+                    self.replace_discovered(dm, &batch_ids).await?;
+                }
             }
         }
         Ok(())
@@ -2717,7 +2899,7 @@ impl Registry {
         batch_ids: &HashSet<String>,
     ) -> Result<(), ModuleError> {
         let name = dm.name.clone();
-        let Some(previous) = self.unload_for_reload(&name).await else {
+        let Some(previous) = self.unload_for_reload(&name).await? else {
             return Ok(());
         };
         let states: HashMap<_, _> = previous
@@ -2726,12 +2908,30 @@ impl Registry {
             .map(|state| (name.clone(), state.clone()))
             .into_iter()
             .collect();
-        if self.register_discovered_batch(std::iter::once(dm), batch_ids, &states) == 0 {
+        if self
+            .register_discovered_batch(std::iter::once(dm), batch_ids, &states, true)
+            .await
+            == 0
+        {
             tracing::warn!(
                 module_id = %name,
                 "Registry watch: the changed module failed to register; keeping the previous instance"
             );
-            self.restore_reload(&name, previous)?;
+            let restoration = self.restore_reload(&name, previous).await;
+            if let Some(emitter) = self.event_emitter.read().clone() {
+                emitter.emit_delivery_semantics(ApCoreEvent::with_module(
+                    "apcore.registry.module_reload_failed",
+                    serde_json::json!({
+                        "operation_id": uuid::Uuid::new_v4().to_string(),
+                        "phase": "loading", "error_code": "RELOAD_FAILED",
+                        "compensation": if restoration.is_ok() { "restored" } else { "failed" },
+                    }),
+                    &name,
+                    "error",
+                ));
+            }
+            restoration?;
+
             return Ok(());
         }
 
@@ -2761,19 +2961,23 @@ impl Registry {
     ///
     /// Returns the number of newly registered modules.
     pub async fn discover_internal(&self) -> Result<usize, ModuleError> {
-        self.discover_with_resume(&HashMap::new()).await
+        if self.core.read().closed {
+            return Err(Self::closed_error());
+        }
+        let discovered = self.run_discoverer().await?;
+        Ok(self.register_discovered(discovered).await)
     }
 
     pub(crate) async fn discover_with_resume(
-        &self,
+        self: &Arc<Self>,
         states: &HashMap<String, serde_json::Value>,
     ) -> Result<usize, ModuleError> {
         if self.core.read().closed {
             return Err(Self::closed_error());
         }
         let discovered = self.run_discoverer().await?;
-        let batch_ids = discovered.iter().map(|entry| entry.name.clone()).collect();
-        Ok(self.register_discovered_batch(discovered, &batch_ids, states))
+        self.register_discovered_owned(discovered, states.clone())
+            .await
     }
 
     /// Run the internally-set discoverer over the extension roots, without
@@ -2883,17 +3087,19 @@ impl Registry {
     ///
     /// Uses the same **deferred-publish** pattern as `register_core` (Issue #65):
     /// a module is NOT visible in `core.modules` until its `on_load` succeeds.
-    fn register_discovered(&self, discovered: Vec<DiscoveredModule>) -> usize {
+    async fn register_discovered(&self, discovered: Vec<DiscoveredModule>) -> usize {
         let batch_ids = discovered.iter().map(|entry| entry.name.clone()).collect();
-        self.register_discovered_batch(discovered, &batch_ids, &HashMap::new())
+        self.register_discovered_batch(discovered, &batch_ids, &HashMap::new(), false)
+            .await
     }
 
     #[allow(clippy::too_many_lines)] // sequential per-entry validation gates in a batch loop; splitting further requires passing state and reduces clarity
-    fn register_discovered_batch(
+    async fn register_discovered_batch(
         &self,
         discovered: impl IntoIterator<Item = DiscoveredModule>,
         batch_ids: &HashSet<String>,
         states: &HashMap<String, serde_json::Value>,
+        async_hooks: bool,
     ) -> usize {
         let mut registered_count = 0usize;
         for dm in discovered {
@@ -2947,12 +3153,32 @@ impl Registry {
                 continue;
             }
 
+            if dm.module.as_async_lifecycle().is_some() {
+                let name = dm.name.clone();
+                let result = if async_hooks {
+                    self.load_discovered_with_hooks(dm, states.get(&name).cloned(), None)
+                        .await
+                } else {
+                    Err(async_lifecycle::requires_async_registration(&name))
+                };
+                match result {
+                    Ok(()) => registered_count += 1,
+                    Err(error) => {
+                        tracing::warn!(module_id = name, code = %error.wire_code(), "Discovered module could not load with async hooks");
+                    }
+                }
+                continue;
+            }
+
             // Reserve the ID against the same published state used for
             // conflict and dependency checks. Lock order is core before in_flight.
             let reservation = {
                 let core = self.core.read();
                 if core.closed {
                     break;
+                }
+                if core.check_reload_owner(&dm.name, None).is_err() {
+                    continue;
                 }
                 let existing_ids: HashSet<String> = core.modules.keys().cloned().collect();
                 match detect_id_conflicts(
@@ -3002,10 +3228,12 @@ impl Registry {
             };
 
             // 6. Run on_load WITHOUT any lock held (module NOT yet in core.modules).
-            match dm.module.on_load() {
+            match self.with_callback_scope(|| dm.module.on_load()) {
                 Ok(()) => {
                     if let Some(state) = states.get(&dm.name) {
-                        resume_reloaded_module(&dm.name, dm.module.as_ref(), state.clone());
+                        self.with_callback_scope(|| {
+                            resume_reloaded_module(&dm.name, dm.module.as_ref(), state.clone());
+                        });
                     }
                     // Commit: insert into visible maps, remove from in_flight.
                     let published = {
@@ -3031,16 +3259,14 @@ impl Registry {
                         published
                     };
                     if let Err(error) = published {
-                        dm.module.on_unload();
+                        self.with_callback_scope(|| run_on_unload(&dm.name, dm.module.as_ref()));
                         drop(reservation);
                         self.notify_discovered_load_failed(&dm.name, &error);
                         continue;
                     }
 
                     drop(reservation);
-                    for cb in self.snapshot_callbacks("register") {
-                        cb(&dm.name, dm.module.as_ref());
-                    }
+                    self.notify_callbacks("register", &dm.name, dm.module.as_ref());
                     registered_count += 1;
                 }
                 Err(e) => {

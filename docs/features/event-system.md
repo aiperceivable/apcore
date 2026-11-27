@@ -519,8 +519,24 @@ Event types use dot-namespaced names; the prefix identifies the owner ([§9.16.1
 
 Framework events have the form `apcore.<subsystem>.<event>`:
 
-- `<subsystem>` is the emitting subsystem: `registry`, `module`, `config`, `health`, `approval`, `policy`, `acl`, `stream`, `circuit`, `subscriber`, `event`.
+- `<subsystem>` is the emitting subsystem, such as `registry`, `client`, `module`, `config`, `health`, `approval`, `policy`, `acl`, `stream`, `circuit`, `subscriber`, or `event`.
 - `<event>` is a `snake_case` description of the state transition (`module_registered`, `error_threshold_exceeded`, `updated`).
+
+### Module lifecycle events
+
+Lifecycle events include `operation_id` to correlate with host operation handles and governed reload reports. The event envelope carries the affected `module_id` for Registry events. Subscribe through `EventEmitter`.
+
+| Event type | Transition |
+|---|---|
+| `apcore.registry.module_drain_started` | The generation's admission closes. |
+| `apcore.registry.module_drain_timed_out` | The drain deadline elapses. |
+| `apcore.registry.module_drain_recovered` | Recovery reaches a ready or unavailable outcome. |
+| `apcore.registry.module_reload_failed` | Replacement fails and compensation reaches its outcome. |
+| `apcore.client.shutdown_resources_completed` | A participating client observes Registry teardown and is about to close its own emitter. |
+
+Managed reload failure details are limited to the failed phase, error code, and compensation outcome. Use the operation ID to associate the event with the reload report.
+
+Clients sharing a Registry emit their resources-completed events once each, using the same operation ID. This event describes Registry teardown. Each client's shutdown report carries the final outcome of its own delivery stage. [Canonical severity and payload fields](../spec/protocol-spec.md#9162-canonical-core-event-types)
 
 ### Deprecation: legacy event names
 

@@ -557,6 +557,32 @@ def test_client_reports_system_module_registration_failures(
     assert registry.has("system.health.module") is (not fail_on_error)
 
 
+def test_strict_startup_shuts_down_partially_configured_emitter(monkeypatch: pytest.MonkeyPatch) -> None:
+    registry = Registry()
+    register_internal = registry.register_internal
+    emitters: list[EventEmitter] = []
+    shutdown = EventEmitter.shutdown
+
+    def register(module_id: str, module: object) -> None:
+        if module_id == "system.control.toggle_feature":
+            raise ValueError("test control registration failure")
+        register_internal(module_id, module)
+
+    def record_shutdown(emitter: EventEmitter) -> None:
+        emitters.append(emitter)
+        shutdown(emitter)
+
+    monkeypatch.setattr(registry, "register_internal", register)
+    monkeypatch.setattr(EventEmitter, "shutdown", record_shutdown)
+
+    with pytest.raises(SysModuleRegistrationError) as error:
+        APCore(registry=registry, config=_sys_config(), fail_on_error=True)
+
+    assert error.value.details["module_id"] == "system.control.toggle_feature"
+    assert len(emitters) == 1
+    assert registry.has("system.control.reload_module")
+
+
 class TestEvents:
     def test_on_receives_explicit_dead_letter_event(self) -> None:
         client = APCore(config=_sys_config())

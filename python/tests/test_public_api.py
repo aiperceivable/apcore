@@ -472,6 +472,8 @@ class TestPublicAPIAll:
         "Registry",
         "Executor",
         "APCore",
+        "DrainAbortedContext",
+        "DrainContext",
         "close",
         "call",
         "call_async",
@@ -485,6 +487,14 @@ class TestPublicAPIAll:
         "remove",
         "discover",
         "list_modules",
+        # Lifecycle operations
+        "LifecycleError",
+        "LifecycleModuleReport",
+        "LifecycleOperation",
+        "LifecycleReport",
+        "ReloadOptions",
+        "ShutdownOptions",
+        "UnregisterOptions",
         # Approval
         "ApprovalHandler",
         "ApprovalRequest",

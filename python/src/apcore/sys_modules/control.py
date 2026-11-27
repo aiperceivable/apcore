@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import threading
 import time
 import uuid
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Callable
 
 from apcore.config import Config, _CONSTRAINTS, _DEFAULT_OBS_REDACTION_SENSITIVE_KEYS
 from apcore.utils.pattern import match_glob
@@ -22,6 +23,7 @@ from apcore.errors import (
     ReloadFailedError,
 )
 from apcore.events.emitter import ApCoreEvent, EventEmitter
+from apcore.lifecycle import LifecycleOperation, LifecycleReport, _ReloadDrainAction, _validate_duration
 from apcore.module import ModuleAnnotations
 from apcore.registry.registry import Registry, _RegistrationSnapshot
 from apcore.sys_modules.audit import AuditEntry, AuditStore
@@ -35,6 +37,8 @@ __all__ = [
     "ToggleFeatureModule",
     "ToggleState",
 ]
+
+_RELOAD_MODULE_ID = "system.control.reload_module"
 
 # ---------------------------------------------------------------------------
 # Toggle feature state — shared across ToggleFeatureModule instances
@@ -307,6 +311,53 @@ class UpdateConfigModule:
         return value
 
 
+_RELOAD_REPORT_DEFS: dict[str, Any] = {
+    "lifecycleError": {
+        "type": "object",
+        "required": ["code", "phase"],
+        "additionalProperties": False,
+        "properties": {"code": {"type": "string", "minLength": 1}, "phase": {"type": "string", "minLength": 1}},
+    },
+    "moduleReport": {
+        "type": "object",
+        "required": ["module_id", "phase", "outcome"],
+        "additionalProperties": False,
+        "properties": {
+            "module_id": {"type": "string"},
+            "phase": {"enum": ["pending", "draining", "recovering", "unloading", "loading", "resuming", "done"]},
+            "outcome": {
+                "enum": [
+                    "reloaded",
+                    "retained_ready",
+                    "retained_unavailable",
+                    "failed",
+                    "absent",
+                    "already_removing",
+                    "not_started",
+                ]
+            },
+            "drain_timed_out": {"type": "boolean"},
+            "abort_reason": {"enum": ["drain_timeout", "drain_error"]},
+            "compensation": {"enum": ["not_required", "restored", "failed"]},
+            "error": {"$ref": "#/$defs/lifecycleError"},
+        },
+    },
+    "lifecycleReport": {
+        "type": "object",
+        "required": ["operation_id", "kind", "status", "modules", "event_flush"],
+        "additionalProperties": False,
+        "properties": {
+            "operation_id": {"type": "string", "minLength": 1},
+            "kind": {"const": "reload"},
+            "status": {"enum": ["completed", "failed"]},
+            "modules": {"type": "array", "items": {"$ref": "#/$defs/moduleReport"}},
+            "event_flush": {"const": "not_applicable"},
+            "error": {"$ref": "#/$defs/lifecycleError"},
+        },
+    },
+}
+
+
 class ReloadModule:
     """Hot-reload a module via safe unregister + re-discover (PRD F10).
 
@@ -346,11 +397,32 @@ class ReloadModule:
                 "deprecated": True,
             },
             "reason": {"type": "string", "description": "Audit reason for the reload"},
+            "lifecycle": {
+                "type": "object",
+                "description": "Opt into generation-bound reload and a structured outcome.",
+                "additionalProperties": False,
+                "properties": {
+                    "drain_timeout_ms": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 2147483647,
+                        "default": 5000,
+                        "description": "Monotonic deadline for notification and invocation drain in milliseconds.",
+                    },
+                    "on_drain_timeout": {
+                        "type": "string",
+                        "enum": ["abort_reload", "continue_waiting"],
+                        "default": "abort_reload",
+                        "description": "Recovery or continued waiting when the drain threshold expires.",
+                    },
+                },
+            },
         },
         "required": ["reason"],
     }
     output_schema: dict[str, Any] = {
         "type": "object",
+        "$defs": _RELOAD_REPORT_DEFS,
         "properties": {
             "success": {
                 "type": "boolean",
@@ -373,6 +445,10 @@ class ReloadModule:
                 "type": "array",
                 "items": {"type": "string"},
                 "description": "IDs of the modules reloaded in bulk mode",
+            },
+            "lifecycle_report": {
+                "$ref": "#/$defs/lifecycleReport",
+                "description": "Terminal outcome for reload with explicit lifecycle options.",
             },
         },
         "required": ["success", "module_id"],
@@ -439,6 +515,15 @@ class ReloadModule:
         Raises ModuleReloadConflictError if both module_id and path_filter are given.
         ``reload_dependents`` is accepted and ignored — see :meth:`_warn_reload_dependents`.
         """
+        if "lifecycle" in inputs:
+            try:
+                asyncio.get_running_loop()
+            except RuntimeError:
+                pass
+            else:
+                raise InvalidInputError(message="Call managed reload through the async Executor on an active loop")
+            operation, result = self._start_managed(inputs, context)
+            return result(operation._join_blocking())
         module_id: Any = inputs.get("module_id")
         path_filter: Any = inputs.get("path_filter")
         self._warn_reload_dependents(inputs)
@@ -451,6 +536,106 @@ class ReloadModule:
             return self._execute_bulk(path_filter, reason, context)
 
         return self._execute_single(module_id, reason, context)
+
+    async def _execute_managed(self, inputs: dict[str, Any], context: Any) -> dict[str, Any]:
+        operation, result = self._start_managed(inputs, context)
+        token = getattr(context, "cancel_token", None)
+        current = asyncio.current_task()
+        loop = asyncio.get_running_loop()
+        unsubscribe = (
+            token._listen(lambda: loop.call_soon_threadsafe(current.cancel)) if token is not None and current else None
+        )
+        try:
+            return result(await operation.wait())
+        except asyncio.CancelledError:
+            if token is not None:
+                token.check()
+            raise
+        finally:
+            if unsubscribe is not None:
+                unsubscribe()
+
+    def _start_managed(
+        self, inputs: dict[str, Any], context: Any
+    ) -> tuple[LifecycleOperation, Callable[[LifecycleReport], dict[str, Any]]]:
+        self._warn_reload_dependents(inputs)
+        reason = self._validate_reason(inputs)
+        module_id, path_filter = inputs.get("module_id"), inputs.get("path_filter")
+        if module_id is not None and path_filter is not None:
+            raise ModuleReloadConflictError()
+        options = inputs["lifecycle"]
+        if not isinstance(options, dict) or options.keys() - {"drain_timeout_ms", "on_drain_timeout"}:
+            raise InvalidInputError(message="Invalid lifecycle reload options")
+        duration = options.get("drain_timeout_ms", 5000)
+        if isinstance(duration, float) and duration.is_integer():
+            # JSON Schema integers include integral JSON numbers. Local
+            # lifecycle options still require native Python integers.
+            duration = int(duration)
+        timeout = _validate_duration("drain_timeout_ms", duration)
+        if timeout is None:
+            raise InvalidInputError(message="drain_timeout_ms must be an integer")
+        policy: _ReloadDrainAction = options.get("on_drain_timeout", "abort_reload")
+        if policy not in ("abort_reload", "continue_waiting"):
+            raise InvalidInputError(message="on_drain_timeout must be abort_reload or continue_waiting")
+        if path_filter is not None:
+            if not isinstance(path_filter, str) or not path_filter:
+                raise InvalidInputError(message="'path_filter' must be a non-empty string glob pattern")
+            targets = [target for target in self._registry.module_ids if match_glob(path_filter, target)]
+            if _RELOAD_MODULE_ID in targets:
+                self._reject_self_reload(_RELOAD_MODULE_ID)
+            targets = self._topo_sort_modules(targets)
+        else:
+            if not isinstance(module_id, str) or not module_id:
+                raise InvalidInputError(message="'module_id' is required and must be a non-empty string")
+            self._reject_self_reload(module_id)
+            targets = [module_id]
+        return self._dispatch_managed(targets, module_id, timeout, policy, reason, context)
+
+    def _dispatch_managed(
+        self,
+        targets: list[str],
+        module_id: str | None,
+        timeout: int,
+        policy: _ReloadDrainAction,
+        reason: str,
+        context: Any,
+    ) -> tuple[LifecycleOperation, Callable[[LifecycleReport], dict[str, Any]]]:
+        start = time.monotonic()
+        versions: dict[str, tuple[str, str]] = {}
+
+        def reloaded(target: str, previous: str, updated: str, operation_id: str) -> None:
+            versions[target] = (previous, updated)
+            self._emit_module_reloaded(target, previous, updated, context, operation_id=operation_id)
+            self._log_reload(target, previous, updated, reason)
+            if self._audit_store is not None:
+                self._audit_store.append(
+                    _build_audit_entry(
+                        action="reload_module",
+                        target_module_id=target,
+                        context=context,
+                        change={"before": previous, "after": updated},
+                        correlation_id=operation_id,
+                    )
+                )
+
+        operation = self._registry._start_managed_reload(
+            targets, timeout, policy, reloaded, exact=module_id is not None
+        )
+
+        def result(report: LifecycleReport) -> dict[str, Any]:
+            output: dict[str, Any] = {
+                "success": report.status == "completed",
+                "module_id": module_id,
+                "reload_duration_ms": (time.monotonic() - start) * 1000,
+                "lifecycle_report": report._to_wire(),
+            }
+            if module_id is None:
+                output["reloaded_modules"] = list(versions)
+            elif module_id in versions:
+                output["previous_version"], output["new_version"] = versions[module_id]
+            return output
+
+        return operation, result
 
     # ------------------------------------------------------------------
     # Single-module reload
@@ -506,6 +691,8 @@ class ReloadModule:
 
         all_ids = self._registry.module_ids
         matched = sorted(mid for mid in all_ids if match_glob(path_filter, mid))
+        if _RELOAD_MODULE_ID in matched:
+            self._reject_self_reload(_RELOAD_MODULE_ID)
 
         topo_order = self._topo_sort_modules(matched)
         start = time.monotonic()
@@ -622,6 +809,7 @@ class ReloadModule:
 
     def _replace_module(self, module_id: str) -> tuple[str, str] | None:
         """Drain the existing registration, then migrate its final state."""
+        self._reject_self_reload(module_id)
         detached = self._registry._detach_after_drain(module_id)
         if detached is None:
             return None
@@ -631,7 +819,11 @@ class ReloadModule:
 
         try:
             with self._registry._resume_on_load(module_id, suspended_state):
-                new_module = self._rediscover_module(module_id)
+                hook_loop = previous.hook_loop(previous.module)
+                if hook_loop is None:
+                    new_module = self._rediscover_module(module_id)
+                else:
+                    new_module = self._rediscover_module(module_id, hook_loop=hook_loop)
                 self._reregister_module(module_id, new_module)
         except Exception as exc:
             # D-112 rule 4: restoration is PER MODULE. The bulk operation as a
@@ -647,6 +839,10 @@ class ReloadModule:
         previous_version = previous.metadata.get("version") or "1.0.0"
         return str(previous_version), str(new_version)
 
+    def _reject_self_reload(self, module_id: str) -> None:
+        if module_id == _RELOAD_MODULE_ID and self._registry.has(module_id):
+            raise ReloadFailedError(module_id=module_id, reason="The reload control module cannot reload itself")
+
     # ------------------------------------------------------------------
     # Shared helpers
     # ------------------------------------------------------------------
@@ -659,9 +855,14 @@ class ReloadModule:
             raise InvalidInputError(message="'reason' is required and must be a non-empty string")
         return reason
 
-    def _rediscover_module(self, module_id: str) -> Any:
+    def _rediscover_module(self, module_id: str, *, hook_loop: asyncio.AbstractEventLoop | None = None) -> Any:
         """Re-discover the module source and return a new instance."""
-        self._registry.discover()
+        if hook_loop is None:
+            self._registry.discover()
+        else:
+            self._registry._discover(
+                hook_loop_for=lambda discovered_id: hook_loop if discovered_id == module_id else None
+            )
         module = self._registry.get(module_id)
         if module is None:
             raise RuntimeError(f"Module '{module_id}' was not found after re-discovery")
@@ -702,6 +903,8 @@ class ReloadModule:
         previous_version: str,
         new_version: str,
         context: Any = None,
+        *,
+        operation_id: str | None = None,
     ) -> None:
         """Emit ``apcore.module.reloaded`` (canonical event) with caller identity."""
         data: dict[str, Any] = {
@@ -711,6 +914,8 @@ class ReloadModule:
         }
         # Issue #45.2 — attach requester identity to the audit event payload.
         data.update(_audit_payload_extras(context))
+        if operation_id is not None:
+            data["operation_id"] = operation_id
         self._emitter.emit(
             ApCoreEvent(
                 event_type="apcore.module.reloaded",
@@ -792,6 +997,8 @@ class ToggleFeatureModule:
         """Toggle a module's enabled/disabled state."""
         module_id, enabled, reason = self._validate_inputs(inputs)
         self._check_module_exists(module_id)
+        if not enabled and module_id == "system.control.toggle_feature":
+            raise InvalidInputError(message="The toggle control module cannot disable itself")
 
         before = not self._toggle_state.is_disabled(module_id)
         self._apply_toggle(module_id, enabled)

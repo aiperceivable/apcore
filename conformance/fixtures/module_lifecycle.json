@@ -1,0 +1,387 @@
+{
+  "description": "Public lifecycle operations coordinate admission, state transfer, recovery, teardown, cancellation, and event reporting across the three SDKs.",
+  "test_cases": [
+    {
+      "id": "module_lifecycle.unregister.drains_active_call",
+      "operation": "unregister",
+      "module_id": "lifecycle.counter",
+      "expected": {
+        "removed": true,
+        "new_call_error": "MODULE_NOT_FOUND",
+        "active_output": {"count": 1},
+        "events": ["finish", "unload"]
+      }
+    },
+    {
+      "id": "module_lifecycle.reload.single_transfers_drained_state",
+      "operation": "reload",
+      "module_id": "lifecycle.counter",
+      "expected": {
+        "active_output": {"count": 1},
+        "reload_succeeded": true,
+        "next_output": {"count": 1},
+        "events": ["finish", "suspend", "unload", "resume"]
+      }
+    },
+    {
+      "id": "module_lifecycle.reload.filter_transfers_drained_state",
+      "operation": "reload_bulk",
+      "module_id": "lifecycle.counter",
+      "expected": {
+        "active_output": {"count": 1},
+        "reload_succeeded": true,
+        "next_output": {"count": 1},
+        "events": ["finish", "suspend", "unload", "resume"]
+      }
+    },
+    {
+      "id": "module_lifecycle.shutdown.drains_and_unloads_once",
+      "operation": "shutdown",
+      "module_id": "lifecycle.counter",
+      "expected": {
+        "active_output": {"count": 1},
+        "new_call_error": "MODULE_NOT_FOUND",
+        "events": ["finish", "unload"]
+      }
+    },
+    {
+      "id": "module_lifecycle.batch.keeps_preceding_registrations",
+      "operation": "batch",
+      "module_id": "lifecycle.counter",
+      "other_module_id": "lifecycle.other",
+      "expected": {
+        "batch_error": "DUPLICATE_MODULE_ID",
+        "registered": ["lifecycle.counter"],
+        "removed_items": [true, false, false],
+        "events": ["unload"]
+      }
+    },
+    {
+      "id": "module_lifecycle.batch.drains_each_registration_in_input_order",
+      "operation": "batch_drain",
+      "module_id": "lifecycle.counter",
+      "other_module_id": "lifecycle.control",
+      "expected": {
+        "new_call_error": "MODULE_NOT_FOUND",
+        "other_output_during_drain": {"count": 0},
+        "active_output": {"count": 1},
+        "removed_items": [true, true],
+        "events": ["load:first", "load:second", "finish:first", "unload:first", "unload:second"]
+      }
+    },
+    {
+      "id": "module_lifecycle.control.cannot_disable_toggle",
+      "operation": "toggle_self",
+      "module_id": "system.control.toggle_feature",
+      "expected": {
+        "control_error": "GENERAL_INVALID_INPUT",
+        "registrations_preserved": true,
+        "control_usable": true,
+        "events": []
+      }
+    },
+    {
+      "id": "module_lifecycle.control.cannot_reload_self_exact_id",
+      "operation": "reload_self",
+      "module_id": "system.control.reload_module",
+      "selector": {
+        "module_id": "system.control.reload_module"
+      },
+      "expected": {
+        "control_error": "RELOAD_FAILED",
+        "registrations_preserved": true,
+        "control_usable": true,
+        "events": []
+      }
+    },
+    {
+      "id": "module_lifecycle.control.cannot_reload_self_wildcard",
+      "operation": "reload_self",
+      "module_id": "system.control.reload_module",
+      "selector": {
+        "path_filter": "*"
+      },
+      "expected": {
+        "control_error": "RELOAD_FAILED",
+        "registrations_preserved": true,
+        "control_usable": true,
+        "events": []
+      }
+    },
+    {
+      "id": "module_lifecycle.control.cannot_reload_self_system_glob",
+      "operation": "reload_self",
+      "module_id": "system.control.reload_module",
+      "selector": {
+        "path_filter": "system.*"
+      },
+      "expected": {
+        "control_error": "RELOAD_FAILED",
+        "registrations_preserved": true,
+        "control_usable": true,
+        "events": []
+      }
+    },
+    {
+      "id": "module_lifecycle.managed.shutdown_waiter",
+      "operation": "managed_shutdown_waiter",
+      "module_id": "lifecycle.counter",
+      "drain_timeout_ms": 0,
+      "wait_timeout_ms": 1,
+      "expected": {
+        "wait_status": "pending",
+        "drain_timed_out": true,
+        "new_call_error": "MODULE_NOT_FOUND",
+        "active_output": {
+          "count": 1
+        },
+        "same_operation": true,
+        "final_status": "completed",
+        "outcomes": [
+          "removed"
+        ],
+        "events": [
+          "finish",
+          "unload"
+        ]
+      }
+    },
+    {
+      "id": "module_lifecycle.managed.shutdown_shared",
+      "operation": "managed_shutdown_shared",
+      "module_id": "lifecycle.counter",
+      "drain_timeout_ms": 0,
+      "expected": {
+        "same_operation": true,
+        "conflict_error": "GENERAL_INVALID_INPUT",
+        "final_status": "completed",
+        "outcomes": [
+          "removed"
+        ],
+        "events": [
+          "unload"
+        ]
+      }
+    },
+    {
+      "id": "module_lifecycle.managed.batch_budget",
+      "operation": "managed_batch_budget",
+      "module_id": "lifecycle.counter",
+      "other_module_id": "lifecycle.other",
+      "operation_timeout_ms": 500,
+      "expected": {
+        "wait_status": "pending",
+        "drain_timed_out": true,
+        "other_output_during_drain": {
+          "count": 0
+        },
+        "active_output": {
+          "count": 1
+        },
+        "final_status": "failed",
+        "stop_reason": "operation_deadline",
+        "outcomes": [
+          "removed",
+          "not_started"
+        ],
+        "other_output_after": {
+          "count": 0
+        },
+        "events": [
+          "load:first",
+          "load:second",
+          "finish:first",
+          "unload:first"
+        ]
+      }
+    },
+    {
+      "id": "module_lifecycle.managed.batch_stale_generation",
+      "operation": "managed_batch_stale_generation",
+      "module_id": "lifecycle.counter",
+      "other_module_id": "lifecycle.other",
+      "expected": {
+        "final_status": "completed",
+        "outcomes": [
+          "removed",
+          "absent"
+        ],
+        "replacement_output": {
+          "count": 0
+        },
+        "events": [
+          "load:first",
+          "load:second",
+          "unload:second",
+          "load:replacement",
+          "finish:first",
+          "unload:first"
+        ]
+      }
+    },
+    {
+      "id": "module_lifecycle.phase_b.drain_finishes_call",
+      "operation": "managed_reload_drain",
+      "module_id": "lifecycle.counter",
+      "drain_timeout_ms": 2000,
+      "expected": {
+        "reload_succeeded": true,
+        "report_status": "completed",
+        "outcomes": [
+          "reloaded"
+        ],
+        "active_output": {
+          "count": 1
+        },
+        "next_output": {
+          "count": 1
+        },
+        "events": [
+          "drain",
+          "finish",
+          "suspend",
+          "unload",
+          "load",
+          "resume"
+        ]
+      }
+    },
+    {
+      "id": "module_lifecycle.phase_b.abort_retains_generation",
+      "operation": "managed_reload_abort",
+      "module_id": "lifecycle.counter",
+      "drain_timeout_ms": 0,
+      "expected": {
+        "reload_succeeded": false,
+        "report_status": "failed",
+        "outcomes": [
+          "retained_ready"
+        ],
+        "abort_reason": "drain_timeout",
+        "new_call_error": "MODULE_NOT_FOUND",
+        "active_output": {
+          "count": 1
+        },
+        "next_output": {
+          "count": 1
+        },
+        "events": [
+          "drain",
+          "drain_aborted",
+          "finish"
+        ]
+      }
+    },
+    {
+      "id": "module_lifecycle.phase_b.drain_error_recovers",
+      "operation": "managed_reload_hook_failure",
+      "module_id": "lifecycle.counter",
+      "expected": {
+        "reload_succeeded": false,
+        "report_status": "failed",
+        "outcomes": [
+          "retained_ready"
+        ],
+        "abort_reason": "drain_error",
+        "next_output": {
+          "count": 0
+        },
+        "events": [
+          "drain",
+          "drain_aborted"
+        ]
+      }
+    },
+    {
+      "id": "module_lifecycle.phase_b.replacement_failure_compensates",
+      "operation": "managed_reload_replacement_failure",
+      "module_id": "lifecycle.counter",
+      "expected": {
+        "reload_succeeded": false,
+        "report_status": "failed",
+        "outcomes": [
+          "failed"
+        ],
+        "new_call_error": "MODULE_NOT_FOUND",
+        "compensation": "restored",
+        "primary_error": "MODULE_LOAD_ERROR",
+        "next_output": {
+          "count": 0
+        }
+      }
+    },
+    {
+      "id": "module_lifecycle.phase_b.no_match_has_report",
+      "operation": "managed_reload_no_match",
+      "module_id": "lifecycle.counter",
+      "path_filter": "missing.*",
+      "drain_timeout_ms": 0.0,
+      "expected": {
+        "reload_succeeded": true,
+        "report_status": "completed",
+        "outcomes": [],
+        "report_kind": "reload",
+        "event_flush": "not_applicable",
+        "operation_id_present": true,
+        "reloaded_modules": []
+      }
+    },
+    {
+      "id": "module_lifecycle.phase_b.cancel_scopes",
+      "operation": "managed_force_scope",
+      "module_id": "lifecycle.counter",
+      "other_module_id": "lifecycle.other",
+      "drain_timeout_ms": 0,
+      "cancel_grace_ms": 0,
+      "expected": {
+        "target_cancel_error": "EXECUTION_CANCELLED",
+        "parent_cancelled": false,
+        "other_output_after": {
+          "count": 1
+        },
+        "final_status": "completed",
+        "unload_count": 1
+      }
+    },
+    {
+      "id": "module_lifecycle.phase_b.shutdown_event",
+      "operation": "managed_shutdown_event",
+      "module_id": "lifecycle.counter",
+      "expected": {
+        "final_status": "completed",
+        "event_flush": "completed",
+        "event_count": 1,
+        "event_matches_operation": true,
+        "events": [
+          "unload"
+        ]
+      }
+    },
+    {
+      "id": "module_lifecycle.phase_b.drain_finishes_stream",
+      "operation": "managed_reload_stream",
+      "module_id": "lifecycle.counter",
+      "drain_timeout_ms": 2000,
+      "expected": {
+        "reload_succeeded": true,
+        "report_status": "completed",
+        "outcomes": ["reloaded"],
+        "chunks": [{"count": 1}],
+        "next_output": {"count": 1},
+        "events": ["drain", "stream_finished", "suspend", "unload", "load", "resume"]
+      }
+    },
+    {
+      "id": "module_lifecycle.phase_b.approval_denied_preserves_generation",
+      "operation": "managed_reload_denied",
+      "module_id": "lifecycle.counter",
+      "drain_timeout_ms": 0,
+      "expected": {
+        "control_error": "APPROVAL_DENIED",
+        "next_output": {"count": 1},
+        "lifecycle_event_count": 0,
+        "events": []
+      }
+    }
+  ]
+}
