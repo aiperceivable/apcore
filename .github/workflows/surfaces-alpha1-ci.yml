@@ -1,0 +1,21 @@
+name: Surfaces alpha.1 verification
+
+on:
+  push:
+    branches: [codex/core-alpha1]
+    paths: [.github/workflows/surfaces-alpha1-ci.yml]
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  verify:
+    uses: aiperceivable/apcore-surfaces/.github/workflows/core-candidate.yml@6bf595616fed0c7dd8a198584429bd3bf06d967c
+    with:
+      core_run_id: '45933698251'
+      core_sha: b28e1bfd01b804c8662e9e418d8487d0e08cc0ce
+      surfaces_sha: 6bf595616fed0c7dd8a198584429bd3bf06d967c
+      python_sha256: 9a7de3440413cf891ec2efb4a634350efbbf28659734ddad1c28db70182e7bff
+      npm_sha256: 833e1f2e4c9328c0c4192c02d9e2c8bfbb62ae651fddd62980b448c41d5842db
+      rust_sha256: bbc1db3680f3d81b7096fa5eb70476a2c043b333681c2a7bba3597a49bbf11f6
