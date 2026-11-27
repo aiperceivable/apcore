@@ -164,7 +164,10 @@ pub use pipeline_config::{
     build_strategy_from_config, build_strategy_from_config_with_toggle, register_step_type,
     registered_step_types, unregister_step_type,
 };
-pub use policy::{ExecutionPolicy, PolicyDecision, PolicyRule};
+pub use policy::{
+    ExecutionPolicy, PolicyDecision, PolicyEffect, PolicyEvaluationRequest, PolicyEvaluator,
+    PolicyRule, PolicyVerdict,
+};
 pub use registry::registry::{
     is_ephemeral_module_id, module_id_pattern, registry_events, Registry, RegistryEvents,
     DEFAULT_MODULE_VERSION, EPHEMERAL_NAMESPACE_PREFIX, MAX_MODULE_ID_LENGTH, MODULE_ID_PATTERN,

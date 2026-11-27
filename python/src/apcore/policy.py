@@ -22,19 +22,56 @@ required but no ApprovalHandler is configured.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
 
 from apcore.context import _APPROVAL_TOKEN_KEY
 from apcore.utils.pattern import calculate_specificity, match_pattern
 
 if TYPE_CHECKING:  # pragma: no cover - import cycle guard, types only
-    from apcore.context import Context
+    from apcore.context import Context, Identity
 
-__all__ = ["PolicyRule", "PolicyDecision", "ExecutionPolicy", "strip_approval_token"]
+__all__ = [
+    "PolicyRule",
+    "PolicyDecision",
+    "ExecutionPolicy",
+    "PolicyEvaluationRequest",
+    "PolicyEvaluator",
+    "PolicyVerdict",
+    "strip_approval_token",
+]
 
 _POLICY_KEYS = {"rules", "gate_destructive", "strict"}
 _RULE_KEYS = {"pattern", "requires_approval", "destructive", "reason"}
+
+
+@dataclass(frozen=True)
+class PolicyEvaluationRequest:
+    """Detached, validated invocation inputs for a trusted policy evaluator."""
+
+    module_id: str
+    module_version: str | None
+    caller_id: str | None
+    identity: Identity | None = field(repr=False)
+    arguments: dict[str, Any] = field(repr=False)
+    sensitive_fields: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class PolicyVerdict:
+    """A decision and an optional static identifier for the matched rule."""
+
+    decision: Literal["allow", "deny", "require_approval"]
+    rule_id: str | None = None
+
+
+@runtime_checkable
+class PolicyEvaluator(Protocol):
+    """A host-provided post-validation policy evaluator."""
+
+    async def evaluate(self, request: PolicyEvaluationRequest) -> PolicyVerdict:
+        """Evaluate the selected module and its validated arguments."""
+        ...
 
 
 @dataclass(frozen=True)

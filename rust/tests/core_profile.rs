@@ -14,6 +14,7 @@ use serde_json::{json, Value};
 
 #[path = "conformance_env.rs"]
 mod conformance_env;
+mod post_validation_policy;
 
 #[derive(Default)]
 struct Report {

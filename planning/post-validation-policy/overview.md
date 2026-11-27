@@ -4,7 +4,7 @@
 
 Gap 1 is the first milestone after the alpha.2 Core profile and fail-closed approval changes. This proposal evaluates policy on the arguments that the selected module will receive and uses one bound approval for those arguments when an evaluator is installed.
 
-Core starts from `ea1c147` and Surfaces from `fc1a52c`. Both main-branch CI runs passed. The proposed contract awaits maintainer approval before normative changes and SDK implementation.
+Core starts from `ea1c147` and Surfaces from `fc1a52c`. Both main-branch CI runs passed. The maintainer approved the opted-in gate and protocol draft revision 2.
 
 Targeted approval baselines passed on the merged Core tree. Python passed 129 cases, TypeScript passed 86, and Rust passed 112 with two existing ignored cases. A Python public-entry probe confirmed the design conflict. Step 5 saw the submitted value `10` and rejected a test credential scoped to the value `20` before middleware could normalize the input.
 
@@ -24,16 +24,16 @@ Python with pytest, TypeScript with Vitest and pnpm, Rust with Cargo and Tokio, 
 
 | Phase | Task | Scope | Status |
 |---|---|---|---|
-| 1 | [Shared contract](./tasks/shared-contract.md) | Maintainer decision, draft, and conformance expectations | Pending |
-| 2 | [Python](./tasks/python.md) | Python SDK implementation and tests | Pending |
-| 2 | [TypeScript](./tasks/typescript.md) | Portable and full SDK implementations and tests | Pending |
-| 2 | [Rust](./tasks/rust.md) | Default and full SDK implementations and tests | Pending |
-| 3 | [Surfaces](./tasks/surfaces.md) | Scoped approval storage and MCP transport verification | Pending |
-| 4 | [Integration](./tasks/integration.md) | Candidate packages, cross-language tests, and compatibility review | Pending |
+| 1 | [Shared contract](./tasks/shared-contract.md) | Maintainer decision, draft, and conformance expectations | Complete |
+| 2 | [Python](./tasks/python.md) | Python SDK implementation and tests | Complete |
+| 2 | [TypeScript](./tasks/typescript.md) | Portable and full SDK implementations and tests | Complete |
+| 2 | [Rust](./tasks/rust.md) | Default and full SDK implementations and tests | Complete |
+| 3 | [Surfaces](./tasks/surfaces.md) | Scoped approval storage and MCP transport verification | In progress |
+| 4 | [Integration](./tasks/integration.md) | Candidate packages, cross-language tests, and compatibility review | In progress |
 
 ## Progress
 
-Six tasks are pending. The three SDK tasks can run in parallel after the shared contract and fixtures are ready.
+All three SDKs pass the shared fixture. Cross-repository verification uses built Core distributions.
 
 ## Reference Documents
 

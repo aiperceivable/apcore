@@ -8,6 +8,7 @@ import { ModuleError, ModuleTimeoutError } from './errors.js';
 import type { ErrorOptions } from './errors.js';
 import { MiddlewareChainError } from './middleware/manager.js';
 import { matchPattern } from './utils/pattern.js';
+import { policyInvocationOf } from './policy-evaluation.js';
 
 // ---------------------------------------------------------------------------
 // Step interface
@@ -1059,6 +1060,8 @@ export class PipelineEngine {
   ): AsyncGenerator<void, PipelineOutcome, void> {
     const pipelineStart = performance.now();
     const steps = strategy.steps;
+    const policyInvocation = policyInvocationOf(ctx);
+    const isDryRun = () => policyInvocation?.preflight ?? ctx.dryRun === true;
     const trace: PipelineTrace = {
       moduleId: ctx.moduleId,
       strategyName: strategy.name,
@@ -1073,7 +1076,7 @@ export class PipelineEngine {
     let paused = false;
     const completedStep = (stepName: string): boolean => {
       stepOutputs[stepName] = ctx.output != null ? { ...ctx.output } : null;
-      if (!ctx.runUntil?.({ stepName, outputs: stepOutputs, context: ctx })) return false;
+      if (policyInvocation || !ctx.runUntil?.({ stepName, outputs: stepOutputs, context: ctx })) return false;
       trace.totalDurationMs = performance.now() - pipelineStart;
       trace.success = true;
       return true;
@@ -1094,7 +1097,7 @@ export class PipelineEngine {
       if (stepMatchModules !== null) {
         const matched = stepMatchModules.some((pattern) => matchPattern(pattern, ctx.moduleId));
         if (!matched) {
-          if (ctx.dryRun) {
+          if (isDryRun()) {
             for (const key of step.provides ?? []) failedProvides.add(key);
           }
           trace.steps.push({
@@ -1111,7 +1114,7 @@ export class PipelineEngine {
       }
 
       // 2 dry_run filter: skip steps with side effects
-      if (ctx.dryRun && !stepPure) {
+      if (isDryRun() && !stepPure) {
         // Capabilities are declarations, not necessarily context attributes.
         for (const key of step.provides ?? []) failedProvides.add(key);
         trace.steps.push({
@@ -1125,7 +1128,7 @@ export class PipelineEngine {
         idx += 1;
         continue;
       }
-      if (ctx.dryRun && (step.requires ?? []).some((key) => failedProvides.has(key))) {
+      if (isDryRun() && (step.requires ?? []).some((key) => failedProvides.has(key))) {
         trace.steps.push({ name: step.name, durationMs: 0, result: { action: 'continue' },
           skipped: true, decisionPoint: false, skipReason: 'missing_dependency' });
         for (const key of step.provides ?? []) failedProvides.add(key);
@@ -1151,7 +1154,7 @@ export class PipelineEngine {
       //     middlewares only, in reverse order.
       const executedStepMws: StepMiddleware[] = [];
       let chainError: MiddlewareChainError | null = null;
-      for (const mw of ctx.dryRun ? [] : this._stepMiddlewares) {
+      for (const mw of isDryRun() ? [] : this._stepMiddlewares) {
         executedStepMws.push(mw);
         if (!mw.beforeStep) continue;
         try {
@@ -1233,7 +1236,7 @@ export class PipelineEngine {
       } catch (exc) {
         const durationMs = performance.now() - stepStart;
         const cause = exc instanceof Error ? exc : new Error(String(exc));
-        if (ctx.dryRun) {
+        if (isDryRun()) {
           // D-134: report every evaluable pure check without converting a
           // failed check into successful recovery output.
           trace.steps.push({ name: step.name, durationMs,
@@ -1247,7 +1250,8 @@ export class PipelineEngine {
 
         // 3 b onStepError hooks: reverse registration order (onion model),
         //     first non-null recovery wins and short-circuits the rest (§2.2).
-        const isGovernanceGate = governanceGateOf(step) !== null;
+        const isGovernanceGate = governanceGateOf(step) !== null ||
+          (policyInvocation !== undefined && !policyInvocation.dispatched);
         const observedCancellation = observeStep !== undefined &&
           cause instanceof ModuleError && cause.code === 'EXECUTION_CANCELLED';
         let recovery: unknown;
@@ -1343,7 +1347,7 @@ export class PipelineEngine {
         skipped: false,
         decisionPoint: result.confidence != null,
       });
-      if (ctx.dryRun) {
+      if (isDryRun()) {
         if (result.action === 'abort') {
           for (const key of step.provides ?? []) failedProvides.add(key);
         } else {
@@ -1368,6 +1372,7 @@ export class PipelineEngine {
           trace,
         );
       } else if (result.action === 'skip_to') {
+        if (policyInvocation) throw new ConfigurationError('A policy-enabled pipeline cannot skip steps.');
         const target = result.skipTo ?? '';
         // The strategy may be edited by the host while an invocation is paused.
         const targetIdx = steps === strategy.steps

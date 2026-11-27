@@ -1,6 +1,6 @@
 # Post-validation Policy Implementation Plan
 
-Status: proposed. Maintainer approval is pending for the approval timing and protocol draft revision. This plan records the proposed behavior and test gates.
+The maintainer approved the opted-in approval timing and an increment of the protocol draft revision under 2.0.0. This plan records the implementation and test gates.
 
 ## Goal
 

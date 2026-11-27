@@ -145,6 +145,8 @@ from apcore.errors import (
     ModuleNotFoundError,
     ModuleReloadConflictError,
     ModuleTimeoutError,
+    PolicyDeniedError,
+    PolicyEvaluationError,
     ReloadFailedError,
     SysModuleRegistrationError,
     SysModulesDisabledError,
@@ -169,7 +171,14 @@ from apcore.acl import (
 )
 
 # Execution-time governance policy (apcore#76 RFC pilot)
-from apcore.policy import ExecutionPolicy, PolicyDecision, PolicyRule
+from apcore.policy import (
+    ExecutionPolicy,
+    PolicyDecision,
+    PolicyEvaluationRequest,
+    PolicyEvaluator,
+    PolicyRule,
+    PolicyVerdict,
+)
 
 # Middleware
 from apcore.middleware import (
@@ -596,6 +605,11 @@ __all__ = [
     "Context",
     "ErrorCodes",
     "ExecutionPolicy",
+    "PolicyDeniedError",
+    "PolicyEvaluationError",
+    "PolicyEvaluationRequest",
+    "PolicyEvaluator",
+    "PolicyVerdict",
     "ExecutionStrategy",
     "Executor",
     "Identity",

@@ -119,6 +119,8 @@ pub enum BuiltinGate {
     Acl,
     /// The built-in approval gate (`approval_gate`).
     Approval,
+    /// The opt-in post-validation policy and final-scope approval gate.
+    PostValidationPolicy,
 }
 
 /// A single unit of work in the execution pipeline.
@@ -126,7 +128,7 @@ pub enum BuiltinGate {
 /// Step implementations receive their configuration via constructor — the trait
 /// only defines the `execute()` contract and metadata accessors.
 #[async_trait]
-pub trait Step: Send + Sync {
+pub trait Step: Send + Sync + std::any::Any {
     /// Unique identifier within a strategy (e.g. "`acl_check`").
     fn name(&self) -> &str;
 
@@ -308,6 +310,11 @@ pub struct PipelineContext {
     /// from the strategy — absence of the gate is not a requirement.
     pub acl_approval_required: bool,
     pub(crate) acl_decision: Option<crate::acl::AccessDecision>,
+    pub(crate) policy_evaluator: Option<Arc<dyn crate::policy::PolicyEvaluator>>,
+    pub(crate) policy_approval_annotations: Option<crate::module::ModuleAnnotations>,
+    pub(crate) policy_effect: Option<crate::policy::PolicyEffect>,
+    pub(crate) policy_inputs: Option<serde_json::Value>,
+    pub(crate) policy_sensitive_fields: Vec<String>,
     /// Set by `input_validation` step.
     pub validated_inputs: Option<serde_json::Value>,
     /// Set by `execute` step (non-streaming).
@@ -396,6 +403,11 @@ impl PipelineContext {
             governance_projection: None,
             acl_approval_required: false,
             acl_decision: None,
+            policy_evaluator: None,
+            policy_approval_annotations: None,
+            policy_effect: None,
+            policy_inputs: None,
+            policy_sensitive_fields: Vec::new(),
             validated_inputs: None,
             output: None,
             stream: None,
@@ -443,6 +455,24 @@ impl PipelineContext {
 
     pub(crate) fn discard_approval_credential(&mut self) -> bool {
         self.approval_credential.take().is_some()
+    }
+
+    pub(crate) fn has_approval_credential(&self) -> bool {
+        self.approval_credential.is_some()
+    }
+
+    pub(crate) fn bind_policy_inputs(&mut self) -> Result<(), ModuleError> {
+        if self.policy_evaluator.is_some() {
+            let Some(arguments) = self.policy_inputs.take() else {
+                self.terminal_gate_failure = true;
+                return Err(ModuleError::new(
+                    ErrorCode::PipelineConfigurationError,
+                    "Execution requires the final-scope policy check",
+                ));
+            };
+            self.inputs = arguments;
+        }
+        Ok(())
     }
 
     pub(crate) fn declared_module_annotations(&self) -> Option<crate::module::ModuleAnnotations> {
@@ -688,8 +718,7 @@ impl Step for NeutralisedGate {
         false
     }
     fn pure(&self) -> bool {
-        // The built-in values: the ACL gate is pure, the approval gate is not.
-        self.gate == BuiltinGate::Acl
+        self.gate != BuiltinGate::Approval
     }
     fn timeout_ms(&self) -> u64 {
         self.inner.timeout_ms()
@@ -1324,6 +1353,8 @@ impl PipelineEngine {
             let step_timeout_ms = step.timeout_ms();
             if ctx.dry_run
                 && ((ctx.module.is_none() && step.requires().contains(&"module"))
+                    || (step.builtin_gate() == Some(BuiltinGate::PostValidationPolicy)
+                        && !ctx.preflight_errors.is_empty())
                     || step
                         .requires()
                         .iter()
@@ -1407,6 +1438,9 @@ impl PipelineEngine {
                 }
             }
             if let Some(err) = before_err {
+                if step.builtin_gate() == Some(BuiltinGate::PostValidationPolicy) {
+                    ctx.terminal_gate_failure = true;
+                }
                 // Spec: "Step middleware errors raised from `before_step`
                 // itself (not from the step body) MUST be wrapped in
                 // `MiddlewareChainError`, identical to the module-level
@@ -1500,7 +1534,7 @@ impl PipelineEngine {
                         idx += 1;
                         continue;
                     }
-                    let is_gate = step.builtin_gate().is_some();
+                    let is_gate = step.builtin_gate().is_some() || ctx.terminal_gate_failure;
                     let recovery = if is_gate {
                         ctx.terminal_gate_failure = true;
                         observe_step_error_hooks(
@@ -1585,6 +1619,9 @@ impl PipelineEngine {
             .await
             .err();
             if let Some(err) = after_err {
+                if step.builtin_gate() == Some(BuiltinGate::PostValidationPolicy) {
+                    ctx.terminal_gate_failure = true;
+                }
                 ctx.trace.steps.push(StepTrace {
                     name: step_name_for_hooks.clone(),
                     duration_ms,

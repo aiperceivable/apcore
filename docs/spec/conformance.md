@@ -326,7 +326,7 @@ The following requirements are not met by the SDK implementations in this reposi
 
 ## 8. Conformance Test Fixtures
 
-The repository ships **98 cross-language fixture files** under `conformance/fixtures/` covering **1229 test cases**. `conformance-integrity` checks these two numbers, §8.1's per-fixture counts and its Total row against the fixtures themselves. Each fixture is consumed by all three SDK test runners (§5.2). An SDK declaring a conformance level **MUST** pass every fixture whose tested feature is required at that level (§5.3).
+The repository ships **99 cross-language fixture files** under `conformance/fixtures/` covering **1238 test cases**. `conformance-integrity` checks these two numbers, §8.1's per-fixture counts and its Total row against the fixtures themselves. Each fixture is consumed by all three SDK test runners (§5.2). An SDK declaring a conformance level **MUST** pass every fixture whose tested feature is required at that level (§5.3).
 
 ### 8.1 Fixture Inventory
 
@@ -369,6 +369,7 @@ The repository ships **98 cross-language fixture files** under `conformance/fixt
 | [`error_codes`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/error_codes.json) | 19 | Error code collision detection (Algorithm A17, spec §8.4) |
 | [`error_details_shape`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/error_details_shape.json) | 5 | `SCHEMA_VALIDATION_ERROR` details items are `{path, keyword, message}` with a JSON Pointer path; `details` keys are snake_case (spec §8.1, D-149) |
 | [`core_profile_governance`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/core_profile_governance.json) | 8 | Core Profile governance defaults and explicit overrides through public preflight and execution, including an injected Executor (spec §7.4 and §7.9) |
+| [`post_validation_policy`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/post_validation_policy.json) | 9 | Final argument policy, combined approval requirements, scoped resumption and stream producer gating (spec §7.4.1) |
 | [`ephemeral_modules`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/ephemeral_modules.json) | 7 | `ephemeral.*`: one audit event per register / unregister under the standard bootstrap, the bare ID `ephemeral`, `INVALID_MODULE_ID` rejections (spec §2.5.1, D-148) |
 | [`error_fingerprinting`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/error_fingerprinting.json) | 6 | Error fingerprint = SHA-256 of `code:module_id:normalized_message` for ErrorHistory dedup |
 | [`error_recovery_metadata`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/error_recovery_metadata.json) | 22 | `retryable` / `ai_guidance` / `user_fixable` / `suggestion` recovery metadata (spec §8) |
@@ -430,7 +431,7 @@ The repository ships **98 cross-language fixture files** under `conformance/fixt
 | [`usage_contract`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/usage_contract.json) | 11 | `system.usage.*` value semantics no schema can assert (spec §6.7.1) |
 | [`usage_exporter`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/usage_exporter.json) | 3 | `UsageExporter` push interface (D-55) |
 | [`version_negotiation`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/version_negotiation.json) | 12 | Version negotiation (Algorithm A14) |
-| **Total** | **1229** | **98 fixtures** |
+| **Total** | **1238** | **99 fixtures** |
 
 ### 8.2 Loading Fixtures from a Test Runner
 

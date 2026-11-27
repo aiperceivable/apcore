@@ -19,7 +19,12 @@ from typing import TYPE_CHECKING, Any, Callable
 from apcore._sync_bridge import _SyncBridge
 from apcore.acl import ACL
 from apcore.approval import ApprovalHandler
-from apcore.builtin_steps import BuiltinContextCreation, BuiltinModuleLookup, _is_idempotent
+from apcore.builtin_steps import (
+    BuiltinContextCreation,
+    BuiltinModuleLookup,
+    _bind_post_validation_policy,
+    _is_idempotent,
+)
 from apcore.cancel import CancelToken, ExecutionCancelledError
 from apcore.config import Config
 from apcore.context import Context
@@ -35,6 +40,7 @@ from apcore.errors import (
     ModuleError,
     ModuleNotFoundError,
     ModuleTimeoutError,
+    PolicyEvaluationError,
     SchemaValidationError,
 )
 from apcore.utils.error_propagation import propagate_error
@@ -54,7 +60,7 @@ from apcore.module import (
     PreviewResult,
 )
 
-from apcore.policy import ExecutionPolicy, strip_approval_token
+from apcore.policy import ExecutionPolicy, PolicyEvaluator, strip_approval_token
 from apcore.pipeline import (
     AbortReason,
     ExecutionStrategy,
@@ -296,6 +302,7 @@ class Executor:
         config: Config | None = None,
         approval_handler: ApprovalHandler | None = None,
         policy: ExecutionPolicy | None = None,
+        policy_evaluator: PolicyEvaluator | None = None,
         event_emitter: Any = None,
         toggle_state: Any = None,
         sync_bridge_timeout_ms: int | None = None,
@@ -314,6 +321,7 @@ class Executor:
             approval_handler: Optional approval handler for Step 5 gate.
             policy: Optional ExecutionPolicy with execution-time governance
                 overrides for the Step 5 gate (apcore#76 RFC pilot).
+            policy_evaluator: Optional evaluator for the validated invocation.
             event_emitter: Optional EventEmitter. When provided, the executor
                 emits apcore.stream.post_validation_failed events so
                 post-stream failures (which cannot un-send already-yielded
@@ -389,6 +397,7 @@ class Executor:
         # instance never received them, so a deny-all ACL let every call through
         # while governance_state() reported the gate as configured and wired.
         self._strategy = self._bind_providers(self._strategy)
+        self.set_policy_evaluator(policy_evaluator)
 
         self._pipeline_engine = PipelineEngine()
 
@@ -425,6 +434,7 @@ class Executor:
         config: Config | None = None,
         approval_handler: ApprovalHandler | None = None,
         policy: ExecutionPolicy | None = None,
+        policy_evaluator: PolicyEvaluator | None = None,
         sync_bridge_timeout_ms: int | None = None,
     ) -> Executor:
         """Convenience factory for creating an Executor from a Registry.
@@ -437,6 +447,7 @@ class Executor:
             config: Optional configuration.
             approval_handler: Optional approval handler.
             policy: Optional execution-time governance policy (apcore#76).
+            policy_evaluator: Optional evaluator for the validated invocation.
             sync_bridge_timeout_ms: Optional wait limit for the sync thread bridge.
 
         Returns:
@@ -450,6 +461,7 @@ class Executor:
             config=config,
             approval_handler=approval_handler,
             policy=policy,
+            policy_evaluator=policy_evaluator,
             sync_bridge_timeout_ms=sync_bridge_timeout_ms,
         )
 
@@ -591,6 +603,14 @@ class Executor:
         for step in self._strategy.steps:
             if isinstance(step, BuiltinApprovalGate):
                 step.set_policy(policy)
+
+    def set_policy_evaluator(self, evaluator: PolicyEvaluator | None) -> None:
+        """Install the evaluator for future invocations, or remove it with None."""
+        if evaluator is not None:
+            if not isinstance(evaluator, PolicyEvaluator) or not callable(evaluator.evaluate):
+                raise InvalidInputError("Policy evaluator must implement evaluate()")
+            _bind_post_validation_policy(self._strategy, evaluator)
+        self._policy_evaluator = evaluator
 
     def use(self, middleware: Middleware) -> Executor:
         """Add class-based middleware with duplicate detection and return self for chaining."""
@@ -745,6 +765,7 @@ class Executor:
         inputs = business_inputs if business_inputs is not None else {}
 
         checks: list[PreflightCheckResult] = []
+        evaluator = self._policy_evaluator
 
         # Check 0: module_id format (before pipeline)
         try:
@@ -780,11 +801,15 @@ class Executor:
             context=context,
             dry_run=True,
             version_hint=version_hint,
+            _policy_enabled=evaluator is not None,
         )
 
         trace = None
         try:
-            _, trace = await self._pipeline_engine.run(self._strategy, pipe_ctx)
+            strategy = self._strategy
+            if evaluator is not None:
+                strategy = _bind_post_validation_policy(strategy, evaluator)
+            _, trace = await self._pipeline_engine.run(strategy, pipe_ctx)
         except PipelineAbortError as e:
             trace = e.pipeline_trace
         except PipelineStepError as e:
@@ -840,8 +865,8 @@ class Executor:
         # now reading the union, would stop the call the preflight waved
         # through. That disagreement is the one thing this method exists to
         # prevent.
-        requires_approval = False
-        if pipe_ctx.module is not None:
+        requires_approval = bool(pipe_ctx._policy_requires_approval)
+        if evaluator is None and pipe_ctx.module is not None:
             annotations = governance_union(
                 getattr(pipe_ctx.module, "annotations", None),
                 pipe_ctx.declared_annotations,
@@ -888,10 +913,11 @@ class Executor:
         acl_denied = (acl_enforced and not pipe_ctx._acl_allowed) or any(
             c.check == _ACL_CHECK and not c.passed for c in checks
         )
+        can_disclose = not acl_denied and (evaluator is None or pipe_ctx._policy_requires_approval is not None)
 
         # Module-level preflight (optional)
         if (
-            not acl_denied
+            can_disclose
             and pipe_ctx.module is not None
             and hasattr(pipe_ctx.module, "preflight")
             and callable(pipe_ctx.module.preflight)
@@ -923,7 +949,7 @@ class Executor:
         # than failing validation. This mirrors preflight() exception semantics.
         predicted_changes: list[Change] = []
         if (
-            not acl_denied
+            can_disclose
             and pipe_ctx.module is not None
             and hasattr(pipe_ctx.module, "preview")
             and callable(pipe_ctx.module.preview)
@@ -1053,6 +1079,9 @@ class Executor:
     ) -> tuple[dict[str, Any], PipelineTrace]:
         self._validate_module_id(module_id)
         effective_strategy = self._effective_strategy(strategy)
+        evaluator = self._policy_evaluator
+        if evaluator is not None:
+            effective_strategy = _bind_post_validation_policy(effective_strategy, evaluator)
         if context is None:
             context = Context.create()
         context.bind_executor(self)
@@ -1072,6 +1101,7 @@ class Executor:
                     version_hint=version_hint,
                     invocation_deadline=invocation_deadline,
                     execution_scope=execution_scope,
+                    _policy_enabled=evaluator is not None,
                 )
                 try:
                     output, trace = await self._pipeline_engine.run(effective_strategy, pipe_ctx)
@@ -1148,9 +1178,9 @@ class Executor:
         cancelled = self._unwrap_cancellation(exc)
         if cancelled is not None:
             raise cancelled
-        recoverable = True
+        recoverable = not pipe_ctx._policy_pending
         if isinstance(exc, PipelineStepError):
-            recoverable = exc.recoverable
+            recoverable = recoverable and exc.recoverable
             if isinstance(exc.cause, Exception):
                 exc = exc.cause
         ctx_obj = pipe_ctx.context
@@ -1230,7 +1260,12 @@ class Executor:
         def source(observation: _StreamObservation, scope: AsyncExitStack) -> AsyncGenerator[dict[str, Any], None]:
             return self._stream(module_id, inputs, context, version_hint, scope, observation)
 
-        def timeout_error(pipeline: PipelineContext | None) -> ModuleTimeoutError:
+        def timeout_error(pipeline: PipelineContext | None) -> ModuleError:
+            if pipeline is not None and pipeline._policy_evaluation_active:
+                token = pipeline.context.cancel_token
+                if token is not None and token.is_cancelled:
+                    return ExecutionCancelledError()
+                return PolicyEvaluationError()
             return self._stream_timeout_error(module_id, pipeline)
 
         return StreamExecution(
@@ -1247,6 +1282,10 @@ class Executor:
         observation: _StreamObservation,
     ) -> AsyncGenerator[dict[str, Any], None]:
         self._validate_module_id(module_id)
+        evaluator = self._policy_evaluator
+        strategy = self._strategy
+        if evaluator is not None:
+            strategy = _bind_post_validation_policy(strategy, evaluator)
 
         # PROTOCOL_SPEC §"Contract: Executor binding to Context": bind self
         # to the Context before pipeline step 1.
@@ -1265,16 +1304,17 @@ class Executor:
             stream=True,
             execution_scope=execution_scope,
             _stream_observation=observation,
+            _policy_enabled=evaluator is not None,
         )
         observation.context = pipe_ctx
-        observation.steps = self._strategy.step_names()
+        observation.steps = strategy.step_names()
         observation.monitor(context)
         self._check_stream_context(pipe_ctx)
 
         # Phase 1: Run pipeline up to execute step.
         # BuiltinExecute detects ctx.stream=True and checks for module.stream().
         try:
-            await self._pipeline_engine.run(self._strategy, pipe_ctx)
+            await self._pipeline_engine.run(strategy, pipe_ctx)
         except PipelineAbortError as e:
             raise self._translate_abort(e) from e
         except PipelineStepError as e:
@@ -1383,9 +1423,7 @@ class Executor:
         self._check_stream_context(pipe_ctx)
         pipe_ctx.output = accumulated
         observation.start_post_processing()
-        post_steps = [
-            s for s in self._strategy.steps if s.name in ("output_validation", "middleware_after", "return_result")
-        ]
+        post_steps = [s for s in strategy.steps if s.name in ("output_validation", "middleware_after", "return_result")]
         if post_steps:
             # The post-stream sub-strategy is a slice of an already-validated
             # parent strategy; its ``requires`` keys (e.g. ``module``,
@@ -1394,7 +1432,7 @@ class Executor:
             # dependency check that would otherwise reject the slice.
             post_strategy = ExecutionStrategy("post_stream", post_steps, validate_dependencies=False)
             if observation.captures_completion:
-                post_strategy.step_middlewares.extend(self._strategy.step_middlewares)
+                post_strategy.step_middlewares.extend(strategy.step_middlewares)
             try:
                 await self._pipeline_engine.run(post_strategy, pipe_ctx)
             except Exception as post_exc:

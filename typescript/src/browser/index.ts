@@ -98,6 +98,8 @@ export {
   ApprovalDeniedError,
   ApprovalTimeoutError,
   ApprovalPendingError,
+  PolicyDeniedError,
+  PolicyEvaluationError,
   ModuleNotFoundError,
   ModuleDisabledError,
   ModuleTimeoutError,

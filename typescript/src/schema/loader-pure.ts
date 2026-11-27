@@ -14,6 +14,7 @@ import { Value } from '@sinclair/typebox/value';
 import { applicatorFailure, containsNeedsEvaluator, hasApplicatorKeyword } from './applicators.js';
 import { SchemaCircularRefError, SchemaNotFoundError } from '../errors.js';
 import { compareCodePoints } from '../utils/compare-code-points.js';
+import { sha256Hex } from '../utils/sha256.js';
 import {
   createRedactionReferenceContext,
   resolveLocalSchemaReference,
@@ -49,27 +50,7 @@ export function sortedKeysStringify(obj: unknown): string {
  * (Node-only sync variant) and the Python/Rust SDKs (sync finding A-D-033).
  */
 export async function contentHashAsync(schema: unknown): Promise<string> {
-  const canonical = sortedKeysStringify(schema);
-  type WebCryptoSubtle = {
-    digest(algo: string, data: ArrayBuffer | ArrayBufferView): Promise<ArrayBuffer>;
-  };
-  const subtle: WebCryptoSubtle | undefined =
-    typeof globalThis !== 'undefined'
-      ? (globalThis as { crypto?: { subtle?: WebCryptoSubtle } }).crypto?.subtle
-      : undefined;
-  if (!subtle) {
-    throw new Error(
-      'contentHashAsync(): no WebCrypto SubtleCrypto available in this runtime.',
-    );
-  }
-  const data = new TextEncoder().encode(canonical);
-  const digest = await subtle.digest('SHA-256', data);
-  const bytes = new Uint8Array(digest);
-  let hex = '';
-  for (const b of bytes) {
-    hex += b.toString(16).padStart(2, '0');
-  }
-  return hex;
+  return sha256Hex(sortedKeysStringify(schema));
 }
 
 // ---------------------------------------------------------------------------

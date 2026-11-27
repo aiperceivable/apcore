@@ -14,6 +14,7 @@ import { Middleware } from './middleware/index.js';
 import { TracingMiddleware } from './observability/tracing.js';
 import type { Span, SpanExporter } from './observability/tracing.js';
 import type { Discoverer, ModuleValidator, Registry } from './registry/registry.js';
+import type { PolicyEvaluator } from './policy-evaluation.js';
 
 /**
  * Delegates span export to multiple underlying exporters.
@@ -132,14 +133,22 @@ function builtInPoints(): Map<string, InternalExtensionPoint> {
       typeCheck: isApprovalHandler,
       typeName: 'ApprovalHandler',
     }],
+    ['policy_evaluator', {
+      name: 'policy_evaluator',
+      description: 'Asynchronous policy evaluation on validated invocation arguments',
+      multiple: false,
+      typeCheck: value => typeof value === 'object' && value !== null &&
+        typeof (value as Partial<PolicyEvaluator>).evaluate === 'function',
+      typeName: 'PolicyEvaluator',
+    }],
   ]);
 }
 
 /**
  * Manages extension points and their registered implementations.
  *
- * Pre-registers six built-in extension points: discoverer, middleware,
- * acl, span_exporter, module_validator, and approval_handler.
+ * Pre-registers the built-in discovery, middleware, ACL, tracing, module
+ * validation, approval, and policy evaluation points.
  */
 export class ExtensionManager {
   private _points: Map<string, InternalExtensionPoint>;
@@ -273,6 +282,9 @@ export class ExtensionManager {
     if (approvalHandler !== null) {
       executor.setApprovalHandler(approvalHandler);
     }
+
+    const evaluator = this.get('policy_evaluator') as PolicyEvaluator | null;
+    if (evaluator !== null) executor.setPolicyEvaluator(evaluator);
 
     // Middleware
     for (const mw of this.getAll('middleware')) {

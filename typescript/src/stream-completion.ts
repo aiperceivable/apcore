@@ -1,8 +1,9 @@
 import { awaitExecution, type CancelToken, ExecutionCancelledError } from './cancel.js';
-import { ModuleError, ModuleTimeoutError } from './errors.js';
+import { ModuleError, ModuleTimeoutError, PolicyEvaluationError } from './errors.js';
 import { trackExecution } from './execution-lifetime.js';
 import { isModuleIdempotent } from './module.js';
 import type { PipelineContext, StepTrace } from './pipeline.js';
+import { policyInvocationOf } from './policy-evaluation.js';
 
 export type StreamCompletionReason = 'completed' | 'failed' | 'cancelled' | 'timed_out' | 'consumer_closed';
 
@@ -125,7 +126,10 @@ export function createStreamExecution(
 
   function expireDeadline(): void {
     const budget = Math.max(0, Math.ceil(deadlineMs! - startedAt!));
-    interruption = new ModuleTimeoutError(moduleId, budget, { retryable: isModuleIdempotent(tracker.context?.module) });
+    const context = tracker.context;
+    interruption = context !== null && policyInvocationOf(context)?.evaluating
+      ? new PolicyEvaluationError(moduleId)
+      : new ModuleTimeoutError(moduleId, budget, { retryable: isModuleIdempotent(context?.module) });
     // Publish the deadline's own error before the interruption reaches the
     // producer as cancellation. Its physical shutdown may still be pending.
     settle('timed_out', interruption.code);

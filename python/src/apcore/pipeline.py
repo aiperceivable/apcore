@@ -14,11 +14,13 @@ from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any, Callable, Protocol, runtime_checkable
 
 from apcore.context import _APPROVAL_TOKEN_KEY
-from apcore.errors import InvalidInputError, ModuleError, ModuleTimeoutError
+from apcore.errors import InvalidInputError, ModuleError, ModuleTimeoutError, PolicyEvaluationError
 from apcore.middleware.manager import MiddlewareChainError
 from apcore.utils.pattern import match_pattern
 
 if TYPE_CHECKING:
+    from apcore._post_validation_policy import _PolicyInvocation
+    from apcore.module import ModuleAnnotations
     from apcore.streaming import _StreamObservation
 
 _logger = logging.getLogger(__name__)
@@ -143,11 +145,20 @@ class PipelineContext:
     module_task: asyncio.Future[Any] | None = None
     _stream_observation: _StreamObservation | None = field(default=None, repr=False, compare=False)
     _acl_allowed: bool = field(default=False, repr=False, compare=False)
+    _policy_enabled: bool = field(default=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         # Keep the resume credential outside the public dataclass state.
         self._approval_token: str | None = None
         self._running_pipeline = False
+        self._policy_invocation: _PolicyInvocation | None = None
+        self._policy_annotations: ModuleAnnotations | None = None
+        self._policy_requires_approval: bool | None = None
+        self._policy_evaluation_active = False
+
+    @property
+    def _policy_pending(self) -> bool:
+        return self._policy_enabled and (self._policy_invocation is None or not self._policy_invocation.authorized)
 
     def _separate_approval_token(self) -> str | None:
         """Separate the invocation's resume credential from module inputs."""
@@ -897,7 +908,11 @@ class PipelineEngine:
                 # Middleware instances, not StepMiddlewares, so they must not
                 # be substituted for ``step_mws``.
                 error_mws: Sequence[StepMiddleware] = step_mws
-                fail_closed = getattr(step, "_fail_closed_on_error", False)
+                fail_closed = (
+                    getattr(step, "_fail_closed_on_error", False)
+                    or ctx._policy_pending
+                    or isinstance(exc, PolicyEvaluationError)
+                )
                 recovery: Any = None
                 if error_mws:
                     err_state = PipelineState(
@@ -1024,6 +1039,9 @@ class PipelineEngine:
                     trace=trace,
                 )
             elif result.action == "skip_to":
+                if ctx._policy_enabled and i < name_to_idx.get("execute", 0):
+                    trace.total_duration_ms = (time.monotonic() - start) * 1000
+                    raise PipelineStepError(step.name, PolicyEvaluationError(), trace=trace, recoverable=False)
                 target = result.skip_to
                 if target is None:
                     raise StepNotFoundError("skip_to target is None")

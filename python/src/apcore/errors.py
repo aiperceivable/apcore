@@ -29,6 +29,8 @@ __all__ = [
     "ApprovalDeniedError",
     "ApprovalTimeoutError",
     "ApprovalPendingError",
+    "PolicyDeniedError",
+    "PolicyEvaluationError",
     "ModuleNotFoundError",
     "ModuleDisabledError",
     "ModuleTimeoutError",
@@ -315,6 +317,31 @@ class ACLDeniedError(ModuleError):
     def target_id(self) -> str:
         """The target module ID that was denied access to."""
         return self.details["target_id"]
+
+
+class PolicyDeniedError(ModuleError):
+    """The configured policy denied the validated invocation."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            code="POLICY_DENIED",
+            message="Policy denied the validated invocation",
+            retryable=False,
+            user_fixable=True,
+            ai_guidance="Review the request against the host's policy before trying again.",
+        )
+
+
+class PolicyEvaluationError(ModuleError):
+    """The configured policy could not safely evaluate the invocation."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            code="POLICY_EVALUATION_ERROR",
+            message="Policy evaluation failed",
+            retryable=True,
+            user_fixable=False,
+        )
 
 
 class ApprovalError(ModuleError):
@@ -1452,6 +1479,8 @@ class ErrorCodes:
     APPROVAL_DENIED = "APPROVAL_DENIED"
     APPROVAL_TIMEOUT = "APPROVAL_TIMEOUT"
     APPROVAL_PENDING = "APPROVAL_PENDING"
+    POLICY_DENIED = "POLICY_DENIED"
+    POLICY_EVALUATION_ERROR = "POLICY_EVALUATION_ERROR"
     VERSION_INCOMPATIBLE = "VERSION_INCOMPATIBLE"
     ERROR_CODE_COLLISION = "ERROR_CODE_COLLISION"
     GENERAL_NOT_IMPLEMENTED = "GENERAL_NOT_IMPLEMENTED"

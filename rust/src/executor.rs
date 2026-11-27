@@ -16,7 +16,7 @@ use crate::acl::ACL;
 use crate::approval::ApprovalHandler;
 use crate::builtin_steps::{
     build_internal_strategy, build_minimal_strategy, build_performance_strategy,
-    build_standard_strategy, build_testing_strategy,
+    build_standard_strategy, build_testing_strategy, BuiltinPostValidationPolicy,
 };
 use crate::cancel::CancelToken;
 use crate::config::Config;
@@ -33,7 +33,7 @@ use crate::pipeline::{
     BuiltinGate, ExecutionStrategy, PipelineContext, PipelineEngine, PipelineTrace, RunOptions,
     StepTrace, StrategyInfo,
 };
-use crate::policy::ExecutionPolicy;
+use crate::policy::{ExecutionPolicy, PolicyEffect, PolicyEvaluator};
 use crate::registry::registry::{module_id_pattern, ModuleExecutionLease, Registry};
 use crate::runtime::background_runtime;
 use crate::stream_completion::{StreamChunks, StreamCompletionHandle, StreamRecorder};
@@ -589,6 +589,10 @@ pub fn redact_sensitive(data: &Value, schema: &Value) -> Value {
     redacted
 }
 
+pub(crate) fn schema_sensitive_fields(data: &Value, schema: &Value) -> Vec<String> {
+    schema_redaction::sensitive_fields(data, schema)
+}
+
 /// Redact for the executor's input/output capture point.
 ///
 /// PROTOCOL_SPEC §10.6.1 "Where the rules apply": the union of §10.6's
@@ -837,6 +841,7 @@ pub struct Executor {
     /// Execution-time governance policy consulted by the Step-5 approval gate
     /// (apcore#76 RFC pilot). Flows to the gate via `PipelineContext`.
     pub policy: Option<Arc<ExecutionPolicy>>,
+    policy_evaluator: Option<Arc<dyn PolicyEvaluator>>,
     /// Event emitter for governance events (apcore#77). When set, the ACL and
     /// approval-gate steps publish `apcore.acl.denied` /
     /// `apcore.approval.decision` / `apcore.policy.override` on the bus.
@@ -944,6 +949,15 @@ fn strategy_from_config(
     }
 }
 
+fn has_policy_compatible_layout(strategy: &ExecutionStrategy) -> bool {
+    fn step_types(strategy: &ExecutionStrategy) -> impl Iterator<Item = std::any::TypeId> + '_ {
+        strategy.steps().iter().map(|step| step.as_ref().type_id())
+    }
+
+    step_types(strategy).eq(step_types(&build_standard_strategy()))
+        || step_types(strategy).eq(step_types(&build_performance_strategy()))
+}
+
 impl Executor {
     /// Create a new executor with the given (shared) registry and config.
     ///
@@ -965,6 +979,7 @@ impl Executor {
             pipeline_load_error,
             approval_handler: None,
             policy: None,
+            policy_evaluator: None,
             event_emitter: None,
             governance_warned: Arc::new(parking_lot::Mutex::new(std::collections::HashSet::new())),
             redaction: std::sync::OnceLock::new(),
@@ -994,6 +1009,7 @@ impl Executor {
             pipeline_load_error: None,
             approval_handler: None,
             policy: None,
+            policy_evaluator: None,
             event_emitter: None,
             governance_warned: Arc::new(parking_lot::Mutex::new(std::collections::HashSet::new())),
             redaction: std::sync::OnceLock::new(),
@@ -1019,6 +1035,7 @@ impl Executor {
             pipeline_load_error: None,
             approval_handler: None,
             policy: None,
+            policy_evaluator: None,
             event_emitter: None,
             governance_warned: Arc::new(parking_lot::Mutex::new(std::collections::HashSet::new())),
             redaction: std::sync::OnceLock::new(),
@@ -1060,6 +1077,7 @@ impl Executor {
             pipeline_load_error,
             approval_handler: approval_handler.map(|h| Arc::from(h) as Arc<dyn ApprovalHandler>),
             policy: None,
+            policy_evaluator: None,
             event_emitter: None,
             governance_warned: Arc::new(parking_lot::Mutex::new(std::collections::HashSet::new())),
             redaction: std::sync::OnceLock::new(),
@@ -1196,6 +1214,35 @@ impl Executor {
         self.policy = policy.map(Arc::new);
     }
 
+    /// Install or clear the Executor's post-validation evaluator.
+    ///
+    /// Installation requires the stock `standard` or `performance` layout.
+    /// Step middleware may observe those steps. Before middleware on the
+    /// opted-in path must perform side-effect-free normalization.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ErrorCode::PipelineConfigurationError`] for an incompatible strategy.
+    pub fn set_policy_evaluator(
+        &mut self,
+        evaluator: Option<Arc<dyn PolicyEvaluator>>,
+    ) -> Result<(), ModuleError> {
+        match (self.policy_evaluator.is_some(), evaluator.is_some()) {
+            (false, true) => {
+                if !has_policy_compatible_layout(&self.strategy) {
+                    return Err(ModuleError::new(ErrorCode::PipelineConfigurationError,
+                        "Post-validation policy requires the stock standard or performance strategy"));
+                }
+                self.strategy
+                    .insert_after("input_validation", Box::new(BuiltinPostValidationPolicy))?;
+            }
+            (true, false) => self.strategy.remove("post_validation_policy")?,
+            _ => {}
+        }
+        self.policy_evaluator = evaluator;
+        Ok(())
+    }
+
     /// Set (or clear) the event emitter used to publish governance events
     /// (apcore#77): `apcore.acl.denied`, `apcore.approval.decision`, and
     /// `apcore.policy.override`.
@@ -1328,6 +1375,12 @@ impl Executor {
         record_attempts: bool,
     ) -> Result<(Value, PipelineTrace), ModuleError> {
         self.ensure_startup_configuration()?;
+        if self.policy_evaluator.is_some() && !std::ptr::eq(strategy, self.strategy()) {
+            return Err(ModuleError::new(
+                ErrorCode::PipelineConfigurationError,
+                "Per-call strategy overrides cannot replace the active policy strategy",
+            ));
+        }
         Self::validate_module_id(module_id)?;
         let mut parent = context.cloned().unwrap_or_else(Context::anonymous);
         parent.bind_executor(self.instance_handle())?;
@@ -1570,7 +1623,9 @@ impl Executor {
         // Step-4 `acl_check` that just ran (it is `pure`, so a dry run executes
         // it). Reporting only the policy-effective value would tell a caller no
         // approval is needed for a call the Step-5 gate will stop.
-        let requires_approval = policy_effective_approval || pipe_ctx.acl_approval_required;
+        let requires_approval = policy_effective_approval
+            || pipe_ctx.acl_approval_required
+            || pipe_ctx.policy_effect == Some(PolicyEffect::RequireApproval);
 
         // Module-level introspection is gated on TWO conditions, not one.
         //
@@ -1615,8 +1670,10 @@ impl Executor {
             .as_ref()
             .is_some_and(crate::acl::AccessDecision::is_allowed);
         let mut predicted_changes: Vec<crate::module::Change> = Vec::new();
+        let policy_permitted = pipe_ctx.policy_evaluator.is_none()
+            || pipe_ctx.policy_effect == Some(PolicyEffect::Allow);
         if let (true, Some(module)) = (
-            !acl_denied && (!acl_required || acl_permitted),
+            !acl_denied && (!acl_required || acl_permitted) && policy_permitted,
             pipe_ctx.module.clone(),
         ) {
             let warnings = module.preflight(inputs, ctx);
@@ -2535,6 +2592,7 @@ impl Executor {
         ctx.acl = self.acl.as_ref().map(Arc::clone);
         ctx.approval_handler = self.approval_handler.as_ref().map(Arc::clone);
         ctx.policy = self.policy.as_ref().map(Arc::clone);
+        ctx.policy_evaluator = self.policy_evaluator.as_ref().map(Arc::clone);
         ctx.event_emitter = self.event_emitter.as_ref().map(Arc::clone);
         ctx.governance_warned = Some(Arc::clone(&self.governance_warned));
         ctx.middleware_manager = Some(Arc::clone(&self.middleware_manager));

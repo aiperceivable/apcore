@@ -16,6 +16,7 @@ from apcore.approval import ApprovalHandler
 from apcore.errors import InvalidInputError
 from apcore.middleware import Middleware
 from apcore.observability.tracing import Span, SpanExporter, TracingMiddleware
+from apcore.policy import PolicyEvaluator
 from apcore.registry.registry import Discoverer, ModuleValidator
 
 if TYPE_CHECKING:
@@ -88,6 +89,12 @@ def _built_in_points() -> dict[str, ExtensionPoint]:
             description="Approval handler for Step 4.5 gate",
             multiple=False,
         ),
+        "policy_evaluator": ExtensionPoint(
+            name="policy_evaluator",
+            extension_type=PolicyEvaluator,
+            description="Policy evaluator for validated invocations",
+            multiple=False,
+        ),
     }
 
 
@@ -95,7 +102,7 @@ class ExtensionManager:
     """Manages extension points and their registered implementations.
 
     Pre-registers built-in extension points: discoverer, middleware,
-    acl, span_exporter, module_validator, and approval_handler.
+    acl, span_exporter, module_validator, approval_handler, and policy_evaluator.
     """
 
     def __init__(self) -> None:
@@ -210,6 +217,7 @@ class ExtensionManager:
             - module_validator -> registry.set_validator()
             - acl -> executor.set_acl()
             - approval_handler -> executor.set_approval_handler()
+            - policy_evaluator -> executor.set_policy_evaluator()
             - middleware -> executor.use() for each
             - span_exporter -> find TracingMiddleware, set exporter (composite if multiple)
 
@@ -236,6 +244,10 @@ class ExtensionManager:
         approval = self.get("approval_handler")
         if approval is not None:
             executor.set_approval_handler(approval)
+
+        evaluator = self.get("policy_evaluator")
+        if evaluator is not None:
+            executor.set_policy_evaluator(evaluator)
 
         # Middleware
         for mw in self.get_all("middleware"):

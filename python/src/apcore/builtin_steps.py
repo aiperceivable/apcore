@@ -17,11 +17,12 @@ import json
 import logging
 import time
 from collections.abc import Awaitable, Callable
-from copy import deepcopy
-from typing import TYPE_CHECKING, Any, cast
+from copy import copy, deepcopy
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 import pydantic
 
+from apcore._post_validation_policy import _evaluate_policy, _PolicyInvocation, _safe_rule_id
 from apcore.approval import ApprovalRequest, ApprovalResult, ScopedApprovalHandler
 from apcore.cancel import CancelToken, ExecutionCancelledError
 from apcore.context import Context, GovernanceProjection
@@ -37,6 +38,8 @@ from apcore.errors import (
     ModuleExecuteError,
     ModuleNotFoundError,
     ModuleTimeoutError,
+    PolicyDeniedError,
+    PolicyEvaluationError,
     SchemaValidationError,
     StreamingInterfaceError,
 )
@@ -49,7 +52,13 @@ from apcore.pipeline import (
     PipelineContext,
     StepResult,
 )
-from apcore.policy import ExecutionPolicy, PolicyDecision, strip_approval_token
+from apcore.policy import (
+    ExecutionPolicy,
+    PolicyDecision,
+    PolicyEvaluationRequest,
+    PolicyEvaluator,
+    strip_approval_token,
+)
 from apcore.schema.annotations import governance_union
 from apcore.schema.hardening import warn_format_violations
 from apcore.schema.types import _validation_failure_message
@@ -414,18 +423,28 @@ def _resolve_redaction(config: Any | None) -> RedactionConfig:
 def _redact_payload(data: dict[str, Any] | None, schema_model: Any, rules: RedactionConfig | None) -> dict[str, Any]:
     from apcore.utils.redaction import redact_sensitive
 
-    schema: Any = getattr(schema_model, "__apcore_source_schema__", None)
-    if not isinstance(schema, dict):
-        schema_json = getattr(schema_model, "model_json_schema", None)
-        schema = schema_json() if callable(schema_json) else {}
     rules = rules or _resolve_redaction(None)
     return redact_sensitive(
         data or {},
-        schema,
+        _input_schema_json(schema_model),
         sensitive_keys=rules.sensitive_keys,
         regex_patterns=rules.compiled_regex_patterns,
         replacement=rules.replacement,
     )
+
+
+def _input_schema_json(schema_model: Any) -> dict[str, Any]:
+    if isinstance(schema_model, dict):
+        return schema_model
+    schema = getattr(schema_model, "__apcore_source_schema__", None)
+    if isinstance(schema, dict):
+        return schema
+    schema_json = getattr(schema_model, "model_json_schema", None)
+    if callable(schema_json):
+        schema = schema_json()
+        if isinstance(schema, dict):
+            return schema
+    return {}
 
 
 class BuiltinModuleLookup(BaseStep):
@@ -474,6 +493,7 @@ class BuiltinModuleLookup(BaseStep):
     async def execute(self, ctx: PipelineContext) -> StepResult:
         version_hint = getattr(ctx, "version_hint", None)
         resolve = getattr(type(self._registry), "_resolve_registration", None)
+        version = None
         if resolve is not None:
             if ctx.execution_scope is not None:
                 token = (
@@ -498,6 +518,8 @@ class BuiltinModuleLookup(BaseStep):
                 registration = resolve(self._registry, ctx.module_id, version_hint)
             module = registration.module if registration is not None else None
             declared_annotations = registration.metadata.get("annotations") if registration is not None else None
+            if ctx._policy_enabled and registration is not None:
+                version = registration.metadata.get("version")
         else:
             if version_hint is not None:
                 module = self._registry.get(ctx.module_id, version_hint=version_hint)
@@ -517,6 +539,8 @@ class BuiltinModuleLookup(BaseStep):
             raise ModuleDisabledError(module_id=ctx.module_id)
 
         ctx.module = module
+        if ctx._policy_enabled:
+            ctx._policy_invocation = _PolicyInvocation(ctx, version)
         # PROTOCOL_SPEC §7.4 (D-96): resolve the registry's DECLARED annotations
         # here and hand them to the gate, which has no registry of its own —
         # the same shape as `acl_approval_required`, which Step 4 computes and
@@ -577,6 +601,7 @@ class BuiltinACLCheck(_GovernanceGateFields):
             replaceable=True,
             pure=True,
             requires=("context", "module"),
+            provides=("acl_decision",),
         )
         self._acl = acl
         self._event_emitter = event_emitter
@@ -751,10 +776,7 @@ class BuiltinApprovalGate(_GovernanceGateFields):
         """The ExecutionPolicy this gate applies (read by ``governance_state()``, §6.6.5.5)."""
         return self._policy
 
-    async def execute(self, ctx: PipelineContext) -> StepResult:
-        module = ctx.module
-        approval_token = ctx._take_approval_token()
-
+    def _approval_requirements(self, ctx: PipelineContext) -> tuple[Any, PolicyDecision, bool]:
         # PROTOCOL_SPEC §6.1.6 / §7.4: Step 4's second result. The gate fires on
         # the UNION of the module annotation, this, and gate_destructive (§6.9
         # rows 3-5) — an implementation that reads only the annotation silently
@@ -771,7 +793,7 @@ class BuiltinApprovalGate(_GovernanceGateFields):
         # so a metadata `false` would cancel a module that asks to be gated.
         # Both single-source readings are fail-OPEN.
         governance = governance_union(
-            getattr(module, "annotations", None),
+            getattr(ctx.module, "annotations", None),
             getattr(ctx, "declared_annotations", None),
         )
 
@@ -796,13 +818,24 @@ class BuiltinApprovalGate(_GovernanceGateFields):
         # silently strip a requirement an ACL author attached to one
         # untrusted caller. Union is the only safe composition, so the OR
         # here is load-bearing and not a convenience.
-        needs_approval = decision.needs_approval or acl_requires_approval
-        effective_destructive = decision.destructive
+        return governance, decision, decision.needs_approval or acl_requires_approval
+
+    @staticmethod
+    def _effective_annotations(governance: Any, decision: PolicyDecision, required: bool) -> ModuleAnnotations:
+        return dataclasses.replace(
+            _coerce_annotations(governance),
+            requires_approval=required,
+            destructive=decision.destructive,
+        )
+
+    async def execute(self, ctx: PipelineContext) -> StepResult:
+        approval_token = None if ctx._policy_enabled else ctx._take_approval_token()
+        governance, decision, required = self._approval_requirements(ctx)
         if decision.overridden:
             self._emit_policy_audit(decision, ctx.context)
 
-        if not needs_approval:
-            if effective_destructive:
+        if not required:
+            if decision.destructive:
                 self._warn_once(
                     f"destructive_ungated:{ctx.module_id}",
                     "Module '%s' is annotated destructive=True but is not covered by the "
@@ -811,19 +844,23 @@ class BuiltinApprovalGate(_GovernanceGateFields):
                     "gate_destructive=True). (apcore#76)",
                     ctx.module_id,
                 )
+
+        if required and self._handler is None and self._policy.strict:
+            result = ApprovalResult(
+                status="rejected",
+                reason="Approval required but no ApprovalHandler is configured; ExecutionPolicy(strict=True) fails closed",
+            )
+            self._emit_audit(result, ctx.module_id, ctx.context)
+            raise ApprovalDeniedError(result=result, module_id=ctx.module_id)
+
+        if ctx._policy_enabled:
+            ctx._policy_annotations = self._effective_annotations(governance, decision, required)
+            return StepResult(action="continue")
+
+        if not required:
             return StepResult(action="continue")
 
         if self._handler is None:
-            if self._policy.strict:
-                result = ApprovalResult(
-                    status="rejected",
-                    reason=(
-                        "Approval required but no ApprovalHandler is configured; "
-                        "ExecutionPolicy(strict=True) fails closed"
-                    ),
-                )
-                self._emit_audit(result, ctx.module_id, ctx.context)
-                raise ApprovalDeniedError(result=result, module_id=ctx.module_id)
             self._warn_once(
                 f"no_handler:{ctx.module_id}",
                 "Module '%s' requires approval but no ApprovalHandler is configured; "
@@ -833,25 +870,105 @@ class BuiltinApprovalGate(_GovernanceGateFields):
             )
             return StepResult(action="continue")
 
-        annotations = dataclasses.replace(
-            _coerce_annotations(governance), requires_approval=True, destructive=effective_destructive
-        )
-        request = ApprovalRequest(
-            module_id=ctx.module_id,
-            arguments=deepcopy(ctx.inputs),
-            context=ctx.context,
-            annotations=annotations,
-            description=getattr(module, "description", None),
-            tags=list(getattr(module, "tags", None) or []),
-            caller_id=ctx.context.caller_id,
-            action=ctx.module_id,
-        )
+        request = self._request(ctx, self._effective_annotations(governance, decision, required), ctx.inputs)
         if approval_token is None:
             result = await self._handler.request_approval(request)
         elif isinstance(self._handler, ScopedApprovalHandler):
             result = await self._handler.check_approval_for_call(approval_token, request)
         else:
             result = ApprovalResult(status="rejected", reason="The approval handler does not support scoped resumption")
+        return self._finish_approval(ctx, result, approval_token)
+
+    @staticmethod
+    def _request(
+        ctx: PipelineContext,
+        annotations: ModuleAnnotations,
+        arguments: dict[str, Any],
+        invocation: _PolicyInvocation | None = None,
+    ) -> ApprovalRequest:
+        context = ctx.context
+        if invocation is not None:
+            context = copy(context)
+            context.call_chain = list(context.call_chain)
+            context.identity = deepcopy(invocation.identity)
+        return ApprovalRequest(
+            module_id=ctx.module_id,
+            arguments=deepcopy(arguments),
+            context=context,
+            annotations=annotations,
+            description=getattr(ctx.module, "description", None),
+            tags=list(getattr(ctx.module, "tags", None) or []),
+            caller_id=context.caller_id,
+            action=ctx.module_id,
+            module_version=invocation.version if invocation is not None else None,
+            canonical_args_digest=invocation.digest if invocation is not None else None,
+        )
+
+    async def _authorize_final(
+        self, ctx: PipelineContext, invocation: _PolicyInvocation, annotations: ModuleAnnotations
+    ) -> None:
+        approval_token = ctx._take_approval_token()
+        if not annotations.requires_approval and approval_token is None:
+            return
+        handler = self._handler
+        supports_final_scope = (
+            isinstance(handler, ScopedApprovalHandler) and getattr(handler, "supports_final_scope", False) is True
+        )
+        if handler is None or (approval_token is not None and not supports_final_scope):
+            result = ApprovalResult("rejected", reason="Final approval requires a compatible handler")
+            self._finish_approval(ctx, result, approval_token)
+            return
+
+        request = self._request(
+            ctx, dataclasses.replace(annotations, requires_approval=True), invocation.checked_arguments(ctx), invocation
+        )
+        try:
+            if approval_token is not None:
+                result = await handler.check_approval_for_call(approval_token, request)
+            else:
+                result = await handler.request_approval(request)
+        except ExecutionCancelledError:
+            raise
+        except Exception:
+            result = ApprovalResult("rejected")
+        if not isinstance(result, ApprovalResult):
+            result = ApprovalResult("rejected")
+        status = self._final_status(result)
+        if status == "pending" and not supports_final_scope:
+            result = ApprovalResult("rejected", reason="Final approval requires a compatible handler")
+        elif not self._safe_pending(result, status, invocation.digest):
+            # Approval providers can see sensitive arguments. Keep their
+            # arbitrary diagnostics out of the invocation trace and audit.
+            result = ApprovalResult(
+                status=status,
+                approval_id=result.approval_id if status == "pending" else None,
+                audit_id=result.audit_id
+                if isinstance(result.audit_id, str) and result.audit_id != invocation.digest
+                else None,
+            )
+        self._finish_approval(ctx, result, approval_token)
+
+    @staticmethod
+    def _final_status(result: ApprovalResult) -> Literal["approved", "rejected", "timeout", "pending"]:
+        if result.status in ("approved", "rejected", "timeout"):
+            return result.status
+        if result.status == "pending" and isinstance(result.approval_id, str) and result.approval_id:
+            return "pending"
+        return "rejected"
+
+    @staticmethod
+    def _safe_pending(result: ApprovalResult, status: str, digest: str | None) -> bool:
+        # Transports can correlate the pending result by identity. Preserve it
+        # only when the handler has already stripped untrusted diagnostics.
+        return (
+            status == "pending"
+            and result.reason is None
+            and result.approved_by is None
+            and result.metadata is None
+            and (result.audit_id is None or isinstance(result.audit_id, str) and result.audit_id != digest)
+        )
+
+    def _finish_approval(self, ctx: PipelineContext, result: ApprovalResult, approval_token: str | None) -> StepResult:
         self._emit_audit(result, ctx.module_id, ctx.context, approval_token)
 
         if result.status == "approved":
@@ -1223,6 +1340,8 @@ class BuiltinInputValidation(BaseStep):
         input_schema = getattr(module, "input_schema", None)
         if input_schema is None:
             ctx.validated_inputs = ctx.inputs
+            if ctx._policy_invocation is not None:
+                ctx._policy_invocation.capture(ctx)
             if ctx.context is not None and hasattr(ctx.context, "redacted_inputs"):
                 ctx.context.redacted_inputs = _redact_payload(strip_approval_token(ctx.inputs), None, self._redaction)
             return StepResult(action="continue")
@@ -1244,6 +1363,9 @@ class BuiltinInputValidation(BaseStep):
                     **{key: getattr(validated, key) for key in fields},
                 }
 
+        if ctx._policy_invocation is not None:
+            ctx._policy_invocation.capture(ctx)
+
         # Redact sensitive fields after successful validation
         if ctx.context is not None and hasattr(ctx.context, "redacted_inputs"):
             ctx.context.redacted_inputs = _redact_payload(
@@ -1251,6 +1373,85 @@ class BuiltinInputValidation(BaseStep):
             )
 
         return StepResult(action="continue")
+
+
+class _BuiltinPostValidationPolicy(BaseStep):
+    _fail_closed_on_error = True
+
+    def __init__(self, evaluator: PolicyEvaluator, approval: BuiltinApprovalGate) -> None:
+        super().__init__(
+            name="post_validation_policy",
+            description="Authorize the validated invocation",
+            removable=False,
+            replaceable=False,
+            pure=True,
+            requires=("acl_decision", "validated_inputs"),
+        )
+        self._evaluator = evaluator
+        self._approval = approval
+
+    async def execute(self, ctx: PipelineContext) -> StepResult:
+        from apcore.utils.redaction import sensitive_field_paths
+
+        invocation = ctx._policy_invocation
+        if invocation is None:
+            raise PolicyEvaluationError()
+        arguments = invocation.checked_arguments(ctx)
+        schema = _input_schema_json(getattr(ctx.module, "input_schema", None))
+        fields = sensitive_field_paths(arguments, schema)
+        request = PolicyEvaluationRequest(
+            module_id=invocation.module_id,
+            module_version=invocation.version,
+            caller_id=invocation.caller_id,
+            identity=deepcopy(invocation.identity),
+            arguments=deepcopy(arguments),
+            sensitive_fields=fields,
+        )
+        ctx._policy_evaluation_active = True
+        try:
+            verdict = await _evaluate_policy(
+                self._evaluator, request, ctx.context.cancel_token, ctx.context.global_deadline
+            )
+        finally:
+            ctx._policy_evaluation_active = False
+        if not ctx.dry_run:
+            self._emit_decision(ctx, verdict.decision, _safe_rule_id(verdict.rule_id), fields)
+        if verdict.decision == "deny":
+            raise PolicyDeniedError()
+
+        if ctx.dry_run:
+            _, _, required = self._approval._approval_requirements(ctx)
+            ctx._policy_requires_approval = required or verdict.decision == "require_approval"
+        else:
+            annotations = ctx._policy_annotations
+            if annotations is None:
+                raise PolicyEvaluationError()
+            required = annotations.requires_approval or verdict.decision == "require_approval"
+            await self._approval._authorize_final(
+                ctx, invocation, dataclasses.replace(annotations, requires_approval=required)
+            )
+            invocation.authorized = True
+        return StepResult(action="continue")
+
+    def _emit_decision(self, ctx: PipelineContext, decision: str, rule_id: str | None, fields: tuple[str, ...]) -> None:
+        data = {"decision": decision, "rule_id": rule_id, "sensitive_fields": list(fields)}
+        span = _current_trace_span(ctx.context, include_parent=True)
+        if span is not None:
+            span.events.append({"name": "apcore.policy.decision", **data})
+        if self._approval._event_emitter is not None:
+            from datetime import datetime, timezone
+
+            from apcore.events.emitter import ApCoreEvent
+
+            self._approval._event_emitter.emit(
+                ApCoreEvent(
+                    event_type="apcore.policy.decision",
+                    module_id=ctx.module_id,
+                    timestamp=datetime.now(timezone.utc).isoformat(),
+                    severity="warn" if decision == "deny" else "info",
+                    data=data,
+                )
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -1307,7 +1508,13 @@ class BuiltinExecute(BaseStep):
         if global_deadline is not None and time.time() > global_deadline:
             raise self._end_for_timeout(ctx, int(default_timeout))
 
-        inputs = ctx.validated_inputs if ctx.validated_inputs is not None else ctx.inputs
+        if ctx._policy_enabled:
+            invocation = ctx._policy_invocation
+            if invocation is None or not invocation.authorized:
+                raise PolicyEvaluationError()
+            inputs = invocation.checked_arguments(ctx)
+        else:
+            inputs = ctx.validated_inputs if ctx.validated_inputs is not None else ctx.inputs
 
         if ctx.stream:
             from apcore.registry.registry import _validate_streaming_signature
@@ -1577,6 +1784,34 @@ class BuiltinReturnResult(BaseStep):
 # ---------------------------------------------------------------------------
 # Factory
 # ---------------------------------------------------------------------------
+
+
+def _bind_post_validation_policy(strategy: ExecutionStrategy, evaluator: PolicyEvaluator) -> ExecutionStrategy:
+    """Require the real governance and dispatch steps in execution order."""
+    expected: list[tuple[str, type[BaseStep]]] = [
+        ("context_creation", BuiltinContextCreation),
+        ("call_chain_guard", BuiltinCallChainGuard),
+        ("module_lookup", BuiltinModuleLookup),
+        ("acl_check", BuiltinACLCheck),
+        ("approval_gate", BuiltinApprovalGate),
+    ]
+    if "middleware_before" in strategy.step_names():
+        expected.append(("middleware_before", BuiltinMiddlewareBefore))
+    expected.extend((("input_validation", BuiltinInputValidation), ("execute", BuiltinExecute)))
+    before_dispatch = strategy.steps[: len(expected)]
+    if len(before_dispatch) != len(expected) or any(
+        type(step) is not expected_type or step.name != name or getattr(step, "match_modules", None) is not None
+        for step, (name, expected_type) in zip(before_dispatch, expected, strict=True)
+    ):
+        raise ConfigurationError("Post-validation policy requires the ordered built-in governance and execution steps")
+    if "post_validation_policy" in strategy.step_names():
+        raise ConfigurationError("The post_validation_policy step is installed by the executor")
+
+    approval = cast(BuiltinApprovalGate, before_dispatch[4])
+    bound = copy(strategy)
+    bound.steps = list(strategy.steps)
+    bound.insert_before("execute", _BuiltinPostValidationPolicy(evaluator, approval))
+    return bound
 
 
 def build_standard_strategy(

@@ -10,7 +10,7 @@ description: "Approval gate at Executor Step 5: fires on the governance union, p
 
 ## Overview
 
-The Approval System decides whether a particular invocation needs sign-off before it runs, and asks an `ApprovalHandler` for that sign-off at **Step 5** of the execution pipeline — after ACL enforcement (Step 4) and before the Middleware Before Chain (Step 6).
+The Approval System decides whether a particular invocation needs sign-off before it runs. By default, the Executor asks an `ApprovalHandler` for sign-off at **Step 5**, after ACL enforcement and before before middleware.
 
 The gate considers the module's own flags, the registry's declared annotations, the platform's execution policy, and the [ACL decision](./acl-system.md) for the invocation. [Execution Policy](#execution-policy) defines how these sources combine.
 
@@ -47,6 +47,23 @@ The Approval System is architecturally separate from the ACL System. ACL answers
 An exception raised by the handler itself propagates unchanged; it is not converted into a denial.
 
 To observe which parts of the gate are live on an executor, read [`governance_state()`](./core-executor.md#governance-state-api) — `builtin_approval_gate_wired`, `approval_handler_configured` and `policy_strict` are reported separately ([PROTOCOL_SPEC §6.6.5](../spec/protocol-spec.md#665-governance-state-query)). `Executor.validate()` reports the governance-effective `requires_approval` for a call, the same verdict the gate will enforce (§7.9.5).
+
+### Policy on validated execution arguments
+
+A host can install a `PolicyEvaluator` on an Executor directly or through the
+`policy_evaluator` extension point. The evaluator can allow the call, deny it, or
+require approval. It receives the selected module version and detached inputs
+after before middleware and validation. With this extension enabled, the
+Executor combines the existing and evaluator approval requirements and asks the
+handler once for the actual execution inputs. Before middleware in this assembly
+performs trusted transformations without approval-dependent side effects.
+
+Preflight evaluates its own validated inputs and reports approval requirements.
+The actual call evaluates again before dispatch. A denied policy blocks ordinary
+execution and stream startup. A final-scope pending credential can be resumed
+only through a handler that advertises final-scope support and checks the
+principal, caller, target, selected version, and argument digest. See the
+[post-validation policy contract](../spec/protocol-spec.md#741-post-validation-policy).
 
 ### Startup Approval Report
 
