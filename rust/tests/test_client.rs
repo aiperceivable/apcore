@@ -602,10 +602,11 @@ async fn test_managed_shutdown_rejects_wait_from_its_unload_hook() {
 async fn test_shutdown_flush_budget_is_local_and_subscribers_cannot_wait_on_it() {
     use apcore::events::subscribers::EventSubscriber;
     use futures_util::FutureExt;
+    use tokio::sync::watch;
 
     #[derive(Debug)]
     struct HoldingSubscriber {
-        operation: Arc<Mutex<Option<apcore::LifecycleOperation>>>,
+        operation: watch::Receiver<Option<apcore::LifecycleOperation>>,
         observed: Arc<tokio::sync::Notify>,
         release: Arc<tokio::sync::Notify>,
     }
@@ -616,7 +617,14 @@ async fn test_shutdown_flush_budget_is_local_and_subscribers_cannot_wait_on_it()
             if event.module_id.as_deref() != Some("demo.echo") {
                 return Ok(());
             }
-            let operation = self.operation.lock().unwrap().clone().unwrap();
+            // Shutdown can emit the event before the caller receives its operation.
+            let mut operation = self.operation.clone();
+            let operation = operation
+                .wait_for(Option::is_some)
+                .await
+                .unwrap()
+                .clone()
+                .unwrap();
             let result = operation.wait(None).now_or_never().unwrap();
             assert_eq!(result.unwrap_err().code, ErrorCode::GeneralInvalidInput);
             self.observed.notify_one();
@@ -632,14 +640,14 @@ async fn test_shutdown_flush_budget_is_local_and_subscribers_cannot_wait_on_it()
         None,
         None,
     );
-    let operation_slot = Arc::new(Mutex::new(None));
+    let (operation_sender, operation_receiver) = watch::channel(None);
     let observed = Arc::new(tokio::sync::Notify::new());
     let release = Arc::new(tokio::sync::Notify::new());
     client
         .on_subscriber(
             "apcore.registry.module_unregistered",
             Box::new(HoldingSubscriber {
-                operation: Arc::clone(&operation_slot),
+                operation: operation_receiver,
                 observed: Arc::clone(&observed),
                 release: Arc::clone(&release),
             }),
@@ -652,7 +660,7 @@ async fn test_shutdown_flush_budget_is_local_and_subscribers_cannot_wait_on_it()
             ..Default::default()
         }))
         .unwrap();
-    *operation_slot.lock().unwrap() = Some(operation.clone());
+    operation_sender.send(Some(operation.clone())).unwrap();
     let peer = peer
         .start_shutdown(Some(apcore::ShutdownOptions {
             event_flush_timeout_ms: Some(0),

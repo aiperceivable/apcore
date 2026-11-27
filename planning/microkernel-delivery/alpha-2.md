@@ -50,7 +50,7 @@ Tags and package publication remain paused.
 | npm archive | `1.0.0-alpha.2` | `fbfc83403234056023d843c424de58d42d6056cb9cbd94d92c0642d2ea0832d9` |
 | Rust crate | `1.0.0-alpha.2` | `54e630a6f3c82ee9e01aec1f58ad14a06e21d8082414a1f4d398bce2f45b4de3` |
 
-Surfaces CI builds its Python wheel from Core commit `dc61dd575a3d76a113f55a84175b6f36ba35e894`. The TypeScript and Rust jobs use Core commit `0384a3d4e7688c47eaa1feea6032fb4739813f20`. The Rust lock records the archive built from that commit, including its Cargo VCS metadata.
+The initial Surfaces checks built the Python wheel from Core commit `dc61dd575a3d76a113f55a84175b6f36ba35e894` and the TypeScript and Rust distributions from `0384a3d4e7688c47eaa1feea6032fb4739813f20`. The Rust lock records the archive built from that commit, including its Cargo VCS metadata. The cross-repository compatibility workflow also tests the exact distributions uploaded by the hosted Core build.
 
 ## Benchmark
 
