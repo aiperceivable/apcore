@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-alpha.1]
+
+This prerelease delivers the cross-repository governance and streaming fixes ahead of the microkernel package split. SDK installations use `1.0.0a1` for Python and `1.0.0-alpha.1` for TypeScript and Rust. The full package and configuration entry points remain available for adapter migration.
+
 ### Added
 
 - **Protocol 2.1.0 draft, §6.7, §9.16.2, and §12.7.9.** Add managed drain and recovery hooks, async lifecycle adapters, host-directed cancellation before forced removal, opt-in reload reports, and lifecycle events across the three SDKs.
