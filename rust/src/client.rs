@@ -12,7 +12,7 @@ use crate::context::Context;
 use crate::decorator::FunctionModule;
 use crate::errors::ModuleError;
 use crate::events::emitter::EventEmitter;
-use crate::events::subscribers::EventSubscriber;
+use crate::events::subscribers::{EventSubscriber, SubscriberRegistry};
 use crate::executor::Executor;
 use crate::lifecycle::{
     invalid_lifecycle_input, lifecycle_runtime, LifecycleOperation, ShutdownOptions,
@@ -25,7 +25,9 @@ use crate::module::ModuleAnnotations;
 use crate::observability::metrics::MetricsCollector;
 use crate::policy::ExecutionPolicy;
 use crate::registry::registry::{ModuleDescriptor, Registry, DEFAULT_MODULE_VERSION};
-use crate::sys_modules::{SysModuleError, SysModulesContext, SysModulesStartup, ToggleState};
+#[cfg(feature = "sys-modules")]
+use crate::sys_modules::SysModulesStartup;
+use crate::sys_modules::{SysModuleError, SysModulesContext, ToggleState};
 
 /// Options for [`APCore::try_start`] and [`APCore::try_with_options`].
 #[derive(Default)]
@@ -96,6 +98,19 @@ pub struct APCore {
     toggle_state: Arc<ToggleState>,
 }
 
+#[derive(Clone, Copy)]
+enum Bootstrap<'a> {
+    InMemory,
+    Configured(Option<&'a SubscriberRegistry>),
+}
+
+#[derive(Default)]
+struct SystemAssembly {
+    context: Option<SysModulesContext>,
+    errors: Vec<SysModuleError>,
+    emitter: Option<Arc<EventEmitter>>,
+}
+
 struct ClientShutdown {
     operation: LifecycleOperation,
     event_flush_timeout_ms: u32,
@@ -130,9 +145,18 @@ impl Default for APCore {
 }
 
 impl APCore {
-    /// Create a new `APCore` client with default configuration.
+    /// Create a new `APCore` client with in-memory defaults.
+    ///
+    /// Use [`Self::with_config`] or [`Self::try_start`] for configured startup.
     pub fn new() -> Self {
-        Self::with_options(None, None, None, None)
+        Self::in_memory()
+    }
+
+    /// Assemble a client from an empty registry and in-memory defaults.
+    /// File discovery and config-driven integrations are skipped during startup.
+    #[must_use]
+    pub fn in_memory() -> Self {
+        Self::build(APCoreOptions::default(), Bootstrap::InMemory)
     }
 
     /// Create a new `APCore` client with all optional parameters.
@@ -154,13 +178,16 @@ impl APCore {
         config: Option<Config>,
         metrics_collector: Option<MetricsCollector>,
     ) -> Self {
-        Self::build(APCoreOptions {
-            registry,
-            executor,
-            config,
-            metrics_collector,
-            ..Default::default()
-        })
+        Self::build(
+            APCoreOptions {
+                registry,
+                executor,
+                config,
+                metrics_collector,
+                ..Default::default()
+            },
+            Bootstrap::Configured(None),
+        )
     }
 
     /// Create a client with explicit startup and governance options.
@@ -177,7 +204,7 @@ impl APCore {
     /// error. Use [`Self::try_start`] to report it during construction.
     pub fn try_with_options(options: APCoreOptions) -> Result<Self, SysModuleError> {
         let fail_on_error = options.fail_on_error;
-        let mut client = Self::build(options);
+        let mut client = Self::build(options, Bootstrap::Configured(None));
         client.check_system_registration(fail_on_error)?;
         Ok(client)
     }
@@ -187,8 +214,24 @@ impl APCore {
     /// Reports invalid pipeline or ACL configuration, and honours
     /// [`APCoreOptions::fail_on_error`] for system-module registration.
     pub fn try_start(options: APCoreOptions) -> Result<Self, APCoreStartupError> {
+        Self::try_start_configured(options, None)
+    }
+
+    /// Start this client with its own factories for configured event subscribers.
+    /// Reports the same startup errors as [`Self::try_start`].
+    pub fn try_start_with_subscribers(
+        options: APCoreOptions,
+        subscribers: &SubscriberRegistry,
+    ) -> Result<Self, APCoreStartupError> {
+        Self::try_start_configured(options, Some(subscribers))
+    }
+
+    fn try_start_configured(
+        options: APCoreOptions,
+        subscribers: Option<&SubscriberRegistry>,
+    ) -> Result<Self, APCoreStartupError> {
         let fail_on_error = options.fail_on_error;
-        let mut client = Self::build(options);
+        let mut client = Self::build(options, Bootstrap::Configured(subscribers));
         if let Some(source) = &client.executor.pipeline_load_error {
             return Err(APCoreStartupError::PipelineLoadFailed {
                 source: source.clone(),
@@ -210,7 +253,7 @@ impl APCore {
         Ok(())
     }
 
-    fn build(options: APCoreOptions) -> Self {
+    fn build(options: APCoreOptions, bootstrap: Bootstrap<'_>) -> Self {
         let APCoreOptions {
             registry,
             executor,
@@ -220,7 +263,17 @@ impl APCore {
             approval_handler,
             policy,
         } = options;
-        let config = config.unwrap_or_default();
+        let (configured, subscribers) = match bootstrap {
+            Bootstrap::InMemory => (false, None),
+            Bootstrap::Configured(subscribers) => (true, subscribers),
+        };
+        let config = config.unwrap_or_else(|| {
+            if configured {
+                Config::default()
+            } else {
+                Config::in_memory()
+            }
+        });
 
         // Resolve the shared registry: use the executor's if provided,
         // otherwise the explicit `registry` arg, otherwise a fresh default.
@@ -237,7 +290,9 @@ impl APCore {
         // explicit > config > default in their Registry constructors; this is the
         // Rust equivalent, placed here because `Registry::new()` takes no Config.
         // Roots already set explicitly are left alone (see the method's docs).
-        registry.set_extension_roots_from_config(&config);
+        if configured {
+            registry.set_extension_roots_from_config(&config);
+        }
 
         // Track whether the caller supplied their own Executor: if so, respect
         // its ACL wiring as-is and skip config-driven ACL discovery below.
@@ -253,89 +308,28 @@ impl APCore {
 
         let toggle_state = executor.bind_client_toggle_state(executor_supplied);
 
-        // Config-driven ACL discovery (D-64, Recommendation A). Resolve
-        // `acl.root` and attach an ACL only when the path exists; a missing path
-        // is a no-op that preserves today's no-enforcement default (it must NOT
-        // synthesize an empty default-deny ACL). Wired before sys_modules
-        // registration so system modules execute under the discovered policy.
-        // A caller-supplied Executor is respected as-is and never overwritten.
-        if !executor_supplied {
-            match crate::acl::ACL::discover(&config) {
-                Ok(Some(acl)) => executor.set_acl(acl),
-                Ok(None) => {}
-                Err(e) => {
-                    tracing::error!(error = %e, "ACL discovery failed; module execution is disabled");
-                    executor.acl_load_error = Some(e);
-                }
-            }
+        if configured && !executor_supplied {
+            Self::apply_configured_acl(&mut executor, &config);
+            Self::apply_configured_tracing(&mut executor, &config);
         }
 
-        // Config-driven tracing (PROTOCOL_SPEC §10.1.1). `observability.tracing.*`
-        // was five declared keys that reached nothing: no SDK had ever built a
-        // TracingMiddleware from configuration, so `enabled: true` installed
-        // nothing and the other four configured a middleware that did not exist.
-        //
-        // Skipped when the caller supplied their own Executor — an Executor the
-        // caller built is respected as-is, tracing included, exactly as
-        // config-driven ACL discovery above treats it. That is also what makes
-        // §10.1.1 requirement 6 hold without a second check: the Executor built
-        // here has an empty middleware chain, so configuration can never be the
-        // thing that adds a SECOND tracing middleware.
-        //
-        // A self-contradictory configuration (requirement 3) is logged rather
-        // than propagated, for the same reason `ACL::discover` above is:
-        // `APCore::with_options` returns `Self` and cannot carry an error. The
-        // middleware is not installed, so nothing runs under a configuration
-        // this constructor could not honour.
-        if !executor_supplied {
-            match crate::observability::tracing_config::build_tracing_middleware(&config) {
-                Ok(Some(mw)) => {
-                    if let Err(e) = executor.use_middleware(Box::new(mw)) {
-                        tracing::error!(error = %e, "Failed to install the configured tracing middleware");
-                    }
-                }
-                Ok(None) => {}
-                Err(e) => {
-                    tracing::error!(error = %e, "observability.tracing.* is invalid; no tracing middleware was installed");
-                }
-            }
-        }
-
-        let mut startup = SysModulesStartup::default();
-        let enable_sys_modules = executor.pipeline_load_error.is_none()
+        let system = if configured
+            && executor.pipeline_load_error.is_none()
             && executor.acl_load_error.is_none()
-            && Self::sys_modules_enabled(&config);
-        let sys_modules_context = if enable_sys_modules {
-            match crate::sys_modules::register_sys_modules_for_client(
-                Arc::clone(&registry),
+            && Self::sys_modules_enabled(&config)
+        {
+            Self::configure_system_modules(
                 &executor,
                 &config,
-                metrics_collector.clone(),
-                crate::sys_modules::SysModulesOptions {
-                    toggle_state: Some(Arc::clone(&toggle_state)),
-                    fail_on_error,
-                    ..Default::default()
-                },
-                &mut startup,
+                metrics_collector.as_ref(),
+                &toggle_state,
+                subscribers,
+                fail_on_error,
                 executor_supplied,
-            ) {
-                Ok(ctx) => Some(ctx),
-                Err(e) => {
-                    if !fail_on_error {
-                        tracing::error!(error = %e, "System modules registration failed");
-                    }
-                    startup.errors.push(e);
-                    None
-                }
-            }
+            )
         } else {
-            None
+            SystemAssembly::default()
         };
-
-        let event_emitter = sys_modules_context
-            .as_ref()
-            .filter(|_| startup.events_enabled)
-            .map(|context| Arc::clone(&context.emitter));
 
         // Thread the shared event bus into the auto-created executor so the
         // pipeline publishes governance events (apcore#77:
@@ -344,7 +338,7 @@ impl APCore {
         // caller-supplied executor keeps its own wiring (parity with ACL
         // discovery above).
         if !executor_supplied {
-            if let Some(ref emitter) = event_emitter {
+            if let Some(ref emitter) = system.emitter {
                 executor.set_event_emitter(Some(Arc::clone(emitter)));
             }
         }
@@ -353,12 +347,122 @@ impl APCore {
             config,
             executor: executor.into_shared(),
             registry,
-            event_emitter,
+            event_emitter: system.emitter,
             shutdown_operation: parking_lot::Mutex::new(None),
             metrics_collector,
-            sys_modules_context,
-            sys_modules_errors: startup.errors,
+            sys_modules_context: system.context,
+            sys_modules_errors: system.errors,
             toggle_state,
+        }
+    }
+
+    #[cfg(feature = "sys-modules")]
+    fn configure_system_modules(
+        executor: &Executor,
+        config: &Config,
+        metrics: Option<&MetricsCollector>,
+        toggle_state: &Arc<ToggleState>,
+        subscribers: Option<&SubscriberRegistry>,
+        fail_on_error: bool,
+        executor_supplied: bool,
+    ) -> SystemAssembly {
+        let mut startup = SysModulesStartup {
+            subscribers,
+            ..Default::default()
+        };
+        let context = match crate::sys_modules::register_sys_modules_for_client(
+            Arc::clone(&executor.registry),
+            executor,
+            config,
+            metrics.cloned(),
+            crate::sys_modules::SysModulesOptions {
+                toggle_state: Some(Arc::clone(toggle_state)),
+                fail_on_error,
+                ..Default::default()
+            },
+            &mut startup,
+            executor_supplied,
+        ) {
+            Ok(context) => Some(context),
+            Err(error) => {
+                if !fail_on_error {
+                    tracing::error!(%error, "System modules registration failed");
+                }
+                startup.errors.push(error);
+                None
+            }
+        };
+        let emitter = context
+            .as_ref()
+            .filter(|_| startup.events_enabled)
+            .map(|context| Arc::clone(&context.emitter));
+        SystemAssembly {
+            context,
+            errors: startup.errors,
+            emitter,
+        }
+    }
+
+    #[cfg(not(feature = "sys-modules"))]
+    fn configure_system_modules(
+        _executor: &Executor,
+        _config: &Config,
+        _metrics: Option<&MetricsCollector>,
+        _toggle_state: &Arc<ToggleState>,
+        _subscribers: Option<&SubscriberRegistry>,
+        _fail_on_error: bool,
+        _executor_supplied: bool,
+    ) -> SystemAssembly {
+        SystemAssembly {
+            errors: vec![SysModuleError::RegistrationFailed {
+                module_id: "system".to_string(),
+                source: ModuleError::new(
+                    crate::errors::ErrorCode::SysModulesDisabled,
+                    "System-module configuration requires the 'sys-modules' feature",
+                ),
+            }],
+            ..SystemAssembly::default()
+        }
+    }
+
+    #[cfg(feature = "config")]
+    fn apply_configured_acl(executor: &mut Executor, config: &Config) {
+        // Config discovery only wires ACLs backed by existing documents (D-64).
+        match crate::acl::ACL::discover(config) {
+            Ok(Some(acl)) => executor.set_acl(acl),
+            Ok(None) => {}
+            Err(e) => {
+                tracing::error!(error = %e, "ACL discovery failed; module execution is disabled");
+                executor.acl_load_error = Some(e);
+            }
+        }
+    }
+
+    #[cfg(not(feature = "config"))]
+    fn apply_configured_acl(executor: &mut Executor, config: &Config) {
+        if config
+            .get_declared("acl.root")
+            .is_some_and(|value| !value.is_null() && value.as_str() != Some(""))
+        {
+            executor.acl_load_error = Some(ModuleError::new(
+                crate::errors::ErrorCode::ConfigInvalid,
+                "ACL file configuration requires the 'config' feature",
+            ));
+        }
+    }
+
+    fn apply_configured_tracing(executor: &mut Executor, config: &Config) {
+        // Apply configured tracing only to a client-created executor (§10.1.1).
+        match crate::observability::tracing_config::build_tracing_middleware(config) {
+            Ok(Some(mw)) => {
+                if let Err(e) = executor.use_middleware(Box::new(mw)) {
+                    tracing::error!(error = %e, "Failed to install the configured tracing middleware");
+                }
+            }
+            Ok(None) => {}
+            Err(e) => {
+                tracing::error!(error = %e, "observability.tracing.* is invalid; no tracing middleware was installed");
+            }
         }
     }
 
@@ -406,6 +510,7 @@ impl APCore {
     }
 
     /// Create a new `APCore` client from a configuration file path.
+    #[cfg(feature = "config")]
     pub fn from_path(path: impl AsRef<std::path::Path>) -> Result<Self, ModuleError> {
         let config = Config::load(path.as_ref())?;
         let client = Self::with_config(config);
@@ -999,22 +1104,6 @@ impl APCore {
         })
     }
 
-    /// Deprecated: use [`on()`](Self::on) instead.
-    ///
-    /// `on_fn(event_type, callback)` was renamed to `on(event_type, callback)` in 0.19.0
-    /// to align with the Python and TypeScript SDK naming convention.
-    #[deprecated(
-        since = "0.19.0",
-        note = "Renamed to `on()`. Use `client.on(event_type, callback)` instead."
-    )]
-    pub fn on_fn(
-        &mut self,
-        event_type: &str,
-        callback: impl Fn(&crate::events::emitter::ApCoreEvent) + Send + Sync + 'static,
-    ) -> Result<String, ModuleError> {
-        self.on(event_type, callback)
-    }
-
     /// Unsubscribe a single handler by its subscriber ID.
     ///
     /// The ID is the string returned by [`on()`](Self::on). Returns `true` if
@@ -1074,6 +1163,7 @@ impl APCore {
     ///
     /// **Rust-only convenience** — Python and TypeScript expose config reload
     /// only on the Config object itself, not on the client facade.
+    #[cfg(feature = "config")]
     pub fn reload(&mut self) -> Result<(), ModuleError> {
         self.config.reload()?;
         Ok(())
@@ -1157,7 +1247,7 @@ impl APCore {
     }
 }
 
-/// Internal subscriber that wraps a plain closure for [`APCore::on_fn()`].
+/// Internal subscriber that wraps a plain closure for [`APCore::on()`].
 struct ClosureSubscriber {
     id: String,
     callback: Box<dyn Fn(&crate::events::emitter::ApCoreEvent) + Send + Sync>,

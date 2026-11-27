@@ -298,10 +298,9 @@ async fn strict_policy_without_gated_modules_executes() {
 }
 
 #[tokio::test]
-async fn no_handler_skips_but_still_executes() {
-    // Fail-loud default: requires_approval without a handler skips per spec §7.4
-    // (warns once, not asserted here — Rust has no caplog) but still executes.
-    let exec = executor(make_registry());
+async fn nonstrict_policy_without_handler_skips_but_still_executes() {
+    let mut exec = executor(make_registry());
+    exec.set_policy(Some(ExecutionPolicy::default().with_strict(false)));
     for _ in 0..2 {
         let out = exec
             .call("admin.reset", json!({}), None, None)
@@ -312,8 +311,11 @@ async fn no_handler_skips_but_still_executes() {
 }
 
 #[tokio::test]
-async fn destructive_ungated_still_executes() {
-    let exec = executor(make_registry());
+async fn destructive_opt_out_still_executes() {
+    let mut exec = executor(make_registry());
+    exec.set_policy(Some(
+        ExecutionPolicy::default().with_gate_destructive(false),
+    ));
     let out = exec
         .call("orders.delete_order", json!({}), None, None)
         .await
@@ -342,7 +344,9 @@ async fn gate_destructive_covers_destructive_module() {
 async fn set_policy_at_runtime() {
     let mut exec = executor(make_registry());
     exec.set_approval_handler(Box::new(AlwaysDenyHandler));
-    // No policy yet: orders.delete_order declares requires_approval=false, executes.
+    exec.set_policy(Some(
+        ExecutionPolicy::default().with_gate_destructive(false),
+    ));
     assert_eq!(
         exec.call("orders.delete_order", json!({}), None, None)
             .await
@@ -362,12 +366,11 @@ async fn set_policy_at_runtime() {
     assert_eq!(err.code, ErrorCode::ApprovalDenied);
 
     exec.set_policy(None);
-    assert_eq!(
-        exec.call("orders.delete_order", json!({}), None, None)
-            .await
-            .unwrap()["status"],
-        "executed"
-    );
+    let err = exec
+        .call("orders.delete_order", json!({}), None, None)
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, ErrorCode::ApprovalDenied);
 }
 
 #[tokio::test]
@@ -529,7 +532,8 @@ async fn no_events_when_gate_not_involved() {
 #[tokio::test]
 async fn no_decision_event_when_gate_skipped_without_handler() {
     // Non-strict skip (spec §7.4) emits no decision event.
-    let (exec, events, emitter) = executor_with_emitter(make_registry());
+    let (mut exec, events, emitter) = executor_with_emitter(make_registry());
+    exec.set_policy(Some(ExecutionPolicy::default().with_strict(false)));
     exec.call("admin.reset", json!({}), None, None)
         .await
         .unwrap();

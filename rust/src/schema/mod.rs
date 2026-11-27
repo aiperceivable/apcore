@@ -3,16 +3,20 @@
 
 pub mod exporter;
 pub mod hardening;
+#[cfg(feature = "config")]
 pub mod loader;
 pub mod openai_strict;
+#[cfg(feature = "config")]
 pub mod ref_resolver;
 pub mod strict;
 pub mod validator;
 
-pub use exporter::{ExportOptions, ExportProfile, SchemaExporter};
+pub use exporter::export_generic;
 pub use hardening::{content_hash, format_warnings, FormatWarning};
+#[cfg(feature = "config")]
 pub use loader::{SchemaLoader, SchemaStrategy};
 pub use openai_strict::{assert_openai_strict_compatible, detect_openai_strict_incompatibilities};
+#[cfg(feature = "config")]
 pub use ref_resolver::RefResolver;
 pub use strict::to_strict_schema;
 pub use validator::{DetailedValidationResult, SchemaValidator};

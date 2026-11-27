@@ -282,9 +282,7 @@ impl RetryConfig {
     /// differ by under 1 ms, and only for a non-integer product.
     ///
     /// Cross-language: this is the canonical name across `apcore-python` and
-    /// `apcore-typescript` (sync alignment D-08). The legacy
-    /// [`Self::delay_for_attempt`] alias delegates to this method and is
-    /// `#[deprecated]`; it will be removed in the next minor version.
+    /// `apcore-typescript` (sync alignment D-08).
     #[must_use]
     pub fn compute_delay_ms(&self, attempt: u32) -> u64 {
         // Use f64 arithmetic to apply the backoff factor, then clamp to the cap.
@@ -306,15 +304,6 @@ impl RetryConfig {
         #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
         let out = capped as u64;
         out
-    }
-
-    /// Deprecated alias for [`Self::compute_delay_ms`] (sync alignment D-08).
-    ///
-    /// Kept for one minor version to allow callers a graceful migration.
-    #[must_use]
-    #[deprecated(since = "0.21.0", note = "use compute_delay_ms")]
-    pub fn delay_for_attempt(&self, attempt: u32) -> u64 {
-        self.compute_delay_ms(attempt)
     }
 }
 

@@ -10,7 +10,7 @@ use crate::errors::{ErrorCode, ModuleError};
 use crate::events::emitter::ApCoreEvent;
 use crate::executor::{redact_sensitive_with, validate_against_schema};
 use crate::pipeline::{BuiltinGate, ExecutionStrategy, PipelineContext, Step, StepResult};
-use crate::policy::PolicyDecision;
+use crate::policy::{ExecutionPolicy, PolicyDecision};
 
 // Macro for step metadata — execute is implemented manually per step.
 macro_rules! step_meta {
@@ -720,28 +720,17 @@ impl Step for BuiltinApprovalGate {
         // the inputs exist so the call site reaches the audit trail (rule 3).
         // These are the business arguments at the gate. Module middleware and
         // schema validation run later, and the resume credential is isolated.
-        let decision: Option<PolicyDecision> = ctx.policy.clone().map(|policy| {
-            policy.resolve_with_call_site(
-                &ctx.module_id,
-                module_annotations.as_ref(),
-                Some(&ctx.inputs),
-                Some(&ctx.context),
-            )
-        });
-
-        let (policy_effective_approval, effective_destructive) = match &decision {
-            Some(d) => (d.needs_approval, d.destructive),
-            None => (
-                module_annotations
-                    .as_ref()
-                    .is_some_and(|a| a.requires_approval),
-                module_annotations.as_ref().is_some_and(|a| a.destructive),
-            ),
-        };
+        let policy = ExecutionPolicy::effective(ctx.policy.as_deref());
+        let decision = policy.resolve_with_call_site(
+            &ctx.module_id,
+            module_annotations.as_ref(),
+            Some(&ctx.inputs),
+            Some(&ctx.context),
+        );
 
         // PROTOCOL_SPEC §7.4 / §6.9 rows 3-5: the gate fires on the UNION of
         // the module's `annotations.requires_approval`, the Step-4 ACL
-        // decision, and `gate_destructive`. `policy_effective_approval` already
+        // decision, and `gate_destructive`. `decision.needs_approval` already
         // folds the annotation and `gate_destructive` together; the ACL's
         // requirement joins them here.
         //
@@ -756,20 +745,18 @@ impl Step for BuiltinApprovalGate {
         // `requires_approval: false` overrides the module's *annotation* and
         // never the ACL's decision.
         let acl_requires_approval = ctx.acl_approval_required;
-        let needs_approval = policy_effective_approval || acl_requires_approval;
+        let needs_approval = decision.needs_approval || acl_requires_approval;
 
         // Audit a policy-driven override: log, span, and bus event (apcore#77).
-        if let Some(d) = &decision {
-            if d.overridden {
-                Self::emit_policy_override(ctx, d);
-                Self::emit_policy_override_event(ctx, d).await;
-            }
+        if decision.overridden {
+            Self::emit_policy_override(ctx, &decision);
+            Self::emit_policy_override_event(ctx, &decision).await;
         }
 
         if !needs_approval {
             // Fail-loud governance (apcore#76): a module that is effectively
             // destructive but that no approval gate covers is warned about once.
-            if effective_destructive {
+            if decision.destructive {
                 Self::warn_once(
                     ctx,
                     &format!("destructive_ungated:{}", ctx.module_id),
@@ -785,10 +772,9 @@ impl Step for BuiltinApprovalGate {
             return Ok(StepResult::continue_step());
         }
 
-        // The module needs approval. Resolve the handler; when none is
-        // configured, FLIP the historical silent-skip to fail-loud (apcore#76).
+        // A missing handler refuses an approval-required call by default.
         let Some(handler) = ctx.approval_handler.clone() else {
-            if ctx.policy.as_ref().is_some_and(|p| p.strict) {
+            if policy.strict {
                 // strict=true fails CLOSED: build a rejected result, audit it,
                 // and deny.
                 let result = crate::approval::ApprovalResult {
@@ -804,17 +790,16 @@ impl Step for BuiltinApprovalGate {
                 Self::emit_approval_decision_event(ctx, &result, None).await;
                 return Err(Self::approval_error(&ctx.module_id, &result));
             }
-            // Non-strict: keep the PROTOCOL_SPEC §7.4 skip behavior but warn
-            // once per module (fail-loud, not silent). Emits no decision event
+            // An explicit non-strict policy warns once per module and
+            // continues. It emits no decision event
             // — parity with the "no audit log when gate skipped" contract.
             Self::warn_once(
                 ctx,
                 &format!("no_handler:{}", ctx.module_id),
                 &format!(
                     "Module '{}' requires approval but no ApprovalHandler is configured; \
-                     the approval gate is skipped per PROTOCOL_SPEC §7.4. Configure an \
-                     approval handler, or ExecutionPolicy(strict=true) to fail closed. \
-                     (apcore#76)",
+                     the explicit non-strict policy permits this call. Configure an \
+                     approval handler or enable strict enforcement.",
                     ctx.module_id
                 ),
             );
@@ -824,7 +809,7 @@ impl Step for BuiltinApprovalGate {
         let module = module.ok_or_else(|| ModuleError::module_not_found(&ctx.module_id))?;
         let mut annotations = module_annotations.unwrap_or_default();
         annotations.requires_approval = true;
-        annotations.destructive = effective_destructive;
+        annotations.destructive = decision.destructive;
         let description = module.description();
         let request = crate::approval::ApprovalRequest {
             module_id: ctx.module_id.clone(),

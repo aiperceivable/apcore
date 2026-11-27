@@ -172,11 +172,18 @@ impl Module for HealthSummaryModule {
 
         let module_ids = self.registry.get()?.list(None, None, None);
 
-        let project_name = {
-            let cfg = self.config.lock().await;
-            cfg.get("project.name")
-                .and_then(|v| v.as_str().map(std::string::ToString::to_string))
-                .unwrap_or_else(|| "apcore".to_string())
+        let project = {
+            let config = self.config.lock().await;
+            let mut project = json!({"name": config.get("project.name")
+                .filter(serde_json::Value::is_string)
+                .unwrap_or_else(|| json!("apcore"))});
+            if let Some(version) = config
+                .get("project.version")
+                .filter(serde_json::Value::is_string)
+            {
+                project["version"] = version;
+            }
+            project
         };
 
         let snapshot = self
@@ -233,7 +240,7 @@ impl Module for HealthSummaryModule {
         }
 
         Ok(json!({
-            "project": { "name": project_name },
+            "project": project,
             "summary": {
                 "total_modules": module_ids.len(),
                 "healthy": healthy,

@@ -394,7 +394,7 @@ impl EventSubscriber for CircuitBreakerWrapper {
 ///
 /// We don't have access to the concrete generic type name at runtime, but the
 /// `subscriber_id` carries a deterministic prefix for built-in types
-/// (`webhook-…`, `a2a-…`, `file-…`, `stdout-…`, `filter-…`). Use that prefix
+/// (`webhook-…`, `file-…`, `stdout-…`, `filter-…`). Use that prefix
 /// when present; otherwise fall back to the literal id.
 /// The DECLARED subscriber kind, the same value the DLQ path reports (D-116).
 ///

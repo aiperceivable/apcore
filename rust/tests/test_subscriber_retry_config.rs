@@ -65,18 +65,6 @@ fn webhook_reads_nested_retry_block() {
 }
 
 #[test]
-fn a2a_reads_nested_retry_block() {
-    let sub = create_subscriber(&json!({
-        "type": "a2a",
-        "platform_url": "https://platform.example.com",
-        "retry": non_default_retry_json()
-    }))
-    .unwrap();
-    assert_eq!(sub.subscriber_type(), "a2a");
-    assert_non_default_policy(sub.retry());
-}
-
-#[test]
 fn file_reads_nested_retry_block() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("events.jsonl");

@@ -7,6 +7,7 @@ use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
+#[cfg(feature = "sys-modules")]
 use crate::context::Context;
 use crate::errors::ModuleError;
 
@@ -148,6 +149,7 @@ impl AuditStore for InMemoryAuditStore {
 ///
 /// Falls back to `"unknown"` when the context has no identity attached, so
 /// audit records are always emitted even for anonymous callers.
+#[cfg(feature = "sys-modules")]
 pub(crate) fn build_audit_entry(
     action: AuditAction,
     target_module_id: &str,
@@ -158,6 +160,7 @@ pub(crate) fn build_audit_entry(
 }
 
 /// [`build_audit_entry`] with an explicit correlation id (D-111).
+#[cfg(feature = "sys-modules")]
 pub(crate) fn build_correlated_audit_entry(
     action: AuditAction,
     target_module_id: &str,
@@ -184,6 +187,7 @@ pub(crate) fn build_correlated_audit_entry(
 /// Append an `AuditEntry` to the store if configured; otherwise log at
 /// INFO level and discard. The `Arc<dyn AuditStore>` is cheap to clone, so
 /// callers can hold a single instance and pass references freely.
+#[cfg(feature = "sys-modules")]
 pub(crate) async fn record_audit(store: Option<&Arc<dyn AuditStore>>, entry: AuditEntry) {
     if let Some(store) = store {
         if let Err(e) = store.append(entry.clone()).await {
@@ -201,7 +205,7 @@ pub(crate) async fn record_audit(store: Option<&Arc<dyn AuditStore>>, entry: Aud
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "sys-modules"))]
 mod tests {
     use super::*;
     use crate::context::Identity;

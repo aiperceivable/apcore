@@ -191,8 +191,6 @@ mod test_context_key;
 mod test_context_key_promotion;
 #[path = "test_context_keys.rs"]
 mod test_context_keys;
-#[path = "test_context_logger_deprecation.rs"]
-mod test_context_logger_deprecation;
 #[path = "test_context_logger_schema.rs"]
 mod test_context_logger_schema;
 #[path = "test_crate_root_exports.rs"]

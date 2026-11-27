@@ -51,7 +51,12 @@ async fn config_only_reload_matches_canonical_response_schema() {
         "version: \"1.0\"\nproject:\n  name: reload-test\nsys_modules:\n  enabled: true\n  events:\n    enabled: true\n",
     )
     .expect("write reload config");
-    let client = APCore::with_config(Config::from_yaml_file(&path).expect("load config"));
+    let client = APCore::try_start(apcore::APCoreOptions {
+        config: Some(Config::from_yaml_file(&path).expect("load config")),
+        approval_handler: Some(Box::new(apcore::AutoApproveHandler)),
+        ..Default::default()
+    })
+    .unwrap();
     let response = client
         .call(
             "system.control.reload_module",

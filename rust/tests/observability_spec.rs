@@ -9,7 +9,7 @@
 //!   2. `MetricsEmitter.record` — MISSING SYMBOL in apcore-rust (no
 //!      `MetricsEmitter` type; the SDK exposes `MetricsCollector` instead).
 //!      Ignored.
-//!   3. `PrometheusExporter.export`— PRESENT and fully exercised.
+//!   3. `render_prometheus_metrics` — PRESENT and fully exercised.
 //!
 //! Each test fn name is the clause-id flattened to snake_case and carries the
 //! verbatim clause-id in a leading `// clause:` comment so cross-language diffs
@@ -17,19 +17,12 @@
 //!
 //! These tests are READ-ONLY contract verification — they never modify src/.
 
-use apcore::observability::{MetricsCollector, PrometheusExporter};
+use apcore::observability::{render_prometheus_metrics, MetricsCollector};
 
-// ---------------------------------------------------------------------------
-// Helper: build an exporter over a collector carrying a single known counter.
-//
-// Note (Rust-actual): `PrometheusExporter::new(collector)` takes the collector
-// BY VALUE. `MetricsCollector` is `Clone` and internally `Arc`-shared, so a
-// clone retained before the move is a live handle onto the same state.
-// ---------------------------------------------------------------------------
-fn exporter_with_one_counter() -> PrometheusExporter {
+fn collector_with_one_counter() -> MetricsCollector {
     let collector = MetricsCollector::new();
     collector.increment_calls("math.add", "success");
-    PrometheusExporter::new(collector)
+    collector
 }
 
 // ===========================================================================
@@ -99,23 +92,16 @@ fn observability_record_property_pure() {
 }
 
 // ===========================================================================
-// Contract 3: PrometheusExporter.export  (PRESENT — fully exercised)
-//
-// Rust-actual: the `collector` from the contract's ### Inputs is supplied at
-// construction (`PrometheusExporter::new(collector)`), and `export()` takes no
-// arguments and returns the Prometheus text `String`.
+// Contract 3: Prometheus text rendering
 // ===========================================================================
 
 // clause: observability.export.input.collector.required
 #[test]
 fn observability_export_input_collector_required() {
-    // Rust enforces the required `collector` at compile time: `new()` cannot be
-    // called without it (no runtime negative path exists). Positive: a supplied
-    // collector's data is what `export()` renders.
+    // The renderer reads metrics from the collector supplied by the caller.
     let collector = MetricsCollector::new();
     collector.increment_calls("math.add", "success");
-    let exporter = PrometheusExporter::new(collector);
-    let text = exporter.export();
+    let text = render_prometheus_metrics(&collector, None);
     assert!(text.contains("apcore_module_calls_total"));
     assert!(text.contains("module_id=\"math.add\""));
     assert!(text.contains("status=\"success\""));
@@ -127,8 +113,7 @@ fn observability_export_error_none() {
     // ### Errors: None — export errors MUST NOT propagate. `export()` returns a
     // plain `String` (no `Result`); exporting over an empty collector must not
     // panic and must yield a string.
-    let exporter = PrometheusExporter::new(MetricsCollector::new());
-    let text = exporter.export();
+    let text = render_prometheus_metrics(&MetricsCollector::new(), None);
     // A `String` is always returned; the three required metric names are present
     // even on a cold/empty collector (spec §1.6).
     assert!(text.contains("apcore_module_calls_total"));
@@ -139,8 +124,8 @@ fn observability_export_error_none() {
 fn observability_export_returns_prometheus_text() {
     // ### Returns: Prometheus text exposition format, UTF-8. A Rust `String` is
     // UTF-8 by construction; assert the canonical HELP/TYPE comment lines.
-    let exporter = exporter_with_one_counter();
-    let text = exporter.export();
+    let collector = collector_with_one_counter();
+    let text = render_prometheus_metrics(&collector, None);
     // Round-trips through UTF-8 without loss (String is valid UTF-8 by type).
     assert_eq!(String::from_utf8(text.clone().into_bytes()).unwrap(), text);
     assert!(text.contains("# HELP apcore_module_calls_total"));
@@ -153,8 +138,8 @@ fn observability_export_property_async() {
     // ### Properties: async: false. `export()` is a plain synchronous call
     // returning a concrete `String` (not a Future). If it were async this would
     // not type-check as a direct `String`.
-    let exporter = exporter_with_one_counter();
-    let result: String = exporter.export();
+    let collector = collector_with_one_counter();
+    let result: String = render_prometheus_metrics(&collector, None);
     assert!(result.contains("apcore_module_calls_total"));
 }
 
@@ -164,12 +149,14 @@ async fn observability_export_property_thread_safe() {
     // ### Properties: thread_safe: true. Launch N (>=8) concurrent exports over
     // a shared exporter; assert no panic and every snapshot is identical.
     use std::sync::Arc;
-    let exporter = Arc::new(exporter_with_one_counter());
+    let collector = Arc::new(collector_with_one_counter());
 
     let mut handles = Vec::new();
     for _ in 0..12 {
-        let ex = exporter.clone();
-        handles.push(tokio::spawn(async move { ex.export() }));
+        let collector = Arc::clone(&collector);
+        handles.push(tokio::spawn(async move {
+            render_prometheus_metrics(&collector, None)
+        }));
     }
 
     let mut results = Vec::new();
@@ -190,24 +177,19 @@ fn observability_export_property_pure() {
     // must NOT mutate the collector (a query), yet MUST reflect subsequent
     // mutations of the live collector — proving it reads live state.
     //
-    // Rust-actual: the exporter takes the collector by value, but
-    // `MetricsCollector` is `Clone` + `Arc`-shared, so a retained clone is a
-    // live handle onto the same internal state.
     let collector = MetricsCollector::new();
     collector.increment_calls("math.add", "success");
-    let live = collector.clone();
-    let exporter = PrometheusExporter::new(collector);
 
-    let before = live.snapshot();
-    let first = exporter.export();
-    let after = live.snapshot();
+    let before = collector.snapshot();
+    let first = render_prometheus_metrics(&collector, None);
+    let after = collector.snapshot();
     // export() is a query: it does not mutate collector state.
     assert_eq!(before, after);
     assert!(first.contains("math.add"));
 
     // Live-state coupling: a new module appears on the next export.
-    live.increment_calls("math.sub", "success");
-    let second = exporter.export();
+    collector.increment_calls("math.sub", "success");
+    let second = render_prometheus_metrics(&collector, None);
     assert!(second.contains("module_id=\"math.sub\""));
     assert!(!first.contains("module_id=\"math.sub\""));
 }
@@ -217,9 +199,9 @@ fn observability_export_property_pure() {
 fn observability_export_property_idempotent() {
     // ### Properties: idempotent: true. Two successive calls with unchanged
     // collector state MUST produce identical output and leave state identical.
-    let exporter = exporter_with_one_counter();
-    let first = exporter.export();
-    let second = exporter.export();
+    let collector = collector_with_one_counter();
+    let first = render_prometheus_metrics(&collector, None);
+    let second = render_prometheus_metrics(&collector, None);
     assert_eq!(first, second);
     assert!(!first.is_empty());
 }

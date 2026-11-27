@@ -653,7 +653,7 @@ impl EventEmitter {
     /// `matches_pattern` here would have it also fire on
     /// `apcore.acl.rule_matched`.
     ///
-    /// Every other subscriber (`WebhookSubscriber`, `A2ASubscriber`, a bare
+    /// Every other subscriber (`WebhookSubscriber`, a bare
     /// `EventSubscriber` impl, the DLQ's own `"*"` catch-all) reports `None`
     /// from `event_type_filter()` and keeps this crate's `*`-wildcard glob
     /// semantics via `event_pattern()` + [`Self::matches_pattern`] — those

@@ -129,6 +129,7 @@ fn test_other_required_exports_at_crate_root() {
     // Parity sweep — every symbol Python/TypeScript expose at the package root
     // should also be reachable from `apcore::*`.
     use apcore::{
+        export_generic,
         // Bindings
         AutoSchemaValue,
         BindingEntry,
@@ -147,7 +148,6 @@ fn test_other_required_exports_at_crate_root() {
         OTLPExporter,
         // Schema
         RefResolver,
-        SchemaExporter,
         SchemaLoader,
         SchemaValidator,
         Span,
@@ -205,32 +205,20 @@ fn test_execution_cancelled_error_at_crate_root() {
 fn test_event_subscriber_types_at_crate_root() {
     // D1-001/D1-002: EventSubscriber trait and concrete subscriber types must be
     // accessible from the crate root without navigating internal module paths.
-    use apcore::{A2ASubscriber, EventSubscriber, WebhookSubscriber};
+    use apcore::{EventSubscriber, WebhookSubscriber};
     // Compile-time — constructing a concrete subscriber confirms the types resolve.
     let sub = WebhookSubscriber::new("wh1", "https://example.com/hook", "*");
-    let _sub2 = A2ASubscriber::new("a2a1", "https://platform.example.com", "module.*");
     // Verify trait object coercion works from crate root type path.
     let _: &dyn EventSubscriber = &sub;
 }
 
 #[test]
-fn test_subscriber_registry_functions_at_crate_root() {
-    // D1-002: create_subscriber, register_subscriber_type, unregister_subscriber_type,
-    // reset_subscriber_registry must all be accessible from the crate root, matching
-    // apcore-python create_subscriber_from_config/register_subscriber_factory and
-    // apcore-typescript createSubscriberFromConfig/registerSubscriberType at root.
-    use apcore::{
-        create_subscriber, register_subscriber_type, reset_subscriber_registry,
-        unregister_subscriber_type,
-    };
-    // reset_subscriber_registry restores built-ins — safe to call in tests.
-    reset_subscriber_registry();
-    // Confirm the function signatures are callable with expected argument types.
-    let result = unregister_subscriber_type("nonexistent_type_xyz");
-    assert!(result.is_err());
-    // create_subscriber resolves at the crate root; an unknown type errors.
-    let made = create_subscriber(&serde_json::json!({"type": "nonexistent_type_xyz"}));
-    assert!(made.is_err());
+fn test_subscriber_registry_is_available_at_crate_root() {
+    use apcore::SubscriberRegistry;
+
+    let registry = SubscriberRegistry::new();
+    let made = registry.create(&serde_json::json!({"type": "stdout"}));
+    assert_eq!(made.unwrap().subscriber_type(), "stdout");
 }
 
 #[test]

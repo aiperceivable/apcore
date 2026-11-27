@@ -2035,6 +2035,11 @@ async fn conformance_approval_gate() {
         let resume_arguments = Arc::new(std::sync::Mutex::new(None));
         let resume = tc.get("resume");
         let mut executor = Executor::new(Arc::clone(&registry), Arc::new(Config::default()));
+        if let Some(policy) = tc.get("execution_policy") {
+            executor.set_policy(Some(
+                apcore::ExecutionPolicy::from_value(policy.clone()).unwrap(),
+            ));
+        }
         if tc["approval_handler_configured"].as_bool().unwrap() {
             let raw = &tc["approval_result"];
             let mut result = ApprovalResult::default();
@@ -3677,7 +3682,7 @@ async fn conformance_toggle_state_isolation() {
     use apcore::context::Context;
     use apcore::errors::ModuleError;
     use apcore::module::Module;
-    use apcore::APCore;
+    use apcore::{APCore, APCoreOptions, AutoApproveHandler};
     use async_trait::async_trait;
     use serde_json::json;
     use std::collections::{HashMap, HashSet};
@@ -3748,7 +3753,12 @@ async fn conformance_toggle_state_isolation() {
         let mut instances: HashMap<String, APCore> = HashMap::new();
         for name in tc["instances"].as_array().unwrap() {
             let name = name.as_str().unwrap().to_string();
-            let client = APCore::with_config(sys_config());
+            let client = APCore::try_start(APCoreOptions {
+                config: Some(sys_config()),
+                approval_handler: Some(Box::new(AutoApproveHandler)),
+                ..Default::default()
+            })
+            .unwrap();
             register_modules(&client);
             instances.insert(name, client);
         }

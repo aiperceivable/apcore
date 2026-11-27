@@ -96,6 +96,7 @@ pub struct MiddlewareChainConfig {
 
 impl MiddlewareChainConfig {
     /// Parse a YAML document into a chain config.
+    #[cfg(feature = "config")]
     pub fn from_yaml(source: &str) -> Result<Self, ModuleError> {
         serde_yaml_ng::from_str(source).map_err(|e| {
             ModuleError::new(
@@ -317,7 +318,7 @@ impl Middleware for PriorityOverride {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "config"))]
 mod tests {
     use super::*;
 

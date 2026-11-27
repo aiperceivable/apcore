@@ -89,7 +89,12 @@ async fn apcore_toggle_feature_is_reachable_from_executor_when_events_enabled() 
     // When events are enabled, control modules including
     // `system.control.toggle_feature` should be registered into the same
     // registry the executor consults.
-    let apcore = APCore::with_config(enable_events_config());
+    let apcore = APCore::try_start(apcore::APCoreOptions {
+        config: Some(enable_events_config()),
+        approval_handler: Some(Box::new(apcore::AutoApproveHandler)),
+        ..Default::default()
+    })
+    .unwrap();
 
     let registered = apcore.list_modules(None, None);
     assert!(
@@ -129,7 +134,12 @@ async fn apcore_toggle_feature_is_reachable_from_executor_when_events_enabled() 
 async fn disable_through_pipeline_is_observed_by_executor() {
     // Unique module id avoids collisions in the process-global ToggleState.
     let module_id = "demo.module.disable_observed";
-    let apcore = APCore::with_config(enable_events_config());
+    let apcore = APCore::try_start(apcore::APCoreOptions {
+        config: Some(enable_events_config()),
+        approval_handler: Some(Box::new(apcore::AutoApproveHandler)),
+        ..Default::default()
+    })
+    .unwrap();
     apcore
         .register(module_id, Box::new(Dummy))
         .expect("register should succeed");
@@ -150,7 +160,12 @@ async fn disable_through_pipeline_is_observed_by_executor() {
 async fn enable_through_pipeline_restores_execution() {
     // Unique module id avoids collisions in the process-global ToggleState.
     let module_id = "demo.module.enable_restores";
-    let apcore = APCore::with_config(enable_events_config());
+    let apcore = APCore::try_start(apcore::APCoreOptions {
+        config: Some(enable_events_config()),
+        approval_handler: Some(Box::new(apcore::AutoApproveHandler)),
+        ..Default::default()
+    })
+    .unwrap();
     apcore
         .register(module_id, Box::new(Dummy))
         .expect("register should succeed");
@@ -231,7 +246,12 @@ async fn concurrent_register_and_list_no_deadlock() {
 
 #[tokio::test]
 async fn toggle_feature_on_nonexistent_module_does_not_pollute_toggle_state() {
-    let apcore = APCore::with_config(enable_events_config());
+    let apcore = APCore::try_start(apcore::APCoreOptions {
+        config: Some(enable_events_config()),
+        approval_handler: Some(Box::new(apcore::AutoApproveHandler)),
+        ..Default::default()
+    })
+    .unwrap();
 
     // Attempt to disable a non-existent module — must fail.
     let result = apcore.disable("does.not.exist", Some("testing")).await;

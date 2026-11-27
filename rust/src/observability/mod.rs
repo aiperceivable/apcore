@@ -7,7 +7,6 @@ pub mod logging;
 pub mod metrics;
 pub mod processor;
 mod prometheus;
-pub mod prometheus_exporter;
 pub mod redaction;
 pub mod span;
 pub mod storage;
@@ -28,7 +27,6 @@ pub use processor::{
     SpanProcessor,
 };
 pub use prometheus::render_prometheus_metrics;
-pub use prometheus_exporter::PrometheusExporter;
 pub use redaction::{RedactionConfig, RedactionConfigBuilder, RedactionConfigError};
 pub use span::{Span, SpanExporter};
 pub use storage::{default_storage_backend, InMemoryStorageBackend, StorageBackend, StorageError};

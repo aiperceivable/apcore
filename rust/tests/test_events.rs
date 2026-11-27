@@ -7,10 +7,7 @@ use serde_json::json;
 
 use apcore::errors::{ErrorCode, ModuleError};
 use apcore::events::emitter::{ApCoreEvent, EventEmitter};
-use apcore::events::subscribers::{
-    create_subscriber, register_subscriber_type, reset_subscriber_registry,
-    unregister_subscriber_type, A2ASubscriber, EventSubscriber, WebhookSubscriber,
-};
+use apcore::events::subscribers::{EventSubscriber, SubscriberRegistry, WebhookSubscriber};
 
 // ---------------------------------------------------------------------------
 // Test subscriber — records received events for assertions
@@ -393,7 +390,7 @@ async fn test_pattern_no_match() {
 }
 
 // ---------------------------------------------------------------------------
-// WebhookSubscriber and A2ASubscriber unit tests (construction only)
+// WebhookSubscriber unit tests (construction only)
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -406,17 +403,8 @@ fn test_webhook_subscriber_defaults() {
     assert!(ws.headers.is_empty());
 }
 
-#[test]
-fn test_a2a_subscriber_defaults() {
-    let a2a = A2ASubscriber::new("a2a-1", "https://platform.example.com", "*");
-    assert_eq!(a2a.subscriber_id(), "a2a-1");
-    assert_eq!(a2a.event_pattern(), "*");
-    assert_eq!(a2a.timeout_ms, 5000);
-    assert!(a2a.auth.is_none());
-}
-
 // ---------------------------------------------------------------------------
-// Subscriber factory tests — single sequential test to avoid global state races
+// Subscriber factory tests
 // ---------------------------------------------------------------------------
 
 // ModuleError is a protocol-level domain type whose rich field set is spec-required;
@@ -424,68 +412,58 @@ fn test_a2a_subscriber_defaults() {
 #[allow(clippy::result_large_err)]
 #[test]
 fn test_subscriber_factory_operations() {
-    reset_subscriber_registry();
+    let mut registry = SubscriberRegistry::new();
 
     // Create webhook subscriber
     let config = json!({ "type": "webhook", "url": "https://example.com/hook" });
-    let sub = create_subscriber(&config).expect("should create webhook subscriber");
+    let sub = registry
+        .create(&config)
+        .expect("should create webhook subscriber");
     assert!(sub.subscriber_id().starts_with("webhook-"));
     assert_eq!(sub.event_pattern(), "*");
 
-    // Create a2a subscriber
-    let config = json!({ "type": "a2a", "platform_url": "https://platform.example.com" });
-    let sub = create_subscriber(&config).expect("should create a2a subscriber");
-    assert!(sub.subscriber_id().starts_with("a2a-"));
-
     // Missing type field
     let config = json!({ "url": "https://example.com" });
-    let err = create_subscriber(&config).unwrap_err();
+    let err = registry.create(&config).unwrap_err();
     assert_eq!(err.code, ErrorCode::ConfigInvalid);
 
     // Unknown type
     let config = json!({ "type": "unknown" });
-    let err = create_subscriber(&config).unwrap_err();
+    let err = registry.create(&config).unwrap_err();
     assert_eq!(err.code, ErrorCode::ConfigInvalid);
 
     // Webhook missing url
     let config = json!({ "type": "webhook" });
-    let err = create_subscriber(&config).unwrap_err();
-    assert_eq!(err.code, ErrorCode::ConfigInvalid);
-
-    // A2A missing platform_url
-    let config = json!({ "type": "a2a" });
-    let err = create_subscriber(&config).unwrap_err();
+    let err = registry.create(&config).unwrap_err();
     assert_eq!(err.code, ErrorCode::ConfigInvalid);
 
     // Register custom type
-    register_subscriber_type(
-        "custom",
-        Box::new(|config| {
-            let id = config
-                .get("id")
-                .and_then(|v| v.as_str())
-                .unwrap_or("custom-default")
-                .to_string();
-            Ok(Box::new(RecordingSubscriber::new(&id, "*")) as Box<dyn EventSubscriber>)
-        }),
-    );
+    registry.register("custom", |config| {
+        let id = config
+            .get("id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("custom-default")
+            .to_string();
+        Ok(Box::new(RecordingSubscriber::new(&id, "*")) as Box<dyn EventSubscriber>)
+    });
     let config = json!({ "type": "custom", "id": "my-custom" });
-    let sub = create_subscriber(&config).expect("should create custom subscriber");
+    let sub = registry
+        .create(&config)
+        .expect("should create custom subscriber");
     assert_eq!(sub.subscriber_id(), "my-custom");
 
     // Unregister webhook
-    assert!(unregister_subscriber_type("webhook").is_ok());
+    assert!(registry.unregister("webhook"));
     let config = json!({ "type": "webhook", "url": "https://example.com" });
-    assert!(create_subscriber(&config).is_err());
+    assert!(registry.create(&config).is_err());
 
     // Unregister nonexistent type
-    let err = unregister_subscriber_type("nonexistent").unwrap_err();
-    assert_eq!(err.code, ErrorCode::GeneralInternalError);
+    assert!(!registry.unregister("nonexistent"));
 
-    // Reset restores built-ins
-    reset_subscriber_registry();
+    // A second instance keeps the default factories.
+    let registry = SubscriberRegistry::new();
     let config = json!({ "type": "webhook", "url": "https://restored.com" });
-    assert!(create_subscriber(&config).is_ok());
+    assert!(registry.create(&config).is_ok());
 }
 
 // ---------------------------------------------------------------------------

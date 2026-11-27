@@ -1,6 +1,6 @@
 [package]
 name = "apcore"
-version = "1.0.0-alpha.1"
+version = "1.0.0-alpha.2"
 edition = "2021"
 # Minimum supported Rust version. Verified with `cargo +1.86 check --all-features`.
 # The binding language constraint is `std::task::Waker::noop()` (used by the
@@ -39,6 +39,11 @@ rustdoc-args = ["--cfg", "docsrs"]
 [[test]]
 name = "it"
 path = "tests/it.rs"
+required-features = ["config", "discovery", "events-file", "sys-modules"]
+
+[[test]]
+name = "core_profile"
+path = "tests/core_profile.rs"
 
 # Files that register into the process-global Config namespace registry or
 # mutate env vars are kept as SEPARATE binaries so each runs in its own process
@@ -49,22 +54,37 @@ path = "tests/it.rs"
 [[example]]
 name = "format_date"
 path = "examples/bindings/format_date.rs"
+required-features = ["config"]
+
+[[example]]
+name = "acl_config_driven"
+path = "examples/acl_config_driven.rs"
+required-features = ["config"]
+
+[[example]]
+name = "execution_policy"
+path = "examples/execution_policy.rs"
+required-features = ["config"]
 
 [[test]]
 name = "config_bus"
 path = "tests/config_bus.rs"
+required-features = ["config", "discovery", "sys-modules"]
 
 [[test]]
 name = "config_bus_spec"
 path = "tests/config_bus_spec.rs"
+required-features = ["config", "discovery", "sys-modules"]
 
 [[test]]
 name = "config_discovery"
 path = "tests/config_discovery.rs"
+required-features = ["config", "discovery", "sys-modules"]
 
 [[test]]
 name = "conformance_test"
 path = "tests/conformance_test.rs"
+required-features = ["config", "discovery", "sys-modules"]
 
 # The three §9.2.1 / §9.2.2 / §5.12.6 conformance drivers. Each mutates the
 # process environment (`APCORE_*`, `HOME`) and/or the working directory, which
@@ -72,14 +92,17 @@ path = "tests/conformance_test.rs"
 [[test]]
 name = "test_config_path_typed_keys_conformance"
 path = "tests/test_config_path_typed_keys_conformance.rs"
+required-features = ["config", "discovery", "sys-modules"]
 
 [[test]]
 name = "test_bindings_dir_resolution_conformance"
 path = "tests/test_bindings_dir_resolution_conformance.rs"
+required-features = ["config", "discovery", "sys-modules"]
 
 [[test]]
 name = "test_config_project_root_conformance"
 path = "tests/test_config_project_root_conformance.rs"
+required-features = ["config", "discovery", "sys-modules"]
 
 # §9.2.4's deprecation notice is asserted at the ENVIRONMENT tier too, so this
 # file sets `APCORE_*` variables. A leaked variable is invisible to the test
@@ -88,29 +111,35 @@ path = "tests/test_config_project_root_conformance.rs"
 [[test]]
 name = "test_deprecated_inert_keys"
 path = "tests/test_deprecated_inert_keys.rs"
+required-features = ["config", "discovery", "sys-modules"]
 
 # Mutates `APCORE_*` for the environment tier, so it gets its own process
 # like the discovery drivers above.
 [[test]]
 name = "test_get_declared_typed_sections"
 path = "tests/test_get_declared_typed_sections.rs"
+required-features = ["config", "discovery", "sys-modules"]
 
 # Sets `APCORE_ID__MAP_OVERRIDES` and the working directory per case.
 [[test]]
 name = "test_id_map_from_config_conformance"
 path = "tests/test_id_map_from_config_conformance.rs"
+required-features = ["discovery"]
 
 [[test]]
 name = "test_capture_point_redaction"
 path = "tests/test_capture_point_redaction.rs"
+required-features = ["config", "discovery", "sys-modules"]
 
 [[test]]
 name = "test_extensions_ignore_patterns"
 path = "tests/test_extensions_ignore_patterns.rs"
+required-features = ["config", "discovery", "sys-modules"]
 
 [[test]]
 name = "test_issue_123_conformance"
 path = "tests/test_issue_123_conformance.rs"
+required-features = ["config", "discovery", "sys-modules"]
 
 # Changes proxy environment variables, so it must run outside the shared test binary.
 [[test]]
@@ -119,10 +148,10 @@ path = "tests/test_otlp_proxy_routing.rs"
 required-features = ["events"]
 
 [dependencies]
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "fs", "io-util", "net"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-serde_yaml_ng = "0.10"
+serde_yaml_ng = { version = "0.10", optional = true }
 chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 thiserror = "2"
@@ -143,11 +172,17 @@ async-stream = "0.3"
 parking_lot = "0.12"
 schemars = "0.8"
 dashmap = "6"
-notify = { version = "8", default-features = false, features = ["macos_fsevent"] }
+notify = { version = "8", optional = true, default-features = false, features = ["macos_fsevent"] }
 
 [features]
+# Retain the existing default API while consumers opt into named extensions.
 default = []
+config = ["dep:serde_yaml_ng"]
+discovery = ["config", "dep:notify"]
 events = ["reqwest", "dep:h2", "dep:url"]
+events-file = ["tokio/fs", "tokio/io-util"]
+sys-modules = ["config"]
+full = ["config", "discovery", "events", "events-file", "sys-modules"]
 
 [dev-dependencies]
 tempfile = "3"

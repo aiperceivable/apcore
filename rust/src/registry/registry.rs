@@ -14,7 +14,9 @@ use std::sync::{
 use crate::cancel::CancelToken;
 use crate::errors::ModuleError;
 use crate::events::emitter::{ApCoreEvent, EventEmitter};
-use crate::lifecycle::{lifecycle_runtime, lifecycle_worker, ReloadOptions, REGISTRY_CALLBACK};
+#[cfg(feature = "discovery")]
+use crate::lifecycle::{lifecycle_runtime, ReloadOptions};
+use crate::lifecycle::{lifecycle_worker, REGISTRY_CALLBACK};
 use crate::module::{
     Module, ModuleAnnotations, ModuleExample, ValidationErrorDetail, ValidationResult,
 };
@@ -753,6 +755,7 @@ impl DrainGuard<'_> {
         modules
     }
 
+    #[cfg(any(feature = "discovery", feature = "sys-modules"))]
     fn apply_recovery(&self, recovered: bool) -> bool {
         let mut core = self.core.write();
         if core.closed || !self.refers_to_current_registration(&core) {
@@ -800,8 +803,10 @@ struct RegistrationOptions<'a> {
 
 pub(crate) struct RemovedRegistration {
     pub(crate) primary: Arc<dyn Module>,
+    #[cfg(any(feature = "discovery", feature = "sys-modules"))]
     pub(crate) descriptor: ModuleDescriptor,
     older_versions: Vec<VersionEntry>,
+    #[cfg(any(feature = "discovery", feature = "sys-modules"))]
     source: Option<String>,
 }
 
@@ -826,6 +831,7 @@ fn resume_reloaded_module(name: &str, module: &dyn Module, state: serde_json::Va
     }
 }
 
+#[cfg(any(feature = "discovery", feature = "sys-modules"))]
 pub(crate) struct ReloadRegistration {
     pub(crate) removed: RemovedRegistration,
     pub(crate) state: Option<serde_json::Value>,
@@ -890,10 +896,14 @@ impl RegistryCore {
         if let Some(references) = self.ref_counts.remove(name) {
             references.drained.notify_waiters();
         }
+        #[cfg(not(any(feature = "discovery", feature = "sys-modules")))]
+        let _ = (descriptor, source);
         Some(RemovedRegistration {
             primary,
+            #[cfg(any(feature = "discovery", feature = "sys-modules"))]
             descriptor,
             older_versions,
+            #[cfg(any(feature = "discovery", feature = "sys-modules"))]
             source,
         })
     }
@@ -944,9 +954,11 @@ pub struct Registry {
     extension_roots: RwLock<Vec<String>>,
     /// Live filesystem watcher (sync finding A-D-010). `None` when
     /// `watch()` has not been called or has been stopped via `unwatch()`.
+    #[cfg(feature = "discovery")]
     watcher: parking_lot::Mutex<Option<notify::RecommendedWatcher>>,
     /// Background task handle that consumes notify events and triggers
     /// debounced re-discovery. Cleared on `unwatch()`.
+    #[cfg(feature = "discovery")]
     watch_handle: parking_lot::Mutex<Option<tokio::task::JoinHandle<()>>>,
     /// Tracks unpublished registrations and excludes concurrent registrations
     /// of the same ID, including while rejected loads are being cleaned up.
@@ -980,6 +992,7 @@ struct DiscovererRestoreGuard<'a> {
 /// Watchers report resolved paths (`/private/var/...` on macOS for a root under
 /// `/var/...`), so both sides of a comparison are canonicalised. A removed file
 /// can no longer be canonicalised, so its parent is instead.
+#[cfg(feature = "discovery")]
 fn normalize_watched_path(path: &std::path::Path) -> std::path::PathBuf {
     if let Ok(resolved) = std::fs::canonicalize(path) {
         return resolved;
@@ -1055,7 +1068,9 @@ impl Registry {
             discoverer: RwLock::new(None),
             validator: RwLock::new(None),
             extension_roots: RwLock::new(Vec::new()),
+            #[cfg(feature = "discovery")]
             watcher: parking_lot::Mutex::new(None),
+            #[cfg(feature = "discovery")]
             watch_handle: parking_lot::Mutex::new(None),
             in_flight: LoadingRegistrations::default(),
             load_failed_callbacks: RwLock::new(Vec::new()),
@@ -2365,6 +2380,7 @@ impl Registry {
         Ok(removed)
     }
 
+    #[cfg(any(feature = "discovery", feature = "sys-modules"))]
     pub(crate) async fn unload_for_reload(
         &self,
         name: &str,
@@ -2381,6 +2397,7 @@ impl Registry {
     }
 
     /// Restore all versions and the source association after failed replacement.
+    #[cfg(any(feature = "discovery", feature = "sys-modules"))]
     pub(crate) async fn restore_reload(
         &self,
         name: &str,
@@ -2576,21 +2593,6 @@ impl Registry {
         }
     }
 
-    /// Deprecated alias for [`acquire`](Self::acquire) — kept for backward
-    /// compatibility with apcore-rust 0.19.x which had separate
-    /// `acquire`/`acquire_ref` semantics.
-    #[deprecated(since = "0.20.0", note = "Use `acquire()` — it now ref-counts.")]
-    pub fn acquire_ref(&self, name: &str) -> Result<Arc<dyn Module>, ModuleError> {
-        self.acquire(name)
-    }
-
-    /// Deprecated alias for [`release`](Self::release) — kept for backward
-    /// compatibility with apcore-rust 0.19.x.
-    #[deprecated(since = "0.20.0", note = "Use `release()`.")]
-    pub fn release_ref(&self, name: &str) {
-        self.release(name);
-    }
-
     /// Check if a module is draining.
     pub fn is_draining(&self, name: &str) -> bool {
         self.core.read().draining.contains(name)
@@ -2695,11 +2697,13 @@ impl Registry {
     #[allow(unknown_lints)]
     #[allow(clippy::unused_async)]
     #[allow(clippy::unused_async_trait_impl)]
+    #[cfg(feature = "discovery")]
     pub async fn watch(self: &Arc<Self>) -> Result<(), ModuleError> {
         self.start_watcher(None)
     }
 
     /// Watch configured roots with managed, generation-aware replacement.
+    #[cfg(feature = "discovery")]
     pub fn watch_with_lifecycle(
         self: &Arc<Self>,
         options: ReloadOptions,
@@ -2707,6 +2711,7 @@ impl Registry {
         self.start_watcher(Some(options.validate()?))
     }
 
+    #[cfg(feature = "discovery")]
     fn start_watcher(
         self: &Arc<Self>,
         lifecycle: Option<ReloadOptions>,
@@ -2775,6 +2780,7 @@ impl Registry {
     /// Background task body that consumes notify events and applies each
     /// debounced batch of changed paths. Exits when the receiver channel
     /// closes or the `Weak<Registry>` can no longer be upgraded.
+    #[cfg(feature = "discovery")]
     async fn watch_loop(
         mut rx: tokio::sync::mpsc::UnboundedReceiver<notify::Result<notify::Event>>,
         weak: std::sync::Weak<Self>,
@@ -2827,6 +2833,7 @@ impl Registry {
     /// Apply a batch of changed file paths: register new modules, replace the
     /// modules whose source (or `_meta.yaml` sidecar) changed, and unregister
     /// those whose source file is gone.
+    #[cfg(feature = "discovery")]
     async fn apply_file_changes(
         self: &Arc<Self>,
         paths: &[std::path::PathBuf],
@@ -2893,6 +2900,7 @@ impl Registry {
     /// Replace a registered module with a freshly discovered instance,
     /// handing its `on_suspend` state to the new instance's `on_resume`. The
     /// previous instance is put back if the new one fails to register.
+    #[cfg(feature = "discovery")]
     async fn replace_discovered(
         &self,
         dm: DiscoveredModule,
@@ -2941,10 +2949,12 @@ impl Registry {
     /// Stop filesystem watching. The background task is aborted and the
     /// platform watcher is dropped. Idempotent — calling on a non-watching
     /// Registry is a no-op.
+    #[cfg(feature = "discovery")]
     pub fn unwatch(&self) {
         self.stop_watching();
     }
 
+    #[cfg(feature = "discovery")]
     fn stop_watching(&self) -> Option<tokio::task::JoinHandle<()>> {
         let (watcher, handle) = {
             let mut watcher = self.watcher.lock();

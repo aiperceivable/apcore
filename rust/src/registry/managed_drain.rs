@@ -21,6 +21,7 @@ use super::{deadline_after, DrainGuard, RemovalResources};
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum DrainAction {
     ContinueWaiting,
+    #[cfg(any(feature = "discovery", feature = "sys-modules"))]
     AbortReload,
     CancelThenForce(u32),
     LegacyForce,
@@ -39,6 +40,7 @@ impl DrainAction {
     fn name(self) -> &'static str {
         match self {
             Self::ContinueWaiting => "continue_waiting",
+            #[cfg(any(feature = "discovery", feature = "sys-modules"))]
             Self::AbortReload => "abort_reload",
             Self::CancelThenForce(_) => "cancel_then_force",
             Self::LegacyForce => "legacy_force",
@@ -69,7 +71,9 @@ pub(super) struct DrainPlan {
 
 pub(super) struct DrainResult {
     pub(super) hook_error: Option<ModuleError>,
+    #[cfg(any(feature = "discovery", feature = "sys-modules"))]
     pub(super) error_preceded_deadline: bool,
+    #[cfg(any(feature = "discovery", feature = "sys-modules"))]
     pub(super) timed_out: bool,
     pub(super) force: bool,
 }
@@ -107,10 +111,24 @@ impl RemovalResources {
             result = &mut hooks => {
                 let error = result.err();
                 if error.is_some() && plan.reason == DrainReasonKind::Reload {
-                    return DrainResult { hook_error: error, error_preceded_deadline: true, timed_out: false, force: false };
+                    return DrainResult {
+                        hook_error: error,
+                        #[cfg(any(feature = "discovery", feature = "sys-modules"))]
+                        error_preceded_deadline: true,
+                        #[cfg(any(feature = "discovery", feature = "sys-modules"))]
+                        timed_out: false,
+                        force: false,
+                    };
                 }
                 if guard.references.wait_for_drain(Some(plan.deadline)).await {
-                    return DrainResult { hook_error: error, error_preceded_deadline: false, timed_out: false, force: false };
+                    return DrainResult {
+                        hook_error: error,
+                        #[cfg(any(feature = "discovery", feature = "sys-modules"))]
+                        error_preceded_deadline: false,
+                        #[cfg(any(feature = "discovery", feature = "sys-modules"))]
+                        timed_out: false,
+                        force: false,
+                    };
                 }
                 (error, self.drain_timeout(operation, index, guard, plan))
             },
@@ -131,7 +149,9 @@ impl RemovalResources {
                 guard.references.wait_for_drain(None).await;
                 false
             }
-            DrainAction::ContinueWaiting | DrainAction::AbortReload => false,
+            DrainAction::ContinueWaiting => false,
+            #[cfg(any(feature = "discovery", feature = "sys-modules"))]
+            DrainAction::AbortReload => false,
             DrainAction::LegacyForce => true,
             DrainAction::CancelThenForce(_) => {
                 !guard.references.wait_for_drain(grace_deadline).await
@@ -139,7 +159,9 @@ impl RemovalResources {
         };
         DrainResult {
             hook_error,
+            #[cfg(any(feature = "discovery", feature = "sys-modules"))]
             error_preceded_deadline: false,
+            #[cfg(any(feature = "discovery", feature = "sys-modules"))]
             timed_out: true,
             force,
         }

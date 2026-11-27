@@ -92,7 +92,7 @@ tests at `tests/test_async_task.rs` and `tests/test_extensions.rs`.
 |------|-------------|
 | `SchemaLoader` | Load schemas from YAML or native types |
 | `SchemaValidator` | Validate data against schemas |
-| `SchemaExporter` | Export schemas for MCP, OpenAI, Anthropic, generic |
+| `export_generic` / `to_strict_schema` | Preserve the full JSON Schema or apply the A23 transform |
 | `RefResolver` | Resolve `$ref` references in JSON Schema |
 
 **Observability**
@@ -127,17 +127,44 @@ For full documentation, including Quick Start guides for Python and Rust, visit:
 - Rust >= 1.86 (enforced by `rust-version` in `Cargo.toml`)
 - Tokio async runtime
 
-## Installation
+## Installation and feature profiles
 
-Add to your `Cargo.toml`:
+[APCore::new](./src/client.rs) assembles the in-memory registry and executor.
+The default profile keeps Tokio runtime, macros, synchronization, and timers
+for streaming, cancellation, and managed lifecycle. Discovery, filesystem
+watching, YAML loading, and network delivery are opt-in.
 
-```toml
-[dependencies]
-apcore = "0.32"
-tokio = { version = "1", features = ["full"] }
-serde_json = "1"
-async-trait = "0.1"
+| Cargo feature | Capability |
+|---------------|------------|
+| `config` | YAML configuration, file-backed ACLs, and bindings |
+| `discovery` | Filesystem module discovery and watching |
+| `sys-modules` | Configured system modules and event setup |
+| `events` | HTTP webhook delivery and OTLP transport |
+| `events-file` | JSONL event subscribers |
+| `full` | All of the above |
+
+Use `APCore::with_config` or `APCore::try_start` with the required features for
+configured startup. Calls requiring approval are denied when a handler is
+missing. Destructive modules require approval by default. Configure an
+`ApprovalHandler` to resolve those calls or set the relevant
+`ExecutionPolicy` switch explicitly.
+
+Add the crate to your project:
+
+```sh
+cargo add apcore
+cargo add tokio --features macros,rt-multi-thread
+cargo add serde_json async-trait
 ```
+
+For a prerelease, select its exact version on [crates.io](https://crates.io/crates/apcore).
+Enable `full` on the `apcore` dependency when the application uses all of the
+optional integrations.
+
+Configured health summaries expose `project.version` when supplied. Explicit
+`sys_modules.usage.retention_hours` sets the cutoff for hourly usage buckets
+at collector startup. Without that setting, the collector keeps up to 168
+occupied buckets per module.
 
 ## Bare-name canonicalization
 

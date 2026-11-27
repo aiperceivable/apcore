@@ -318,7 +318,12 @@ async fn test_apcore_disable_enable() {
     let mut config = apcore::config::Config::default();
     config.set("sys_modules.enabled", json!(true));
     config.set("sys_modules.events.enabled", json!(true));
-    let client = APCore::with_config(config);
+    let client = APCore::try_start(apcore::APCoreOptions {
+        config: Some(config),
+        approval_handler: Some(Box::new(apcore::AutoApproveHandler)),
+        ..Default::default()
+    })
+    .unwrap();
     // Unique module id: the disabled-set is a process-global ToggleState (sync
     // finding A-D-12), so a shared id could leak into other tests in this
     // binary while this test transiently disables it.
@@ -353,7 +358,12 @@ async fn test_apcore_disable_nonexistent_module() {
     let mut config = apcore::config::Config::default();
     config.set("sys_modules.enabled", json!(true));
     config.set("sys_modules.events.enabled", json!(true));
-    let client = APCore::with_config(config);
+    let client = APCore::try_start(apcore::APCoreOptions {
+        config: Some(config),
+        approval_handler: Some(Box::new(apcore::AutoApproveHandler)),
+        ..Default::default()
+    })
+    .unwrap();
 
     let err = client
         .disable("nonexistent.module", None)

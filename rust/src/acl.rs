@@ -3,9 +3,11 @@
 
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
+#[cfg(feature = "config")]
 use serde_yaml_ng as serde_yaml;
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
+#[cfg(feature = "config")]
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Once};
@@ -23,6 +25,7 @@ use crate::utils::match_pattern;
 ///
 /// Closed on purpose: a key nothing evaluates is otherwise dropped in silence,
 /// which widens an `allow` rule with no warning (#107).
+#[cfg(feature = "config")]
 const RULE_KEYS: &[&str] = &[
     "callers",
     "targets",
@@ -48,6 +51,7 @@ const EFFECTS: &[&str] = &["allow", "deny"];
 /// Rejected like any other unknown key, but named as reserved in the message:
 /// an operator who wrote `actions: ["describe"]` meant to restrict the rule and
 /// is better served by "not implemented" than by "unknown key".
+#[cfg(feature = "config")]
 const RESERVED_RULE_KEYS: &[&str] = &["id", "actions", "priority"];
 
 /// The caller identity an absent `caller_id` resolves to (PROTOCOL_SPEC §6.5).
@@ -68,6 +72,7 @@ const RESERVED_RULE_KEYS: &[&str] = &["id", "actions", "priority"];
 pub const EXTERNAL_CALLER: &str = "@external";
 
 /// Reject any rule key outside [`RULE_KEYS`].
+#[cfg(feature = "config")]
 fn reject_unknown_rule_keys(
     index: usize,
     path: &str,
@@ -940,6 +945,7 @@ pub(crate) fn warn_audit_block_overridden(
 ///
 /// Validates the SUBTREE only: types and unknown keys inside the block. Every
 /// other unrecognised root key in an ACL file keeps being ignored.
+#[cfg(feature = "config")]
 pub(crate) fn parse_audit_block(
     raw: &serde_json::Value,
     path: &str,
@@ -1975,6 +1981,7 @@ impl ACL {
     }
 
     /// Load ACL rules from a YAML file.
+    #[cfg(feature = "config")]
     pub fn load(path: &str) -> Result<Self, ModuleError> {
         let content = std::fs::read_to_string(path).map_err(|e| {
             ModuleError::new(
@@ -2182,6 +2189,7 @@ impl ACL {
     /// # Errors
     /// Returns [`ModuleError`] when a policy path cannot be inspected or
     /// the policy cannot be loaded. A missing path yields `Ok(None)`.
+    #[cfg(feature = "config")]
     pub fn discover(config: &crate::config::Config) -> Result<Option<Self>, ModuleError> {
         let Some(root_path) = config.get_path("acl.root") else {
             return Ok(None);
@@ -2209,6 +2217,7 @@ impl ACL {
         Self::load(&path.to_string_lossy()).map(Some)
     }
 
+    #[cfg(feature = "config")]
     fn discover_metadata(path: &Path) -> Result<Option<std::fs::Metadata>, ModuleError> {
         let inspect_error = |error: std::io::Error| {
             ModuleError::new(
@@ -2260,6 +2269,7 @@ impl ACL {
     /// Holding `&mut self` across `Self::load` would block any concurrent
     /// reader for the duration of the file read; the brace scope below
     /// makes that explicitly impossible (sync finding A-D-303).
+    #[cfg(feature = "config")]
     pub fn reload(&mut self) -> Result<(), ModuleError> {
         let path = {
             // Narrow scope: the immutable borrow on `self.yaml_path` ends
@@ -3025,7 +3035,7 @@ impl Default for ACL {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "config"))]
 mod reload_tests {
     use super::*;
     use std::io::Write;
