@@ -131,6 +131,14 @@ A trace is process-local. `call_with_trace()` returns it; a `PipelineStepError` 
 
 ### The standard pipeline
 
+An Executor with a `PolicyEvaluator` runs `post_validation_policy` after input
+validation and before execution or producer startup. This opt-in gate evaluates
+the validated execution snapshot and enforces the combined approval requirement.
+Install it with the built-in `standard` or `performance` strategy to retain the
+validation and dispatch boundaries it depends on.
+The [post-validation policy contract](../spec/protocol-spec.md#741-post-validation-policy)
+describes the supported strategy boundary and preflight behavior.
+
 | # | Step | Core | pure | removable | replaceable | What it does |
 |---|---|---|---|---|---|---|
 | 1 | `context_creation` | yes | yes | no | no | Create or inherit the execution context; set the global deadline. |

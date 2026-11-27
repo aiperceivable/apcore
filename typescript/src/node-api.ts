@@ -78,6 +78,7 @@ export type { ApprovalRequest, ApprovalResult, ApprovalHandler } from './approva
 // Execution-time governance policy (apcore#76 RFC pilot)
 export { ExecutionPolicy, PolicyRule } from './policy.js';
 export type { PolicyCallSite, PolicyDecision, PolicyRuleOverrides } from './policy.js';
+export type { PolicyEvaluationRequest, PolicyEvaluator, PolicyVerdict } from './policy-evaluation.js';
 
 // Errors
 export {
@@ -90,6 +91,8 @@ export {
   ApprovalDeniedError,
   ApprovalTimeoutError,
   ApprovalPendingError,
+  PolicyDeniedError,
+  PolicyEvaluationError,
   ModuleNotFoundError,
   ModuleDisabledError,
   ModuleTimeoutError,

@@ -1037,6 +1037,26 @@ export class ApprovalPendingError extends ApprovalError {
   }
 }
 
+export class PolicyDeniedError extends ModuleError {
+  static override readonly DEFAULT_RETRYABLE = false;
+
+  constructor(moduleId: string) {
+    super(ErrorCodes.POLICY_DENIED, 'The invocation was denied by policy.', { moduleId },
+      undefined, undefined, undefined, 'Adjust the inputs to meet the applicable policy.', true);
+    this.name = 'PolicyDeniedError';
+  }
+}
+
+export class PolicyEvaluationError extends ModuleError {
+  static override readonly DEFAULT_RETRYABLE = true;
+
+  constructor(moduleId: string) {
+    super(ErrorCodes.POLICY_EVALUATION_ERROR, 'The invocation policy could not be evaluated.', { moduleId },
+      undefined, undefined, undefined, undefined, false);
+    this.name = 'PolicyEvaluationError';
+  }
+}
+
 export class ConfigNamespaceDuplicateError extends ModuleError {
   static override readonly DEFAULT_RETRYABLE: boolean | null = false;
 
@@ -1588,6 +1608,8 @@ export const ErrorCodes = Object.freeze({
   APPROVAL_DENIED: 'APPROVAL_DENIED',
   APPROVAL_TIMEOUT: 'APPROVAL_TIMEOUT',
   APPROVAL_PENDING: 'APPROVAL_PENDING',
+  POLICY_DENIED: 'POLICY_DENIED',
+  POLICY_EVALUATION_ERROR: 'POLICY_EVALUATION_ERROR',
   VERSION_INCOMPATIBLE: 'VERSION_INCOMPATIBLE',
   ERROR_CODE_COLLISION: 'ERROR_CODE_COLLISION',
   GENERAL_NOT_IMPLEMENTED: 'GENERAL_NOT_IMPLEMENTED',

@@ -1,6 +1,7 @@
 //! Local-reference traversal for schema-driven redaction.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
+use std::fmt::Write;
 
 use serde_json::Value;
 
@@ -101,89 +102,145 @@ fn decode_fragment(fragment: &str) -> Option<String> {
 
 pub(super) fn redact(value: &mut Value, schema: &Value) {
     let preserve_object_root = value.is_object();
-    redact_value(
-        value,
-        schema,
-        &LocalSchemas::new(schema),
-        preserve_object_root,
-    );
-}
-
-fn redact_value<'a>(
-    value: &mut Value,
-    schema: &'a Value,
-    local: &LocalSchemas<'a>,
-    preserve_object_root: bool,
-) {
-    let mut pending = vec![schema];
-    let mut visited = HashSet::new();
-    while let Some(schema) = pending.pop() {
-        // Identity is stable within the immutable schema and scoped to one data value.
-        if !visited.insert(std::ptr::from_ref(schema)) {
-            continue;
-        }
-        if !preserve_object_root && schema.get("x-sensitive") == Some(&Value::Bool(true)) {
-            if !value.is_null() {
-                *value = Value::String(super::REDACTED_VALUE.to_string());
-            }
-            return;
-        }
-        if let Some(reference) = schema.get("$ref").and_then(Value::as_str) {
-            if let Some(target) = local.resolve(schema, reference) {
-                pending.push(target);
-            }
-        }
-        for keyword in ["allOf", "anyOf", "oneOf"] {
-            if let Some(branches) = schema.get(keyword).and_then(Value::as_array) {
-                pending.extend(branches);
-            }
-        }
-        redact_shape(value, schema, local);
+    SchemaTraversal {
+        local: LocalSchemas::new(schema),
+        paths: None,
     }
+    .visit(value, schema, preserve_object_root);
 }
 
-fn redact_shape<'a>(value: &mut Value, schema: &'a Value, local: &LocalSchemas<'a>) {
-    match value {
-        Value::Object(object) => {
-            if let Some(properties) = schema.get("properties").and_then(Value::as_object) {
-                for (name, field_schema) in properties {
-                    if let Some(field) = object.get_mut(name) {
-                        redact_value(field, field_schema, local, false);
+pub(super) fn sensitive_fields(value: &Value, schema: &Value) -> Vec<String> {
+    // The traversal only reads values in collecting mode.
+    let mut snapshot = value.clone();
+    let mut traversal = SchemaTraversal {
+        local: LocalSchemas::new(schema),
+        paths: Some(SensitivePaths::default()),
+    };
+    traversal.visit(&mut snapshot, schema, false);
+    traversal
+        .paths
+        .into_iter()
+        .flat_map(|paths| paths.fields)
+        .collect()
+}
+
+#[derive(Default)]
+struct SensitivePaths {
+    current: String,
+    fields: BTreeSet<String>,
+}
+
+#[derive(Clone, Copy)]
+enum Segment<'a> {
+    Key(&'a str),
+    Index(usize),
+}
+
+struct SchemaTraversal<'a> {
+    local: LocalSchemas<'a>,
+    paths: Option<SensitivePaths>,
+}
+
+impl<'a> SchemaTraversal<'a> {
+    fn visit(&mut self, value: &mut Value, schema: &'a Value, preserve_object_root: bool) {
+        let mut pending = vec![schema];
+        let mut visited = HashSet::new();
+        while let Some(schema) = pending.pop() {
+            // Identity is stable within the immutable schema and scoped to one data value.
+            if !visited.insert(std::ptr::from_ref(schema)) {
+                continue;
+            }
+            if !preserve_object_root && schema.get("x-sensitive") == Some(&Value::Bool(true)) {
+                if let Some(paths) = &mut self.paths {
+                    paths.fields.insert(paths.current.clone());
+                } else if !value.is_null() {
+                    *value = Value::String(super::REDACTED_VALUE.to_string());
+                }
+                return;
+            }
+            if let Some(reference) = schema.get("$ref").and_then(Value::as_str) {
+                if let Some(target) = self.local.resolve(schema, reference) {
+                    pending.push(target);
+                }
+            }
+            for keyword in ["allOf", "anyOf", "oneOf"] {
+                if let Some(branches) = schema.get(keyword).and_then(Value::as_array) {
+                    pending.extend(branches);
+                }
+            }
+            match value {
+                Value::Object(object) => {
+                    if let Some(properties) = schema.get("properties").and_then(Value::as_object) {
+                        for (name, field_schema) in properties {
+                            if let Some(field) = object.get_mut(name) {
+                                self.visit_child(field, field_schema, Segment::Key(name));
+                            }
+                        }
+                    }
+                }
+                Value::Array(items) => self.visit_items(items, schema),
+                _ => {}
+            }
+        }
+    }
+
+    fn visit_child(&mut self, value: &mut Value, schema: &'a Value, segment: Segment<'_>) {
+        let previous_length = self.paths.as_mut().map(|paths| {
+            let length = paths.current.len();
+            paths.current.push('/');
+            match segment {
+                Segment::Key(name) => {
+                    for character in name.chars() {
+                        match character {
+                            '~' => paths.current.push_str("~0"),
+                            '/' => paths.current.push_str("~1"),
+                            character => paths.current.push(character),
+                        }
+                    }
+                }
+                Segment::Index(index) => {
+                    let _ = write!(paths.current, "{index}");
+                }
+            }
+            length
+        });
+        self.visit(value, schema, false);
+        if let (Some(paths), Some(length)) = (&mut self.paths, previous_length) {
+            paths.current.truncate(length);
+        }
+    }
+
+    fn visit_items(&mut self, items: &mut [Value], schema: &'a Value) {
+        let modern_items = self.local.drafts.get(&std::ptr::from_ref(schema))
+            == Some(&referencing::Draft::Draft202012);
+        let prefix = modern_items
+            .then(|| schema.get("prefixItems").and_then(Value::as_array))
+            .flatten();
+        if let Some(prefix) = prefix {
+            for (index, (item, item_schema)) in items.iter_mut().zip(prefix).enumerate() {
+                self.visit_child(item, item_schema, Segment::Index(index));
+            }
+        }
+        match schema.get("items") {
+            Some(Value::Array(tuple)) if !modern_items => {
+                for (index, (item, item_schema)) in items.iter_mut().zip(tuple).enumerate() {
+                    self.visit_child(item, item_schema, Segment::Index(index));
+                }
+                if let Some(additional) = schema.get("additionalItems") {
+                    for (index, item) in items.iter_mut().enumerate().skip(tuple.len()) {
+                        self.visit_child(item, additional, Segment::Index(index));
                     }
                 }
             }
-        }
-        Value::Array(items) => redact_items(items, schema, local),
-        _ => {}
-    }
-}
-
-fn redact_items<'a>(items: &mut [Value], schema: &'a Value, local: &LocalSchemas<'a>) {
-    let modern_items =
-        local.drafts.get(&std::ptr::from_ref(schema)) == Some(&referencing::Draft::Draft202012);
-    let prefix = modern_items
-        .then(|| schema.get("prefixItems").and_then(Value::as_array))
-        .flatten();
-    if let Some(prefix) = prefix {
-        for (item, item_schema) in items.iter_mut().zip(prefix) {
-            redact_value(item, item_schema, local, false);
-        }
-    }
-    match schema.get("items") {
-        Some(Value::Array(tuple)) if !modern_items => {
-            for (item, item_schema) in items.iter_mut().zip(tuple) {
-                redact_value(item, item_schema, local, false);
-            }
-            if let Some(additional) = schema.get("additionalItems") {
-                for item in items.iter_mut().skip(tuple.len()) {
-                    redact_value(item, additional, local, false);
+            Some(Value::Array(_)) | None => {}
+            Some(item_schema) => {
+                for (index, item) in items
+                    .iter_mut()
+                    .enumerate()
+                    .skip(prefix.map_or(0, Vec::len))
+                {
+                    self.visit_child(item, item_schema, Segment::Index(index));
                 }
-            }
-        }
-        Some(Value::Array(_)) | None => {}
-        Some(item_schema) => {
-            for item in items.iter_mut().skip(prefix.map_or(0, Vec::len)) {
-                redact_value(item, item_schema, local, false);
             }
         }
     }

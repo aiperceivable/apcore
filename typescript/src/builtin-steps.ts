@@ -12,7 +12,7 @@ import type { ACL, AccessDecision } from './acl.js';
 import { buildGovernanceProjection } from './acl-handlers.js';
 import { governanceUnion } from './schema/annotations.js';
 import { RedactionConfig } from './observability/context-logger.js';
-import type { ApprovalHandler, ApprovalResult } from './approval.js';
+import type { ApprovalHandler, ApprovalRequest, ApprovalResult } from './approval.js';
 import { createApprovalRequest, createApprovalResult, takeApprovalToken } from './approval.js';
 import type { Config } from './config.js';
 import { getDefault } from './config-defaults.js';
@@ -28,19 +28,25 @@ import {
   ModuleExecuteError,
   ModuleNotFoundError,
   ModuleTimeoutError,
+  PolicyDeniedError,
+  PolicyEvaluationError,
   SchemaValidationError,
 } from './errors.js';
 import { DEFAULT_TOGGLE_STATE, type ToggleState } from './sys-modules/toggle.js';
-import { redactSensitive } from './executor.js';
+import { redactSensitive, sensitivePolicyFields } from './executor.js';
 import { auditSpan } from './execution-lifetime.js';
 import { type EventEmitter, createEvent } from './events/emitter.js';
 import { applyDecisionToAnnotations, DEFAULT_EXECUTION_POLICY } from './policy.js';
 import type { ExecutionPolicy, PolicyDecision } from './policy.js';
+import {
+  assertPolicyBinding, copyPolicyInputs, evaluatePolicy, policyApprovalContext, policyArgumentsDigest, policyInvocationOf,
+  type PolicyEvaluator,
+} from './policy-evaluation.js';
 import { MiddlewareChainError, type MiddlewareManager } from './middleware/manager.js';
 import type { Module, ModuleAnnotations } from './module.js';
 import { DEFAULT_ANNOTATIONS, isModuleIdempotent } from './module.js';
 import type { GovernanceGateMarker, PipelineContext, Step, StepResult } from './pipeline.js';
-import { ExecutionStrategy, GOVERNANCE_GATE } from './pipeline.js';
+import { ConfigurationError, ExecutionStrategy, GOVERNANCE_GATE } from './pipeline.js';
 import { isStreamingModule } from './streaming.js';
 import type { Registry } from './registry/registry.js';
 import { jsonSchemaToTypeBox } from './schema/loader-pure.js';
@@ -102,6 +108,8 @@ export class BuiltinContextCreation implements Step {
   async execute(ctx: PipelineContext): Promise<StepResult> {
     // Always wrap in a child context for this module call.
     // If no parent context was provided, create a fresh root first.
+    const invocation = policyInvocationOf(ctx);
+    if (invocation) assertPolicyBinding(ctx, invocation);
     let derived: Context;
     if (ctx.context == null) {
       // Issue #66: no executor arg; auto-binding happens on the next
@@ -141,6 +149,13 @@ export class BuiltinContextCreation implements Step {
     }
 
     ctx.context = derived;
+    if (invocation) {
+      invocation.context = derived;
+      invocation.callerId = derived.callerId;
+      invocation.identity = derived.identity;
+      invocation.principalId = derived.identity?.id;
+      invocation.principalType = derived.identity?.type;
+    }
     ctx.onContextReady?.(derived);
     return { action: 'continue' };
   }
@@ -227,9 +242,11 @@ export class BuiltinModuleLookup implements Step {
   }
 
   async execute(ctx: PipelineContext): Promise<StepResult> {
+    const invocation = policyInvocationOf(ctx);
+    if (invocation) assertPolicyBinding(ctx, invocation);
     if (this._registry.isClosed) throw new ModuleNotFoundError(ctx.moduleId);
     const mod = this._registry.get(ctx.moduleId, ctx.versionHint);
-    if (mod === null || (!ctx.dryRun && this._registry.isDraining(ctx.moduleId))) {
+    if (mod === null || (!(invocation?.preflight ?? ctx.dryRun) && this._registry.isDraining(ctx.moduleId))) {
       throw new ModuleNotFoundError(ctx.moduleId);
     }
 
@@ -250,6 +267,14 @@ export class BuiltinModuleLookup implements Step {
     // reached `getDefinition()` and the manifest while the module executed
     // UNGATED.
     ctx.declaredAnnotations = this._registry.getDeclaredAnnotations(ctx.moduleId);
+    if (invocation) {
+      const version = this._registry.getModuleMetadata(moduleId)['version'];
+      invocation.selected = {
+        module: mod,
+        version: typeof version === 'string' ? version : null,
+        governance: governanceUnion((mod as Record<string, unknown>)['annotations'], ctx.declaredAnnotations),
+      };
+    }
 
     // PROTOCOL_SPEC §6.1.8: the governance projection is computed HERE, during
     // module lookup, so it is available to the ACL check at Step 4. The
@@ -293,6 +318,7 @@ export class BuiltinACLCheck implements Step {
   // "computed at Step 3, available at Step 4" is enforced by the strategy's
   // dependency check rather than left to step ordering holding by habit.
   readonly requires = ['context', 'module', 'governanceProjection'] as const;
+  readonly provides = ['policy_acl_checked'] as const;
   readonly pure = true;
   /** A governance gate: `configure` cannot weaken it (PROTOCOL_SPEC 5.16.1, D-130). */
   readonly [GOVERNANCE_GATE]: GovernanceGateMarker = { pureIsDefault: true };
@@ -331,7 +357,10 @@ export class BuiltinACLCheck implements Step {
   }
 
   async execute(ctx: PipelineContext): Promise<StepResult> {
+    const invocation = policyInvocationOf(ctx);
+    if (invocation) assertPolicyBinding(ctx, invocation);
     if (this._acl === null) {
+      if (invocation) invocation.aclApprovalRequired = false;
       return { action: 'continue' };
     }
     const callerId = ctx.context.callerId;
@@ -351,6 +380,7 @@ export class BuiltinACLCheck implements Step {
       this._emitDenied(callerId, ctx.moduleId, ctx.context, ctx.dryRun === true);
       throw new ACLDeniedError(callerId, ctx.moduleId);
     }
+    if (invocation) invocation.aclApprovalRequired = decision.approvalRequired;
     return { action: 'continue' };
   }
 
@@ -495,7 +525,9 @@ export class BuiltinApprovalGate implements Step {
 
   async execute(ctx: PipelineContext): Promise<StepResult> {
     const mod = ctx.module as Record<string, unknown> | null;
-    const approvalToken = takeApprovalToken(ctx);
+    const invocation = policyInvocationOf(ctx);
+    const approvalToken = invocation ? null : takeApprovalToken(ctx);
+    if (invocation) assertPolicyBinding(ctx, invocation);
 
     // §6.9 row 4 — the ACL is a CALLER-scoped authorization layer and an
     // `ExecutionPolicy` is a MODULE-scoped platform override, so a policy may
@@ -504,7 +536,7 @@ export class BuiltinApprovalGate implements Step {
     // escalation: a policy rule written for `orders.*` would silently strip a
     // requirement an ACL author attached to one untrusted caller. Union is the
     // only safe composition, so this term is OR-ed with the policy's resolution.
-    const aclApprovalRequired = ctx.aclApprovalRequired === true;
+    const aclApprovalRequired = (invocation ? invocation.aclApprovalRequired : ctx.aclApprovalRequired) === true;
 
     // PROTOCOL_SPEC §7.4 (D-96): governance is the UNION of the live module
     // instance and the registry's declared annotations. Reading the instance
@@ -514,7 +546,8 @@ export class BuiltinApprovalGate implements Step {
     // worse: it carries YAML > code precedence, so a metadata `false` would
     // cancel a module that asks to be gated. Both single-source readings are
     // fail-OPEN.
-    const governance = governanceUnion(mod?.['annotations'], ctx.declaredAnnotations);
+    const governance = invocation?.selected ? invocation.selected.governance
+      : governanceUnion(mod?.['annotations'], ctx.declaredAnnotations);
 
     // §7.9.6: policy resolution receives arguments before schema validation.
     // The executor isolates the credential before the pipeline starts.
@@ -526,7 +559,17 @@ export class BuiltinApprovalGate implements Step {
       this._emitPolicyAudit(decision, ctx.context);
     }
 
-    if (!decision.needsApproval && !aclApprovalRequired) {
+    const needsApproval = decision.needsApproval || aclApprovalRequired;
+    if (invocation && !(needsApproval && this._handler === null && this._policy.strict)) {
+      invocation.earlyApproval = {
+        needed: needsApproval,
+        annotations: applyDecisionToAnnotations(governance ?? DEFAULT_ANNOTATIONS, decision),
+        handler: this._handler,
+      };
+      return { action: 'continue' };
+    }
+
+    if (!needsApproval) {
       if (decision.destructive) {
         this._warnOnce(
           `destructive_ungated:${ctx.moduleId}`,
@@ -559,40 +602,109 @@ export class BuiltinApprovalGate implements Step {
       return { action: 'continue' };
     }
 
-    let annotations = applyDecisionToAnnotations(governance ?? DEFAULT_ANNOTATIONS, decision);
-    if (!annotations.requiresApproval) annotations = Object.freeze({ ...annotations, requiresApproval: true });
+    const annotations = applyDecisionToAnnotations(governance ?? DEFAULT_ANNOTATIONS, decision);
+    const request = this._request(ctx, annotations, structuredClone(ctx.inputs));
+    await this._authorize(this._handler, approvalToken, request);
+    return { action: 'continue' };
+  }
 
-    const request = createApprovalRequest({
+  /** Authorize the detached and validated scope, using the handler selected in Step 5. */
+  async authorizeFinal(ctx: PipelineContext, needsApproval: boolean): Promise<void> {
+    const invocation = policyInvocationOf(ctx);
+    const early = invocation?.earlyApproval;
+    const snapshot = invocation?.validated;
+    if (!invocation || !early || !snapshot) throw new PolicyEvaluationError(ctx.moduleId);
+    const token = takeApprovalToken(ctx);
+    if (!needsApproval && token === null) return;
+    if (early.handler === null) {
+      throw new ApprovalDeniedError(createApprovalResult({
+        status: 'rejected', reason: 'Final approval requires an ApprovalHandler',
+      }), ctx.moduleId);
+    }
+    const digest = await policyArgumentsDigest(ctx.moduleId, snapshot);
+    assertPolicyBinding(ctx, invocation);
+    ctx.context.cancelToken?.check();
+    const request = this._request(ctx, early.annotations, structuredClone(snapshot.arguments), {
+      moduleVersion: invocation.selected?.version ?? null,
+      canonicalArgsDigest: digest,
+    });
+    await this._authorize(early.handler, token, request, ctx.context);
+    assertPolicyBinding(ctx, invocation);
+  }
+
+  private _request(
+    ctx: PipelineContext,
+    annotations: ModuleAnnotations,
+    args: Record<string, unknown>,
+    scope?: { moduleVersion: string | null; canonicalArgsDigest: string },
+  ): ApprovalRequest {
+    const mod = ctx.module as Record<string, unknown> | null;
+    return createApprovalRequest({
       moduleId: ctx.moduleId,
       callerId: ctx.context.callerId,
       action: ctx.moduleId,
-      arguments: structuredClone(ctx.inputs),
-      context: ctx.context,
-      annotations,
+      arguments: args,
+      context: scope === undefined ? ctx.context : policyApprovalContext(ctx.context),
+      annotations: annotations.requiresApproval ? annotations : Object.freeze({ ...annotations, requiresApproval: true }),
       description: (mod?.['description'] as string) ?? null,
       tags: (mod?.['tags'] as string[]) ?? [],
+      ...scope,
     });
-    const result = approvalToken === null
-      ? await this._handler.requestApproval(request)
-      : await this._handler.checkApprovalForCall?.(approvalToken, request)
-        ?? createApprovalResult({ status: 'rejected', reason: 'The approval handler does not support scoped resumption' });
+  }
 
-    this._emitAudit(result, ctx.moduleId, ctx.context, approvalToken);
+  private async _authorize(
+    handler: ApprovalHandler, token: string | null, request: ApprovalRequest, auditContext = request.context,
+  ): Promise<void> {
+    const final = request.canonicalArgsDigest !== undefined;
+    let result: ApprovalResult;
+    try {
+      const supportsFinalScope = final && handler.supportsFinalScope === true;
+      result = await this._requestApproval(handler, token, request, !final || supportsFinalScope);
+      if (final) result = this._safeFinalResult(result, supportsFinalScope);
+    } catch (error) {
+      if (!final) throw error;
+      result = createApprovalResult({ status: 'rejected' });
+    }
+    if (final) auditContext.cancelToken?.check();
+    this._emitAudit(result, request.moduleId, auditContext, token);
 
     if (result.status === 'approved') {
-      return { action: 'continue' };
+      return;
     }
 
     if (result.status === 'timeout') {
-      throw new ApprovalTimeoutError(result, ctx.moduleId);
+      throw new ApprovalTimeoutError(result, request.moduleId);
     }
 
     if (result.status === 'pending') {
-      throw new ApprovalPendingError(result, ctx.moduleId);
+      throw new ApprovalPendingError(result, request.moduleId);
     }
 
     // rejected or unknown
-    throw new ApprovalDeniedError(result, ctx.moduleId);
+    throw new ApprovalDeniedError(result, request.moduleId);
+  }
+
+  private async _requestApproval(
+    handler: ApprovalHandler, token: string | null, request: ApprovalRequest, resumeAllowed: boolean,
+  ): Promise<ApprovalResult> {
+    if (token === null) return await handler.requestApproval(request);
+    if (resumeAllowed) {
+      const result = await handler.checkApprovalForCall?.(token, request);
+      if (result) return result;
+    }
+    return createApprovalResult({ status: 'rejected', reason: 'The approval handler does not support scoped resumption' });
+  }
+
+  private _safeFinalResult(result: ApprovalResult, supportsFinalScope: boolean): ApprovalResult {
+    const status = result?.status;
+    const id = result?.approvalId;
+    const auditId = result?.auditId;
+    const pending = status === 'pending' && supportsFinalScope && typeof id === 'string' && id.length > 0;
+    return createApprovalResult({
+      status: pending ? 'pending' : status === 'approved' || status === 'timeout' ? status : 'rejected',
+      approvalId: pending ? id : null,
+      auditId: typeof auditId === 'string' && auditId !== id ? auditId : null,
+    });
   }
 
   /** Warn once per dedup key (module/kind pair). */
@@ -694,25 +806,69 @@ export class BuiltinInputValidation implements Step {
   readonly provides = ['validated_inputs'] as const;
 
   async execute(ctx: PipelineContext): Promise<StepResult> {
+    const invocation = policyInvocationOf(ctx);
+    if (invocation) assertPolicyBinding(ctx, invocation);
+    let snapshot = invocation ? copyPolicyInputs(ctx.moduleId, ctx.inputs) : null;
     const mod = ctx.module as Record<string, unknown>;
     const inputSchema = resolveSchema(mod, 'inputSchema');
-    if (inputSchema == null) {
-      // Refresh the capture after middleware_before, as the schema branch
-      // does, with the configured rules (PROTOCOL_SPEC 10.6.1).
-      ctx.context.redactedInputs = redactSensitive(ctx.inputs, {}, this._redaction);
-      ctx.validatedInputs = ctx.inputs;
-      return { action: 'continue' };
+    if (inputSchema !== null) {
+      validateSchema(inputSchema, snapshot?.arguments ?? ctx.inputs, 'Input');
+      // Native TypeBox validators can change the inputs and retain aliases.
+      // Capture both the values and their encoding from the detached result.
+      if (snapshot) snapshot = copyPolicyInputs(ctx.moduleId, snapshot.arguments);
     }
 
-    // Throws SchemaValidationError directly for error type preservation
-    validateSchema(inputSchema, ctx.inputs, 'Input');
+    const effectiveSchema = inputSchema ?? {};
+    const effectiveInputs = snapshot?.arguments ?? ctx.inputs;
+    ctx.context.redactedInputs = redactSensitive(effectiveInputs, effectiveSchema, this._redaction);
+    ctx.validatedInputs = snapshot ? structuredClone(effectiveInputs) : effectiveInputs;
+    if (invocation && snapshot) {
+      snapshot.sensitiveFields = sensitivePolicyFields(effectiveInputs, effectiveSchema);
+      invocation.validated = snapshot;
+    }
+    return { action: 'continue' };
+  }
+}
 
-    ctx.context.redactedInputs = redactSensitive(
-      ctx.inputs,
-      inputSchema as unknown as Record<string, unknown>,
-      this._redaction,
-    );
-    ctx.validatedInputs = ctx.inputs;
+/** Evaluate and approve the inputs owned by the invocation before dispatch. */
+class BuiltinPostValidationPolicy implements Step {
+  readonly name = 'post_validation_policy';
+  readonly description = 'Evaluate policy and approve the validated invocation';
+  readonly removable = false;
+  readonly replaceable = false;
+  readonly pure = true;
+  readonly requires = ['validated_inputs', 'policy_acl_checked'] as const;
+  readonly [GOVERNANCE_GATE]: GovernanceGateMarker = { pureIsDefault: true };
+
+  constructor(
+    private readonly evaluator: PolicyEvaluator,
+    private readonly approvalGate: BuiltinApprovalGate,
+    private readonly emitter: EventEmitter | null,
+  ) {}
+
+  async execute(ctx: PipelineContext): Promise<StepResult> {
+    const invocation = policyInvocationOf(ctx);
+    if (!invocation?.validated || invocation.aclApprovalRequired === undefined ||
+        (!invocation.preflight && !invocation.earlyApproval)) {
+      throw new PolicyEvaluationError(ctx.moduleId);
+    }
+    assertPolicyBinding(ctx, invocation);
+    const verdict = await evaluatePolicy(this.evaluator, ctx, invocation, invocation.validated);
+    assertPolicyBinding(ctx, invocation);
+    if (!invocation.preflight && this.emitter) {
+      this.emitter.emit(createEvent('apcore.policy.decision', ctx.moduleId, verdict.decision === 'deny' ? 'warn' : 'info', {
+        decision: verdict.decision,
+        ...(verdict.ruleId === undefined ? {} : { rule_id: verdict.ruleId }),
+        sensitive_fields: [...invocation.validated.sensitiveFields],
+      }));
+    }
+    if (verdict.decision === 'deny') throw new PolicyDeniedError(ctx.moduleId);
+
+    invocation.requiresApproval = invocation.earlyApproval?.needed === true || verdict.decision === 'require_approval';
+    if (!invocation.preflight) {
+      await this.approvalGate.authorizeFinal(ctx, invocation.requiresApproval);
+    }
+    invocation.approvedForDispatch = true;
     return { action: 'continue' };
   }
 }
@@ -780,7 +936,16 @@ export class BuiltinExecute implements Step {
   constructor(private readonly _config: Config | null) {}
 
   async execute(ctx: PipelineContext): Promise<StepResult> {
+    const invocation = policyInvocationOf(ctx);
+    let inputs = ctx.inputs;
+    if (invocation) {
+      assertPolicyBinding(ctx, invocation);
+      if (!invocation.approvedForDispatch || !invocation.validated) throw new PolicyEvaluationError(ctx.moduleId);
+      ctx.inputs = structuredClone(invocation.validated.arguments);
+      inputs = invocation.validated.arguments;
+    }
     const mod = ctx.module as Record<string, unknown>;
+    const context = ctx.context;
 
     // Cancel check before execution — throw directly for error type preservation
     if (ctx.context.cancelToken !== null) {
@@ -789,10 +954,20 @@ export class BuiltinExecute implements Step {
 
     // The stream executor pauses the pipeline once the producer is available.
     // Its next configured step runs after the chunks have been accumulated.
-    if (ctx.stream) {
+    if (invocation?.stream ?? ctx.stream) {
       const candidate = ctx.module as Module;
       if (isStreamingModule(candidate)) {
-        ctx.outputStream = this._streamWithLease(ctx, () => candidate.stream(ctx.inputs, ctx.context));
+        if (invocation) {
+          const protectedProducer = this._streamWithLease(ctx, () => {
+            assertPolicyBinding(ctx, invocation);
+            invocation.dispatched = true;
+            return candidate.stream(inputs, context);
+          });
+          invocation.producer = protectedProducer;
+          ctx.outputStream = protectedProducer;
+        } else {
+          ctx.outputStream = this._streamWithLease(ctx, () => candidate.stream(ctx.inputs, ctx.context));
+        }
         return { action: 'continue' };
       }
       // fallback: execute normally and wrap as single-chunk
@@ -834,13 +1009,14 @@ export class BuiltinExecute implements Step {
     const release = moduleExecutionLeases.get(ctx)?.();
     let executionPromise: Promise<Record<string, unknown>>;
     try {
+      if (invocation) invocation.dispatched = true;
       executionPromise = Promise.resolve(
         (
           executeFn as (
             inputs: Record<string, unknown>,
             context: Context,
           ) => Promise<Record<string, unknown>> | Record<string, unknown>
-        ).call(mod, ctx.inputs, ctx.context),
+        ).call(mod, inputs, ctx.context),
       );
     } catch (error) {
       release?.();
@@ -1138,6 +1314,35 @@ export function buildPerformanceStrategy(deps: StandardStrategyDeps): ExecutionS
     new BuiltinOutputValidation(redaction),
     new BuiltinReturnResult(),
   ]);
+}
+
+/** Attach the final gate only to a strategy with enforceable built-in boundaries. */
+export function withPostValidationPolicy(
+  strategy: ExecutionStrategy,
+  evaluator: PolicyEvaluator,
+  emitter: EventEmitter | null,
+): ExecutionStrategy {
+  const withMiddleware = strategy.steps.length === 11;
+  const expected = [
+    BuiltinContextCreation, BuiltinCallChainGuard, BuiltinModuleLookup, BuiltinACLCheck, BuiltinApprovalGate,
+    ...(withMiddleware ? [BuiltinMiddlewareBefore] : []), BuiltinInputValidation,
+    BuiltinExecute, BuiltinOutputValidation, ...(withMiddleware ? [BuiltinMiddlewareAfter] : []), BuiltinReturnResult,
+  ];
+  const pureSteps: ReadonlySet<unknown> = new Set([
+    BuiltinContextCreation, BuiltinCallChainGuard, BuiltinModuleLookup, BuiltinACLCheck, BuiltinInputValidation,
+    BuiltinOutputValidation, BuiltinReturnResult,
+  ]);
+  if (strategy.steps.length !== expected.length || strategy.steps.some((step, index) => {
+    const expectedType = expected[index];
+    return Object.getPrototypeOf(step) !== expectedType.prototype || step.execute !== expectedType.prototype.execute ||
+      step.matchModules != null || step.ignoreErrors === true || Boolean(step.pure) !== pureSteps.has(expectedType);
+  })) {
+    throw new ConfigurationError('A policy evaluator requires the built-in standard or performance pipeline boundaries.');
+  }
+  const approvedStrategy = strategy.mapSteps(step => step);
+  const approvalGate = approvedStrategy.steps[4] as BuiltinApprovalGate;
+  approvedStrategy.insertAfter('input_validation', new BuiltinPostValidationPolicy(evaluator, approvalGate, emitter));
+  return approvedStrategy;
 }
 
 /**

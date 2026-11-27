@@ -69,6 +69,10 @@ export interface ApprovalRequest {
   readonly annotations: ModuleAnnotations;
   readonly description: string | null;
   readonly tags: readonly string[];
+  /** The resolved registration version of a final-scope request. */
+  readonly moduleVersion?: string | null;
+  /** Present on approvals bound to the final validated invocation. */
+  readonly canonicalArgsDigest?: string;
 }
 
 /**
@@ -90,6 +94,8 @@ export function createApprovalRequest(options: {
   tags?: string[];
   callerId?: string | null;
   action?: string;
+  moduleVersion?: string | null;
+  canonicalArgsDigest?: string;
 }): ApprovalRequest {
   return Object.freeze({
     moduleId: options.moduleId,
@@ -100,6 +106,8 @@ export function createApprovalRequest(options: {
     annotations: options.annotations,
     description: options.description ?? null,
     tags: Object.freeze([...(options.tags ?? [])]),
+    ...(options.moduleVersion !== undefined ? { moduleVersion: options.moduleVersion } : {}),
+    ...(options.canonicalArgsDigest !== undefined ? { canonicalArgsDigest: options.canonicalArgsDigest } : {}),
   });
 }
 
@@ -144,6 +152,8 @@ export function createApprovalResult(options: {
  * Both methods are asynchronous.
  */
 export interface ApprovalHandler {
+  /** Opt in to issuing and consuming approvals bound to the final invocation. */
+  readonly supportsFinalScope?: boolean;
   requestApproval(request: ApprovalRequest): Promise<ApprovalResult>;
   checkApproval(approvalId: string): Promise<ApprovalResult>;
   /** Validate the current call's identity, target and arguments, then consume the approval. */

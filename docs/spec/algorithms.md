@@ -1239,7 +1239,7 @@ Steps:
 |------|------|------|
 | `manager` | `ExtensionManager` | The registered extensions, keyed by extension point name |
 | `registry` | `Registry` | Receives `discoverer` and `module_validator` |
-| `executor` | `Executor` | Receives `acl`, `approval_handler`, `middleware` and `span_exporter` |
+| `executor` | `Executor` | Receives `acl`, `approval_handler`, `policy_evaluator`, `middleware` and `span_exporter` |
 
 **Output:**
 
@@ -1263,8 +1263,9 @@ Steps:
   2. If manager holds a module_validator → registry.set_validator(it)
   3. If manager holds an acl → executor.set_acl(it)
   4. If manager holds an approval_handler → executor.set_approval_handler(it)
-  5. For each middleware, in registration order → executor.use(it)
-  6. If one or more span_exporters are registered → set them (composed into one
+  5. If manager holds a policy_evaluator → executor.set_policy_evaluator(it)
+  6. For each middleware, in registration order → executor.use(it)
+  7. If one or more span_exporters are registered → set them (composed into one
      exporter when there are several) on the tracing middleware already in the
      executor's chain; when the chain has none, log a warning and install nothing
 ```
@@ -1278,7 +1279,7 @@ Steps:
 
 **Implementation Notes:**
 
-- The six extension point names are `discoverer`, `middleware`, `acl`, `span_exporter`, `module_validator`, `approval_handler` (protocol-spec §11.3). A single-valued point holds one implementation and a later registration replaces it; `middleware` and `span_exporter` are multi-valued.
+- A single-valued point holds one implementation and a later registration replaces it. `middleware` and `span_exporter` are multi-valued. The built-in points are listed in protocol-spec §11.3.
 - There is no priority ordering among implementations of one point, no `first_success` / `all` / `fallback` strategy, and no registration from `apcore.yaml` (D-143).
 
 ---

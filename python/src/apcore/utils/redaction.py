@@ -111,11 +111,20 @@ def redact_sensitive(
 _COMBINATORS: tuple[str, ...] = ("anyOf", "oneOf", "allOf")
 
 
+def sensitive_field_paths(data: dict[str, Any], schema: dict[str, Any]) -> tuple[str, ...]:
+    """Return JSON Pointers for input values marked sensitive by their schema."""
+    paths: set[str] = set()
+    redactor = _SchemaRedactor(schema, REDACTED_VALUE, paths=paths)
+    redactor._redact_value(copy.deepcopy(data), schema, redactor._resolver)
+    return tuple(sorted(paths, key=lambda path: path.encode("utf-16-be")))
+
+
 class _SchemaRedactor:
     """Walk data and local schema references together, without schema expansion."""
 
-    def __init__(self, schema: dict[str, Any], token: str) -> None:
+    def __init__(self, schema: dict[str, Any], token: str, *, paths: set[str] | None = None) -> None:
         self._token = token
+        self._paths = paths
         declared_dialect = schema.get("$schema")
         self._root_dialect: str = (
             declared_dialect if isinstance(declared_dialect, str) else "https://json-schema.org/draft/2020-12/schema"
@@ -173,18 +182,20 @@ class _SchemaRedactor:
                             pending.append((branch, context.in_subresource(self._resource(branch))))
         return views
 
-    def _redact_value(self, value: Any, schema: dict[str, Any], resolver: Any) -> Any:
+    def _redact_value(self, value: Any, schema: dict[str, Any], resolver: Any, path: str = "") -> Any:
         views = self._views(schema, resolver)
-        if value is not None and any(view.get("x-sensitive") is True for view, _ in views):
+        if (value is not None or self._paths is not None) and any(view.get("x-sensitive") is True for view, _ in views):
+            if self._paths is not None:
+                self._paths.add(path)
             return self._token
         if isinstance(value, dict):
-            self._redact_object(value, views)
+            self._redact_object(value, views, path)
         elif isinstance(value, list):
             for view, context in views:
-                self._redact_array(value, view, context)
+                self._redact_array(value, view, context, path)
         return value
 
-    def _redact_array(self, values: list[Any], schema: dict[str, Any], resolver: Any) -> None:
+    def _redact_array(self, values: list[Any], schema: dict[str, Any], resolver: Any, path: str) -> None:
         items = schema.get("items")
         dialect = self._dialects.get(id(schema), self._root_dialect)
         legacy = "/draft-07/" in dialect or "/2019-09/" in dialect
@@ -194,14 +205,16 @@ class _SchemaRedactor:
         for index, positional in enumerate(prefix[: len(values)]):
             if isinstance(positional, dict):
                 context = resolver.in_subresource(self._resource(positional))
-                values[index] = self._redact_value(values[index], positional, context)
+                child_path = f"{path}/{index}" if self._paths is not None else ""
+                values[index] = self._redact_value(values[index], positional, context, child_path)
         tail = schema.get("additionalItems") if tuple_items is not None else items
         if isinstance(tail, dict):
             context = resolver.in_subresource(self._resource(tail))
             for index in range(len(prefix), len(values)):
-                values[index] = self._redact_value(values[index], tail, context)
+                child_path = f"{path}/{index}" if self._paths is not None else ""
+                values[index] = self._redact_value(values[index], tail, context, child_path)
 
-    def _redact_object(self, data: dict[str, Any], views: list[tuple[dict[str, Any], Any]]) -> None:
+    def _redact_object(self, data: dict[str, Any], views: list[tuple[dict[str, Any], Any]], path: str = "") -> None:
         for schema, resolver in views:
             properties = schema.get("properties")
             if not isinstance(properties, dict):
@@ -209,7 +222,10 @@ class _SchemaRedactor:
             for name, field_schema in properties.items():
                 if name in data and isinstance(field_schema, dict):
                     child = resolver.in_subresource(self._resource(field_schema))
-                    data[name] = self._redact_value(data[name], field_schema, child)
+                    child_path = (
+                        f"{path}/{name.replace('~', '~0').replace('/', '~1')}" if self._paths is not None else ""
+                    )
+                    data[name] = self._redact_value(data[name], field_schema, child, child_path)
 
     def redact_fields(self, data: dict[str, Any], schema: dict[str, Any]) -> None:
         self._redact_object(data, self._views(schema, self._resolver))

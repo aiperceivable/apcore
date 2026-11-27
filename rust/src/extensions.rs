@@ -13,6 +13,7 @@ use crate::executor::Executor;
 use crate::middleware::base::Middleware;
 use crate::observability::span::SpanExporter;
 use crate::observability::tracing_middleware::TracingMiddleware;
+use crate::policy::PolicyEvaluator;
 use crate::registry::registry::{Discoverer, ModuleValidator, Registry};
 
 // ---------------------------------------------------------------------------
@@ -55,8 +56,10 @@ pub enum ExtensionKind {
     SpanExporter(Arc<dyn SpanExporter>),
     /// Custom module validation.
     ModuleValidator(Arc<dyn ModuleValidator>),
-    /// Approval handler for Step 4.5 gate.
+    /// Approval handler for the invocation approval gate.
     ApprovalHandler(Arc<dyn ApprovalHandler>),
+    /// Post-validation evaluator for an executor.
+    PolicyEvaluator(Arc<dyn PolicyEvaluator>),
 }
 
 impl std::fmt::Debug for ExtensionKind {
@@ -74,6 +77,7 @@ impl std::fmt::Debug for ExtensionKind {
             ExtensionKind::ApprovalHandler(h) => {
                 write!(f, "ExtensionKind::ApprovalHandler({h:?})")
             }
+            ExtensionKind::PolicyEvaluator(_) => write!(f, "ExtensionKind::PolicyEvaluator(...)"),
         }
     }
 }
@@ -95,6 +99,9 @@ impl ExtensionKind {
             ExtensionKind::SpanExporter(e) => std::ptr::from_ref(&**e).cast::<()>(),
             ExtensionKind::ModuleValidator(v) => std::ptr::from_ref(&**v).cast::<()>(),
             ExtensionKind::ApprovalHandler(h) => std::ptr::from_ref(&**h).cast::<()>(),
+            ExtensionKind::PolicyEvaluator(evaluator) => {
+                std::ptr::from_ref(&**evaluator).cast::<()>()
+            }
         }
     }
 
@@ -107,6 +114,7 @@ impl ExtensionKind {
             ExtensionKind::SpanExporter(_) => "span_exporter",
             ExtensionKind::ModuleValidator(_) => "module_validator",
             ExtensionKind::ApprovalHandler(_) => "approval_handler",
+            ExtensionKind::PolicyEvaluator(_) => "policy_evaluator",
         }
     }
 }
@@ -162,6 +170,14 @@ fn built_in_points() -> HashMap<String, ExtensionPoint> {
         ExtensionPoint {
             name: "approval_handler".to_string(),
             description: "Approval handler for Step 4.5 gate".to_string(),
+            multiple: false,
+        },
+    );
+    points.insert(
+        "policy_evaluator".to_string(),
+        ExtensionPoint {
+            name: "policy_evaluator".to_string(),
+            description: "Post-validation invocation policy".to_string(),
             multiple: false,
         },
     );
@@ -553,6 +569,12 @@ impl ExtensionManager {
         registry: &Registry,
         executor: &mut Executor,
     ) -> Result<(), ModuleError> {
+        if let Some(ExtensionKind::PolicyEvaluator(evaluator)) =
+            self.first_builtin("policy_evaluator")
+        {
+            executor.set_policy_evaluator(Some(Arc::clone(evaluator)))?;
+        }
+
         // Discoverer
         if let Some(ExtensionKind::Discoverer(d)) = self.first_builtin("discoverer") {
             registry.set_discoverer_shared(Arc::clone(d));
@@ -650,6 +672,7 @@ impl ExtensionManager {
             "span_exporter" => "SpanExporter",
             "module_validator" => "ModuleValidator",
             "approval_handler" => "ApprovalHandler",
+            "policy_evaluator" => "PolicyEvaluator",
             _ => "Unknown",
         }
     }
@@ -663,7 +686,7 @@ mod tests {
     fn test_new_has_built_in_points() {
         let mgr = ExtensionManager::new();
         let points = mgr.list_points();
-        assert_eq!(points.len(), 6);
+        assert_eq!(points.len(), 7);
 
         let names: Vec<String> = points.iter().map(|p| p.name.clone()).collect();
         assert!(names.contains(&"discoverer".to_string()));
@@ -672,6 +695,7 @@ mod tests {
         assert!(names.contains(&"span_exporter".to_string()));
         assert!(names.contains(&"module_validator".to_string()));
         assert!(names.contains(&"approval_handler".to_string()));
+        assert!(names.contains(&"policy_evaluator".to_string()));
     }
 
     #[test]
@@ -927,7 +951,7 @@ mod tests {
     #[test]
     fn test_default_impl() {
         let mgr = ExtensionManager::default();
-        assert_eq!(mgr.list_points().len(), 6);
+        assert_eq!(mgr.list_points().len(), 7);
     }
 
     #[test]

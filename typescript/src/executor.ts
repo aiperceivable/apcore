@@ -14,6 +14,9 @@ import {
 import { type ApprovalHandler, discardApprovalToken, prepareApprovalInputs, stripApprovalToken } from './approval.js';
 import { DEFAULT_EXECUTION_POLICY, type ExecutionPolicy } from './policy.js';
 import {
+  assertPolicyBinding, beginPolicyInvocation, endPolicyInvocation, policyIngressInputs, policyInvocationOf, type PolicyEvaluator,
+} from './policy-evaluation.js';
+import {
   BuiltinACLCheck,
   BuiltinApprovalGate,
   BuiltinModuleLookup,
@@ -22,6 +25,7 @@ import {
   buildPerformanceStrategy,
   buildStandardStrategy,
   buildTestingStrategy,
+  withPostValidationPolicy,
 } from './builtin-steps.js';
 import type { StandardStrategyDeps } from './builtin-steps.js';
 import { awaitExecution, CancelToken, ExecutionCancelledError } from './cancel.js';
@@ -42,6 +46,7 @@ import {
   InvalidInputError,
   ModuleError,
   ModuleTimeoutError,
+  PolicyEvaluationError,
 } from './errors.js';
 import {
   AfterMiddleware,
@@ -255,28 +260,50 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
+type SensitivePath = { fields: Set<string>; pointer: string };
+
+function childSensitivePath(path: SensitivePath | undefined, key: string): SensitivePath | undefined {
+  if (path === undefined) return undefined;
+  return { fields: path.fields, pointer: `${path.pointer}/${key.replace(/~/g, '~0').replace(/\//g, '~1')}` };
+}
+
+/** @internal Find the schema's sensitive instance paths without modifying execution inputs. */
+export function sensitivePolicyFields(data: Record<string, unknown>, inputSchema: Record<string, unknown>): string[] {
+  const schema = sourceSchemaFor(inputSchema);
+  const refs = createRedactionReferenceContext(schema);
+  const fields = new Set<string>();
+  redactBySchema(data, schema, refs, { fields, pointer: '' });
+  return [...fields].sort();
+}
+
 /** Redact `value` as described by `schema`; returns the value to store. */
 function redactBySchema(
   value: unknown,
   schema: Record<string, unknown>,
   context: RedactionReferenceContext,
+  sensitivePath?: SensitivePath,
 ): unknown {
-  if (value === null || value === undefined) return value;
+  if ((value === null || value === undefined) && sensitivePath === undefined) return value;
   const variants = schemaVariants(schema, context);
-  if (variants.some((v) => v['x-sensitive'] === true)) return REDACTED_VALUE;
+  if (variants.some((v) => v['x-sensitive'] === true)) {
+    sensitivePath?.fields.add(sensitivePath.pointer);
+    return REDACTED_VALUE;
+  }
 
   if (Array.isArray(value)) {
-    for (const variant of variants) redactArrayBySchema(value, variant, context);
+    for (const variant of variants) redactArrayBySchema(value, variant, context, sensitivePath);
     return value;
   }
 
   if (isPlainObject(value)) {
-    redactFields(value, schema, context);
+    redactFields(value, schema, context, sensitivePath);
   }
   return value;
 }
 
-function redactArrayBySchema(value: unknown[], schema: Record<string, unknown>, context: RedactionReferenceContext): void {
+function redactArrayBySchema(
+  value: unknown[], schema: Record<string, unknown>, context: RedactionReferenceContext, path?: SensitivePath,
+): void {
   const dialect = context.dialects.get(schema) ?? context.rootSchema['$schema'];
   const legacyTuple = typeof dialect === 'string' && (dialect.includes('/draft-07/') || dialect.includes('/2019-09/'));
   const tuple = legacyTuple && Array.isArray(schema['items']) ? schema['items'] : undefined;
@@ -284,7 +311,10 @@ function redactArrayBySchema(value: unknown[], schema: Record<string, unknown>, 
   for (let index = 0; index < value.length; index++) {
     const itemSchema = prefix ? prefix[index] ?? schema['items']
       : tuple ? tuple[index] ?? schema['additionalItems'] : schema['items'];
-    if (isPlainObject(itemSchema)) value[index] = redactBySchema(value[index], itemSchema, context);
+    if (isPlainObject(itemSchema)) {
+      const redacted = redactBySchema(value[index], itemSchema, context, childSensitivePath(path, String(index)));
+      if (path === undefined) value[index] = redacted;
+    }
   }
 }
 
@@ -292,13 +322,15 @@ function redactFields(
   data: Record<string, unknown>,
   schemaDict: Record<string, unknown>,
   context: RedactionReferenceContext,
+  path?: SensitivePath,
 ): void {
   for (const variant of schemaVariants(schemaDict, context)) {
     const properties = variant['properties'];
     if (!isPlainObject(properties)) continue;
     for (const [fieldName, fieldSchema] of Object.entries(properties)) {
-      if (!(fieldName in data) || !isPlainObject(fieldSchema)) continue;
-      data[fieldName] = redactBySchema(data[fieldName], fieldSchema, context);
+      if (!(path === undefined ? fieldName in data : Object.hasOwn(data, fieldName)) || !isPlainObject(fieldSchema)) continue;
+      const redacted = redactBySchema(data[fieldName], fieldSchema, context, childSensitivePath(path, fieldName));
+      if (path === undefined) data[fieldName] = redacted;
     }
   }
 }
@@ -507,6 +539,7 @@ export class Executor {
   private _config: Config | null;
   private _approvalHandler: ApprovalHandler | null;
   private _policy: ExecutionPolicy | null;
+  private _policyEvaluator: PolicyEvaluator | null = null;
   private readonly _toggleState: ToggleState;
   private _eventEmitter: EventEmitter | null;
   private _eventEmitterConfigured: boolean;
@@ -524,6 +557,7 @@ export class Executor {
     config?: Config | null;
     approvalHandler?: ApprovalHandler | null;
     policy?: ExecutionPolicy | null;
+    policyEvaluator?: PolicyEvaluator | null;
     toggleState?: ToggleState | null;
     eventEmitter?: EventEmitter | null;
   }) {
@@ -606,6 +640,7 @@ export class Executor {
     // deny-all ACL given here let every call through while governanceState()
     // reported the gate as configured and wired.
     this._strategy = this._bindProviders(this._strategy);
+    this.setPolicyEvaluator(options.policyEvaluator ?? null);
 
     this._pipelineEngine = new PipelineEngine();
   }
@@ -688,7 +723,7 @@ export class Executor {
     const result: StrategyInfo[] = [];
 
     // Current strategy first.
-    const current = this._strategy.info();
+    const current = this.describePipeline();
     result.push(current);
     seen.add(current.name);
 
@@ -719,7 +754,7 @@ export class Executor {
 
   /** Describe the pipeline of the executor's current strategy. */
   describePipeline(): StrategyInfo {
-    return this._strategy.info();
+    return this._strategyForInvocation().info();
   }
 
   /** Get the current execution strategy. */
@@ -936,6 +971,20 @@ export class Executor {
     }
   }
 
+  /** Install an evaluator for final validated inputs on this executor. */
+  setPolicyEvaluator(evaluator: PolicyEvaluator | null): void {
+    if (evaluator !== null) {
+      if (typeof evaluator.evaluate !== 'function') throw new TypeError('A policy evaluator must provide an evaluate method');
+      withPostValidationPolicy(this._strategy, evaluator, this._eventEmitter);
+    }
+    this._policyEvaluator = evaluator;
+  }
+
+  private _strategyForInvocation(strategy = this._strategy): ExecutionStrategy {
+    if (strategy !== this._strategy) strategy = this._bindProviders(strategy);
+    return this._policyEvaluator === null ? strategy : withPostValidationPolicy(strategy, this._policyEvaluator, this._eventEmitter);
+  }
+
   use(middleware: Middleware): Executor {
     this._middlewareManager.add(middleware);
     return this;
@@ -1010,7 +1059,8 @@ export class Executor {
   ): Promise<[Record<string, unknown>, PipelineTrace]> {
     this._validateModuleId(moduleId);
     // Per-call strategies use the providers owned by this executor (D-129).
-    if (strategy !== this._strategy) strategy = this._bindProviders(strategy);
+    const protectedCall = this._policyEvaluator !== null;
+    strategy = this._strategyForInvocation(strategy);
 
     // Issue #66: auto-bind executor to context on every entry. withExecutor
     // is idempotent for the same instance and raises ContextBindingError on
@@ -1039,8 +1089,13 @@ export class Executor {
     try {
       while (true) {
         try {
+          if (protectedCall) {
+            beginPolicyInvocation(pipeCtx);
+            pipeCtx.inputs = policyIngressInputs(pipeCtx.inputs, moduleId);
+          }
           prepareApprovalInputs(pipeCtx);
           const [output, trace] = await this._pipelineEngine.run(strategy, pipeCtx);
+          if (protectedCall && !policyInvocationOf(pipeCtx)?.dispatched) throw new PolicyEvaluationError(moduleId);
           return [(output ?? {}) as Record<string, unknown>, trace];
         } catch (exc) {
           if (exc instanceof ExecutionCancelledError) throw exc;
@@ -1059,6 +1114,7 @@ export class Executor {
             unwrapped instanceof MiddlewareChainError ? unwrapped.original : (unwrapped as Error);
           if (underlying instanceof ExecutionCancelledError) throw underlying;
           const wrapped = propagateError(underlying, moduleId, ctxObj);
+          if (protectedCall && !policyInvocationOf(pipeCtx)?.dispatched) throw wrapped;
           const executedMw = pipeCtx.executedMiddlewares;
           if (executedMw && executedMw.length > 0) {
             const recovery = await this._middlewareManager.executeOnError(
@@ -1081,6 +1137,7 @@ export class Executor {
       }
     } finally {
       discardApprovalToken(pipeCtx);
+      if (protectedCall) endPolicyInvocation(pipeCtx);
       this._finishCallContext(pipeCtx.context, ctx);
     }
   }
@@ -1180,8 +1237,9 @@ export class Executor {
   ): StreamExecution {
     const parent = context ?? Context.create();
     const token = new CancelToken(parent.cancelToken);
-    const tracker = new StreamCompletionTracker(this._strategy.steps.map((step) => step.name));
-    const chunks = this._stream(moduleId, inputs, parent._withCancellationScope(token), versionHint, tracker);
+    const strategy = this._strategyForInvocation();
+    const tracker = new StreamCompletionTracker(strategy.steps.map((step) => step.name));
+    const chunks = this._stream(moduleId, inputs, parent._withCancellationScope(token), versionHint, tracker, strategy);
     return createStreamExecution(chunks, token, moduleId, tracker, parent.globalDeadline);
   }
 
@@ -1191,8 +1249,10 @@ export class Executor {
     context?: Context | null,
     versionHint?: string | null,
     tracker?: StreamCompletionTracker,
+    strategy = this._strategyForInvocation(),
   ): AsyncGenerator<Record<string, unknown>> {
     this._validateModuleId(moduleId);
+    const protectedCall = strategy !== this._strategy && strategy.findStepIndex('post_validation_policy') !== undefined;
 
     // Issue #66: auto-bind executor (see call() for rationale).
     let ctx = context ?? Context.create();
@@ -1207,7 +1267,7 @@ export class Executor {
       validatedOutput: null,
       stream: true,
       outputStream: null,
-      strategy: this._strategy,
+      strategy,
       trace: null,
       versionHint: versionHint ?? null,
       ...(tracker && { onContextReady: (context: Context) => tracker.armDeadline?.(context.globalDeadline) }),
@@ -1229,14 +1289,20 @@ export class Executor {
       }
     };
     const pipeline = this._pipelineEngine.runWithPause(
-      this._strategy, pipeCtx, () => pipeCtx.outputStream != null, observeStep,
+      strategy, pipeCtx, () => (protectedCall ? policyInvocationOf(pipeCtx)?.producer : pipeCtx.outputStream) != null, observeStep,
     );
 
     try {
       // Run through producer creation, or finish the unary fallback.
       try {
+        if (protectedCall) {
+          beginPolicyInvocation(pipeCtx);
+          pipeCtx.inputs = policyIngressInputs(pipeCtx.inputs, moduleId);
+        }
         prepareApprovalInputs(pipeCtx);
         await pipeline.next();
+        const invocation = policyInvocationOf(pipeCtx);
+        if (protectedCall && !invocation?.dispatched && !invocation?.producer) throw new PolicyEvaluationError(moduleId);
       } catch (exc) {
         if (exc instanceof ExecutionCancelledError) throw exc;
         const ctxObj = pipeCtx.context;
@@ -1250,6 +1316,7 @@ export class Executor {
           unwrapped instanceof MiddlewareChainError ? unwrapped.original : (unwrapped as Error);
         if (underlying instanceof ExecutionCancelledError) throw underlying;
         const wrapped = propagateError(underlying, moduleId, ctxObj);
+        if (protectedCall && !policyInvocationOf(pipeCtx)?.dispatched) throw wrapped;
         if (pipeCtx.executedMiddlewares && pipeCtx.executedMiddlewares.length > 0) {
           const recovery = await this._middlewareManager.executeOnError(
             moduleId,
@@ -1275,7 +1342,9 @@ export class Executor {
 
       // If no outputStream, pipeline already executed normally — yield single result
       if (tracker) pipeCtx.context.cancelToken?.check();
-      if (pipeCtx.outputStream == null) {
+      const outputStream = protectedCall ? policyInvocationOf(pipeCtx)?.producer
+        : pipeCtx.outputStream as AsyncGenerator<Record<string, unknown>> | null;
+      if (outputStream == null) {
         const output = pipeCtx.output ?? {};
         if (tracker && tracker.output === null) tracker.output = copyChunkValue(output) as Record<string, unknown>;
         yield output;
@@ -1283,7 +1352,6 @@ export class Executor {
       }
 
       // Phase 2: Iterate stream, accumulate chunks
-      const outputStream = pipeCtx.outputStream as AsyncGenerator<Record<string, unknown>>;
       const accumulated: Record<string, unknown> = {};
       // PROTOCOL_SPEC §5: resolved ONCE per stream, not per chunk. A
       // configuration mutated mid-stream — `system.control.update_config` can do
@@ -1325,6 +1393,7 @@ export class Executor {
         if (exc instanceof ExecutionCancelledError) throw exc;
         const ctxObj = pipeCtx.context;
         const wrapped = propagateError(exc as Error, moduleId, ctxObj);
+        if (protectedCall && !policyInvocationOf(pipeCtx)?.dispatched) throw wrapped;
         if (exc instanceof ModuleTimeoutError && ctxObj.signal.aborted) throw wrapped;
         if (pipeCtx.executedMiddlewares && pipeCtx.executedMiddlewares.length > 0) {
           const recovery = await this._middlewareManager.executeOnError(
@@ -1414,6 +1483,7 @@ export class Executor {
       }
     } finally {
       discardApprovalToken(pipeCtx);
+      if (protectedCall) endPolicyInvocation(pipeCtx);
       this._finishCallContext(pipeCtx.context, ctx);
     }
   }
@@ -1430,7 +1500,6 @@ export class Executor {
     inputs?: Record<string, unknown> | null,
     context?: Context | null,
   ): Promise<PreflightResult> {
-    const effectiveInputs = stripApprovalToken(inputs ?? {});
     const checks: PreflightCheckResult[] = [];
 
     // Check 0: module_id format (before pipeline)
@@ -1443,6 +1512,18 @@ export class Executor {
         passed: false,
         error: (e as InvalidInputError).toJSON(),
       });
+      return createPreflightResult(checks);
+    }
+
+    const protectedCall = this._policyEvaluator !== null;
+    let strategy: ExecutionStrategy;
+    let effectiveInputs: Record<string, unknown>;
+    try {
+      strategy = this._strategyForInvocation();
+      effectiveInputs = stripApprovalToken(protectedCall ? policyIngressInputs(inputs ?? {}, moduleId) : inputs ?? {});
+    } catch (error) {
+      if (!(error instanceof ModuleError)) throw error;
+      checks.push({ check: 'post_validation_policy', passed: false, error: error.toJSON() });
       return createPreflightResult(checks);
     }
 
@@ -1476,15 +1557,16 @@ export class Executor {
       validatedOutput: null,
       stream: false,
       outputStream: null,
-      strategy: this._strategy,
+      strategy,
       trace: null,
       dryRun: true,
     };
+    if (protectedCall) beginPolicyInvocation(pipeCtx);
 
     try {
       let trace: PipelineTrace | null = null;
       try {
-        const [, t] = await this._pipelineEngine.run(this._strategy, pipeCtx);
+        const [, t] = await this._pipelineEngine.run(strategy, pipeCtx);
         trace = t;
       } catch (e) {
         // Step raised a domain error (ModuleNotFoundError, ACLDeniedError, etc.)
@@ -1540,7 +1622,7 @@ export class Executor {
         // reading the union, would stop the call the preflight waved through.
         // That disagreement is the one thing this method exists to prevent.
         const governance = governanceUnion(mod['annotations'], pipeCtx.declaredAnnotations);
-        const gate = this._strategy.steps.find((step) => step instanceof BuiltinApprovalGate);
+        const gate = strategy.steps.find((step) => step instanceof BuiltinApprovalGate);
         const policy = gate?.policy ?? this._policy ?? DEFAULT_EXECUTION_POLICY;
         // §7.9.6: preflight resolves the same policy against the same call site.
         requiresApproval = policy.resolve(moduleId, governance, {
@@ -1555,7 +1637,7 @@ export class Executor {
       // in the dry-run pipeline above (it is `pure`), so its verdict is already
       // on `pipeCtx` — and §6.9 row 4 forbids a policy from clearing it, which is
       // why this is OR-ed on top rather than folded into the branch above.
-      if (pipeCtx.aclApprovalRequired === true) {
+      if (pipeCtx.aclApprovalRequired === true || policyInvocationOf(pipeCtx)?.requiresApproval === true) {
         requiresApproval = true;
       }
 
@@ -1571,38 +1653,56 @@ export class Executor {
       // on lookup alone runs module code for a caller the ACL just denied and
       // hands back what it said.
       //
-      // Scoped to authorization deliberately: a failed `schema` check does NOT
-      // suppress introspection, because a caller the ACL permits is entitled to
-      // the module's account of what would happen even when its inputs are
-      // malformed.
-      const aclEnforced = this._strategy.steps.some((step) => step instanceof BuiltinACLCheck && step.acl !== null);
+      // Without an evaluator, the ACL can permit introspection even for
+      // malformed inputs. The opted-in path requires policy approval of a
+      // successfully validated snapshot before any module callback runs.
+      const aclEnforced = strategy.steps.some((step) => step instanceof BuiltinACLCheck && step.acl !== null);
       const aclDenied = (aclEnforced && pipeCtx.aclAllowed !== true)
         || checks.some((c) => c.check === Executor.ACL_CHECK && !c.passed);
+      const invocation = policyInvocationOf(pipeCtx);
+      let discloseModule = !aclDenied && (!protectedCall || invocation?.approvedForDispatch === true);
+      const module = (invocation ? invocation.selected?.module : pipeCtx.module) as Module | null | undefined;
+      const callbackContext = invocation?.context ?? pipeCtx.context;
+      const callbackInputs = (): Record<string, unknown> => invocation?.validated
+        ? structuredClone(invocation.validated.arguments) : effectiveInputs;
+      // Each callback can await or mutate its context. Recheck the binding
+      // before invocation and before using any result from that invocation.
+      const canDisclose = (): boolean => {
+        if (!discloseModule || !invocation) return discloseModule;
+        try {
+          assertPolicyBinding(pipeCtx, invocation);
+          return true;
+        } catch (error) {
+          if (!(error instanceof PolicyEvaluationError)) throw error;
+          checks.push({ check: 'post_validation_policy', passed: false, error: error.toJSON() });
+          discloseModule = false;
+          return false;
+        }
+      };
 
       // Module-level preflight (optional)
-      if (!aclDenied && pipeCtx.module != null) {
-        const mod = pipeCtx.module as Record<string, unknown>;
-        const modWithPreflight = mod as { preflight?: Module['preflight'] };
-        if (typeof modWithPreflight.preflight === 'function') {
+      if (canDisclose() && module != null) {
+        const preflight = module.preflight;
+        if (typeof preflight === 'function' && canDisclose()) {
           try {
-            const preflightWarnings = await modWithPreflight.preflight(effectiveInputs, pipeCtx.context);
-            if (Array.isArray(preflightWarnings) && preflightWarnings.length > 0) {
+            const preflightWarnings = await preflight.call(module, callbackInputs(), callbackContext);
+            if (canDisclose()) {
               checks.push({
                 check: Executor.MODULE_PREFLIGHT_CHECK,
                 passed: true,
-                warnings: preflightWarnings,
+                ...(Array.isArray(preflightWarnings) && preflightWarnings.length > 0 && { warnings: preflightWarnings }),
               });
-            } else {
-              checks.push({ check: Executor.MODULE_PREFLIGHT_CHECK, passed: true });
             }
           } catch (exc: unknown) {
-            const excName = exc instanceof Error ? exc.constructor.name : 'Error';
-            const excMsg = exc instanceof Error ? exc.message : String(exc);
-            checks.push({
-              check: Executor.MODULE_PREFLIGHT_CHECK,
-              passed: true,
-              warnings: [`preflight() raised ${excName}: ${excMsg}`],
-            });
+            if (canDisclose()) {
+              const excName = exc instanceof Error ? exc.constructor.name : 'Error';
+              const excMsg = exc instanceof Error ? exc.message : String(exc);
+              checks.push({
+                check: Executor.MODULE_PREFLIGHT_CHECK,
+                passed: true,
+                warnings: [`preflight() raised ${excName}: ${excMsg}`],
+              });
+            }
           }
         }
       }
@@ -1613,35 +1713,37 @@ export class Executor {
       // throws or async rejections) are treated as advisory warnings and do NOT
       // fail validation, mirroring `preflight()` semantics (RFC Open Question 1).
       let predictedChanges: Change[] = [];
-      if (!aclDenied && pipeCtx.module != null) {
-        const mod = pipeCtx.module as Record<string, unknown>;
-        const modWithPreview = mod as { preview?: Module['preview'] };
-        if (typeof modWithPreview.preview === 'function') {
+      if (canDisclose() && module != null) {
+        const preview = module.preview;
+        if (typeof preview === 'function' && canDisclose()) {
           try {
-            const raw = modWithPreview.preview(effectiveInputs, pipeCtx.context);
+            const raw = preview.call(module, callbackInputs(), callbackContext);
             // Support both sync and async preview() implementations.
             const result: PreviewResult | null =
               raw != null && typeof (raw as Promise<unknown>).then === 'function'
                 ? await (raw as Promise<PreviewResult | null>)
                 : (raw as PreviewResult | null);
-            if (result != null) {
+            if (canDisclose() && result != null) {
               predictedChanges = Array.isArray(result.changes) ? result.changes : [];
               checks.push({ check: Executor.MODULE_PREVIEW_CHECK, passed: true });
             }
           } catch (exc: unknown) {
-            const excName = exc instanceof Error ? exc.constructor.name : 'Error';
-            const excMsg = exc instanceof Error ? exc.message : String(exc);
-            checks.push({
-              check: Executor.MODULE_PREVIEW_CHECK,
-              passed: true,
-              warnings: [`preview() raised ${excName}: ${excMsg}`],
-            });
+            if (canDisclose()) {
+              const excName = exc instanceof Error ? exc.constructor.name : 'Error';
+              const excMsg = exc instanceof Error ? exc.message : String(exc);
+              checks.push({
+                check: Executor.MODULE_PREVIEW_CHECK,
+                passed: true,
+                warnings: [`preview() raised ${excName}: ${excMsg}`],
+              });
+            }
           }
         }
       }
 
       return createPreflightResult(checks, requiresApproval, predictedChanges);
     } finally {
+      if (protectedCall) endPolicyInvocation(pipeCtx);
       if (pipeCtx.context.cancelToken !== validateCtx.cancelToken)
         pipeCtx.context.cancelToken?.dispose();
     }

@@ -31,6 +31,12 @@ use crate::module::ModuleAnnotations;
 pub struct ApprovalRequest {
     pub module_id: String,
     pub arguments: serde_json::Value,
+    /// Version of the registration selected for final-scope approval.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub module_version: Option<String>,
+    /// Digest of the validated inputs. Present only for final-scope approval.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub canonical_args_digest: Option<String>,
     /// The execution context (`trace_id`, identity, `call_chain`).
     /// Skipped during serialization as Context contains non-serializable runtime refs.
     #[serde(skip)]
@@ -150,6 +156,12 @@ pub trait ApprovalHandler: Send + Sync + std::fmt::Debug {
 
     /// Check the current status of a pending approval by ID.
     async fn check_approval(&self, approval_id: &str) -> Result<ApprovalResult, ModuleError>;
+
+    /// Whether this handler binds and atomically consumes final-scope credentials.
+    /// Immediate approval decisions do not require this capability.
+    fn supports_final_scope(&self) -> bool {
+        false
+    }
 
     /// Validate the current call's identity, target and arguments, then consume the approval.
     async fn check_approval_for_call(

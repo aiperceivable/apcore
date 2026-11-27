@@ -1,0 +1,84 @@
+{
+  "description": "Exercise the opted-in post-validation policy through the public Executor call, preflight, stream and scoped resumption paths.",
+  "driver_contract": {
+    "module_id": "demo.policy",
+    "module_version": "1.2.3",
+    "business_input": {"amount": 10, "secret": "private-fixture-value"},
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "amount": {"type": "integer"},
+        "secret": {"type": "string", "x-sensitive": true}
+      },
+      "required": ["amount", "secret"],
+      "additionalProperties": false
+    },
+    "notes": "Apply per-case input overrides. If configured, before middleware substitutes rewrite_amount. For resume, the handler first returns pending, then compares the full approval scope and atomically consumes the matching credential. Retry the original business inputs with _approval_token and any retry overrides. Counts include both traversals. For preflight, read the policy check or requires_approval in the public report. Count starts on module execute and on the stream producer. Spy requests must observe the real version, an argument snapshot without the credential, and /secret in sensitive_fields."
+  },
+  "test_cases": [
+    {
+      "id": "unary_uses_the_validated_middleware_result",
+      "entry": "call",
+      "rewrite_amount": 20,
+      "verdict": "allow",
+      "expected": {"module_starts": 1, "evaluated_amount": 20, "approval_requests": 0}
+    },
+    {
+      "id": "both_requirements_use_one_final_approval",
+      "entry": "call",
+      "requires_approval": true,
+      "rewrite_amount": 20,
+      "verdict": "require_approval",
+      "expected": {"module_starts": 1, "evaluated_amount": 20, "approval_requests": 1, "approved_amount": 20}
+    },
+    {
+      "id": "allow_preserves_the_early_approval_requirement",
+      "entry": "call",
+      "requires_approval": true,
+      "rewrite_amount": 20,
+      "verdict": "allow",
+      "expected": {"module_starts": 1, "evaluated_amount": 20, "approval_requests": 1, "approved_amount": 20}
+    },
+    {
+      "id": "preflight_reports_approval_without_prompting",
+      "entry": "preflight",
+      "rewrite_amount": 20,
+      "verdict": "require_approval",
+      "expected": {"module_starts": 0, "evaluated_amount": 10, "approval_requests": 0, "requires_approval": true}
+    },
+    {
+      "id": "denied_stream_does_not_start_its_producer",
+      "entry": "stream",
+      "verdict": "deny",
+      "expected": {"module_starts": 0, "evaluated_amount": 10, "approval_requests": 0, "error_code": "POLICY_DENIED"}
+    },
+    {
+      "id": "provider_fault_fails_closed",
+      "entry": "call",
+      "verdict": "throw",
+      "expected": {"module_starts": 0, "evaluated_amount": 10, "approval_requests": 0, "error_code": "POLICY_EVALUATION_ERROR"}
+    },
+    {
+      "id": "schema_rejection_prevents_policy_disclosure",
+      "entry": "call",
+      "inputs": {"amount": "invalid"},
+      "verdict": "allow",
+      "expected": {"module_starts": 0, "evaluated_amount": null, "approval_requests": 0}
+    },
+    {
+      "id": "resume_consumes_one_credential_for_final_inputs",
+      "entry": "resume",
+      "requires_approval": true,
+      "rewrite_amount": 20,
+      "verdict": "require_approval",
+      "expected": {"module_starts": 1, "evaluated_amount": 20, "approval_requests": 1, "approved_amount": 20, "resume_checks": 1}
+    },
+    {
+      "id": "resume_rejects_changed_effective_inputs",
+      "entry": "resume",
+      "verdict": "require_approval",
+      "retry_inputs": {"amount": 20},
+      "expected": {"module_starts": 0, "evaluated_amount": 20, "approval_requests": 1, "approved_amount": 10, "resume_checks": 1, "error_code": "APPROVAL_DENIED"}
+    }
+  ]
+}

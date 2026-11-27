@@ -10,7 +10,7 @@ use crate::errors::{ErrorCode, ModuleError};
 use crate::events::emitter::ApCoreEvent;
 use crate::executor::{redact_sensitive_with, validate_against_schema};
 use crate::pipeline::{BuiltinGate, ExecutionStrategy, PipelineContext, Step, StepResult};
-use crate::policy::{ExecutionPolicy, PolicyDecision};
+use crate::policy::{ExecutionPolicy, PolicyDecision, PolicyEffect, PolicyEvaluationRequest};
 
 // Macro for step metadata — execute is implemented manually per step.
 macro_rules! step_meta {
@@ -124,6 +124,14 @@ step_meta!(
     "Validate inputs against schema",
     removable = true,
     replaceable = true,
+    pure = true
+);
+step_meta!(
+    BuiltinPostValidationPolicy,
+    "post_validation_policy",
+    "Evaluate policy and authorize final validated inputs",
+    removable = true,
+    replaceable = false,
     pure = true
 );
 step_meta!(
@@ -395,6 +403,10 @@ impl Step for BuiltinACLCheck {
         &["context", "module"]
     }
 
+    fn provides(&self) -> &[&str] {
+        &["acl_checked"]
+    }
+
     async fn execute(&self, ctx: &mut PipelineContext) -> Result<StepResult, ModuleError> {
         if let Some(acl) = ctx.acl.clone() {
             let caller_id = ctx.context.caller_id.clone();
@@ -606,6 +618,20 @@ impl BuiltinApprovalGate {
         tracing::warn!("{}", message);
     }
 
+    fn warn_destructive_ungated(ctx: &PipelineContext) {
+        Self::warn_once(
+            ctx,
+            &format!("destructive_ungated:{}", ctx.module_id),
+            &format!(
+                "Module '{}' is annotated destructive=true but is not covered by the \
+                 approval gate (requires_approval is false and no policy gates \
+                 destructive modules). Consider requires_approval=true or \
+                 ExecutionPolicy(gate_destructive=true). (apcore#76)",
+                ctx.module_id
+            ),
+        );
+    }
+
     /// Preserve the full decision for the caller, including the pending
     /// credential at its existing details key for older clients.
     fn approval_error(module_id: &str, result: &crate::approval::ApprovalResult) -> ModuleError {
@@ -643,6 +669,66 @@ impl BuiltinApprovalGate {
         }
         error
     }
+
+    async fn reject_unavailable_handler(ctx: &PipelineContext, reason: &str) -> ModuleError {
+        let decision = crate::approval::ApprovalResult::rejected(reason);
+        Self::emit_approval_decision(ctx, &decision, None);
+        Self::emit_approval_decision_event(ctx, &decision, None).await;
+        Self::approval_error(&ctx.module_id, &decision)
+    }
+
+    async fn authorize(
+        ctx: &mut PipelineContext,
+        module: &dyn crate::module::Module,
+        handler: &dyn crate::approval::ApprovalHandler,
+        annotations: crate::module::ModuleAnnotations,
+        arguments: Value,
+        digest: Option<String>,
+    ) -> Result<(), ModuleError> {
+        const UNSUPPORTED_FINAL: &str =
+            "The approval handler does not support final-scope resumption";
+        let approval_token = ctx.take_approval_credential()?;
+        let final_scope = digest.is_some();
+        if final_scope && approval_token.is_some() && !handler.supports_final_scope() {
+            return Err(Self::reject_unavailable_handler(ctx, UNSUPPORTED_FINAL).await);
+        }
+        let description = module.description();
+        let request = crate::approval::ApprovalRequest {
+            module_id: ctx.module_id.clone(),
+            arguments,
+            module_version: if final_scope {
+                ctx.module_lease
+                    .as_ref()
+                    .and_then(|lease| lease.version.clone())
+            } else {
+                None
+            },
+            canonical_args_digest: digest,
+            context: Some(ctx.context.clone()),
+            annotations,
+            caller_id: ctx.context.caller_id.clone(),
+            action: ctx.module_id.clone(),
+            description: (!description.is_empty()).then(|| description.to_owned()),
+            tags: module.tags(),
+        };
+        let approval_result = if let Some(credential) = approval_token.as_deref() {
+            handler
+                .check_approval_for_call(credential, &request)
+                .await?
+        } else {
+            handler.request_approval(&request).await?
+        };
+        if final_scope && approval_result.status == "pending" && !handler.supports_final_scope() {
+            return Err(Self::reject_unavailable_handler(ctx, UNSUPPORTED_FINAL).await);
+        }
+        let audit_id = approval_result.observable_id(approval_token.as_deref());
+        Self::emit_approval_decision(ctx, &approval_result, audit_id);
+        Self::emit_approval_decision_event(ctx, &approval_result, audit_id).await;
+        if approval_result.status != "approved" {
+            return Err(Self::approval_error(&ctx.module_id, &approval_result));
+        }
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -659,7 +745,7 @@ impl Step for BuiltinApprovalGate {
 
     #[allow(clippy::too_many_lines)] // approval gate logic is inherently multi-step; splitting would obscure the protocol flow
     async fn execute(&self, ctx: &mut PipelineContext) -> Result<StepResult, ModuleError> {
-        let approval_token = ctx.take_approval_credential()?;
+        ctx.validate_approval_credential()?;
 
         let registry = ctx
             .registry
@@ -753,43 +839,28 @@ impl Step for BuiltinApprovalGate {
             Self::emit_policy_override_event(ctx, &decision).await;
         }
 
+        let mut annotations = module_annotations.unwrap_or_default();
+        annotations.requires_approval = needs_approval;
+        annotations.destructive = decision.destructive;
+        if needs_approval && ctx.approval_handler.is_none() && policy.strict {
+            return Err(Self::reject_unavailable_handler(
+                ctx,
+                "Approval required but no ApprovalHandler is configured; ExecutionPolicy(strict=true) fails closed",
+            ).await);
+        }
+        if ctx.policy_evaluator.is_some() {
+            ctx.policy_approval_annotations = Some(annotations);
+            return Ok(StepResult::continue_step());
+        }
         if !needs_approval {
-            // Fail-loud governance (apcore#76): a module that is effectively
-            // destructive but that no approval gate covers is warned about once.
             if decision.destructive {
-                Self::warn_once(
-                    ctx,
-                    &format!("destructive_ungated:{}", ctx.module_id),
-                    &format!(
-                        "Module '{}' is annotated destructive=true but is not covered by the \
-                         approval gate (requires_approval is false and no policy gates \
-                         destructive modules). Consider requires_approval=true or \
-                         ExecutionPolicy(gate_destructive=true). (apcore#76)",
-                        ctx.module_id
-                    ),
-                );
+                Self::warn_destructive_ungated(ctx);
             }
             return Ok(StepResult::continue_step());
         }
 
         // A missing handler refuses an approval-required call by default.
         let Some(handler) = ctx.approval_handler.clone() else {
-            if policy.strict {
-                // strict=true fails CLOSED: build a rejected result, audit it,
-                // and deny.
-                let result = crate::approval::ApprovalResult {
-                    status: "rejected".to_string(),
-                    reason: Some(
-                        "Approval required but no ApprovalHandler is configured; \
-                         ExecutionPolicy(strict=true) fails closed"
-                            .to_string(),
-                    ),
-                    ..Default::default()
-                };
-                Self::emit_approval_decision(ctx, &result, None);
-                Self::emit_approval_decision_event(ctx, &result, None).await;
-                return Err(Self::approval_error(&ctx.module_id, &result));
-            }
             // An explicit non-strict policy warns once per module and
             // continues. It emits no decision event
             // — parity with the "no audit log when gate skipped" contract.
@@ -807,35 +878,16 @@ impl Step for BuiltinApprovalGate {
         };
 
         let module = module.ok_or_else(|| ModuleError::module_not_found(&ctx.module_id))?;
-        let mut annotations = module_annotations.unwrap_or_default();
-        annotations.requires_approval = true;
-        annotations.destructive = decision.destructive;
-        let description = module.description();
-        let request = crate::approval::ApprovalRequest {
-            module_id: ctx.module_id.clone(),
-            arguments: ctx.inputs.clone(),
-            context: Some(ctx.context.clone()),
+        let arguments = ctx.inputs.clone();
+        Self::authorize(
+            ctx,
+            module.as_ref(),
+            handler.as_ref(),
             annotations,
-            caller_id: ctx.context.caller_id.clone(),
-            action: ctx.module_id.clone(),
-            description: (!description.is_empty()).then(|| description.to_owned()),
-            tags: module.tags(),
-        };
-        let approval_result = if let Some(credential) = approval_token.as_deref() {
-            handler
-                .check_approval_for_call(credential, &request)
-                .await?
-        } else {
-            handler.request_approval(&request).await?
-        };
-        let audit_id = approval_result.observable_id(approval_token.as_deref());
-        Self::emit_approval_decision(ctx, &approval_result, audit_id);
-        Self::emit_approval_decision_event(ctx, &approval_result, audit_id).await;
-
-        if approval_result.status != "approved" {
-            return Err(Self::approval_error(&ctx.module_id, &approval_result));
-        }
-
+            arguments,
+            None,
+        )
+        .await?;
         Ok(StepResult::continue_step())
     }
 }
@@ -858,11 +910,143 @@ impl Step for BuiltinInputValidation {
         let input_schema = module.input_schema();
         validate_against_schema(&ctx.inputs, &input_schema, "Input")?;
 
+        if ctx.policy_evaluator.is_some() {
+            ctx.policy_sensitive_fields =
+                crate::executor::schema_sensitive_fields(&ctx.inputs, &input_schema);
+        }
+
         let mut captured = capture_redacted(&ctx.inputs, &input_schema, ctx);
         captured.remove("_approval_token");
         ctx.context.redacted_inputs = Some(captured);
         ctx.validated_inputs = Some(ctx.inputs.clone());
         Ok(StepResult::continue_step())
+    }
+}
+
+#[async_trait]
+impl Step for BuiltinPostValidationPolicy {
+    impl_step_meta!(BuiltinPostValidationPolicy);
+
+    fn requires(&self) -> &[&str] {
+        &["module", "acl_checked", "validated_inputs"]
+    }
+
+    fn builtin_gate(&self) -> Option<BuiltinGate> {
+        Some(BuiltinGate::PostValidationPolicy)
+    }
+
+    async fn execute(&self, ctx: &mut PipelineContext) -> Result<StepResult, ModuleError> {
+        let evaluator = ctx
+            .policy_evaluator
+            .clone()
+            .ok_or_else(|| missing_pipeline_input("policy_evaluator"))?;
+        let arguments = ctx
+            .validated_inputs
+            .clone()
+            .ok_or_else(|| missing_pipeline_input("validated_inputs"))?;
+        if !arguments.is_object() || arguments.get(crate::policy::APPROVAL_TOKEN_KEY).is_some() {
+            return Err(crate::policy::evaluation_error());
+        }
+        let digest = crate::policy::final_arguments_digest(&arguments)?;
+        let request = PolicyEvaluationRequest {
+            module_id: ctx.module_id.clone(),
+            module_version: ctx
+                .module_lease
+                .as_ref()
+                .and_then(|lease| lease.version.clone()),
+            caller_id: ctx.context.caller_id.clone(),
+            identity: ctx.context.identity.clone(),
+            sensitive_fields: std::mem::take(&mut ctx.policy_sensitive_fields),
+            arguments,
+        };
+        let verdict = crate::policy::evaluate(evaluator.as_ref(), &request, &ctx.context).await?;
+        if !ctx.dry_run {
+            Self::emit_decision(ctx, &request, &verdict).await;
+        }
+        if verdict.decision == PolicyEffect::Deny {
+            return Err(ModuleError::new(
+                ErrorCode::PolicyDenied,
+                "The post-validation policy denied the invocation",
+            )
+            .with_ai_guidance("Change the arguments to satisfy the configured policy."));
+        }
+        if !ctx.dry_run {
+            Self::authorize(ctx, &request, digest, verdict.decision).await?;
+            ctx.policy_inputs = Some(request.arguments);
+        }
+        ctx.policy_effect = Some(verdict.decision);
+        Ok(StepResult::continue_step())
+    }
+}
+
+impl BuiltinPostValidationPolicy {
+    async fn authorize(
+        ctx: &mut PipelineContext,
+        request: &PolicyEvaluationRequest,
+        digest: String,
+        effect: PolicyEffect,
+    ) -> Result<(), ModuleError> {
+        if let Some(token) = &ctx.context.cancel_token {
+            token.check_for(&ctx.module_id)?;
+        }
+        let mut annotations = ctx
+            .policy_approval_annotations
+            .take()
+            .ok_or_else(|| missing_pipeline_input("policy_approval_annotations"))?;
+        if annotations.requires_approval
+            || effect == PolicyEffect::RequireApproval
+            || ctx.has_approval_credential()
+        {
+            let Some(handler) = ctx.approval_handler.clone() else {
+                return Err(BuiltinApprovalGate::reject_unavailable_handler(
+                    ctx,
+                    "Final-scope approval requires an ApprovalHandler",
+                )
+                .await);
+            };
+            let module = ctx
+                .module
+                .clone()
+                .ok_or_else(|| missing_pipeline_input("module"))?;
+            annotations.requires_approval = true;
+            BuiltinApprovalGate::authorize(
+                ctx,
+                module.as_ref(),
+                handler.as_ref(),
+                annotations,
+                request.arguments.clone(),
+                Some(digest),
+            )
+            .await?;
+        } else if annotations.destructive {
+            BuiltinApprovalGate::warn_destructive_ungated(ctx);
+        }
+        Ok(())
+    }
+
+    async fn emit_decision(
+        ctx: &PipelineContext,
+        request: &PolicyEvaluationRequest,
+        verdict: &crate::policy::PolicyVerdict,
+    ) {
+        let Some(emitter) = ctx.event_emitter.as_ref() else {
+            return;
+        };
+        let event = ApCoreEvent::with_module(
+            "apcore.policy.decision",
+            serde_json::json!({
+                "rule_id": verdict.rule_id,
+                "decision": verdict.decision,
+                "sensitive_fields": request.sensitive_fields,
+            }),
+            ctx.module_id.clone(),
+            if verdict.decision == PolicyEffect::Deny {
+                "warn"
+            } else {
+                "info"
+            },
+        );
+        emitter.emit(&event).await;
     }
 }
 
@@ -993,6 +1177,7 @@ impl Step for BuiltinExecute {
     }
 
     async fn execute(&self, ctx: &mut PipelineContext) -> Result<StepResult, ModuleError> {
+        ctx.bind_policy_inputs()?;
         let module = ctx
             .module
             .as_ref()

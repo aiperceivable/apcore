@@ -37,8 +37,9 @@ class ApprovalRequest:
 
     Attributes:
         module_id: Canonical module ID being invoked.
-        arguments: Detached call arguments at the approval gate, before module
-            middleware rewrites or input validation.
+        arguments: Detached call arguments at the approval gate. When
+            ``canonical_args_digest`` is present, these are the validated
+            arguments covered by the final approval.
         context: Full execution context (trace_id, identity, call_chain).
         annotations: Module's annotation set (requires_approval is guaranteed true).
         description: Module's human-readable description.
@@ -54,6 +55,8 @@ class ApprovalRequest:
             without cross-referencing ``module_id`` (spec decision D-03).
             Defaults to ``""`` for the same field-ordering reason as
             ``caller_id``; ``BuiltinApprovalGate`` always supplies it explicitly.
+        module_version: Selected module version for a final approval.
+        canonical_args_digest: SHA-256 binding for a final approval's arguments.
     """
 
     module_id: str
@@ -64,6 +67,8 @@ class ApprovalRequest:
     tags: list[str] = field(default_factory=list)
     caller_id: str | None = None
     action: str = ""
+    module_version: str | None = None
+    canonical_args_digest: str | None = field(default=None, repr=False)
 
 
 @dataclass(frozen=True)
@@ -109,7 +114,11 @@ class ApprovalHandler(Protocol):
 
 @runtime_checkable
 class ScopedApprovalHandler(ApprovalHandler, Protocol):
-    """An approval handler that supports resuming a specific invocation."""
+    """An approval handler that supports resuming a specific invocation.
+
+    Set ``supports_final_scope = True`` when issuance and resumption verify
+    the version and canonical argument digest as well as the existing scope.
+    """
 
     async def check_approval_for_call(self, approval_id: str, request: ApprovalRequest) -> ApprovalResult:
         """Validate the current call's identity, target and arguments, then consume the approval."""

@@ -29,6 +29,11 @@ use crate::errors::{ErrorCode, ModuleError};
 use crate::module::ModuleAnnotations;
 use crate::utils::{calculate_specificity, match_pattern};
 
+mod evaluator;
+
+pub(crate) use evaluator::{evaluate, evaluation_error, final_arguments_digest};
+pub use evaluator::{PolicyEffect, PolicyEvaluationRequest, PolicyEvaluator, PolicyVerdict};
+
 /// The framework-owned Phase B approval token key (PROTOCOL_SPEC §7.4).
 /// Stripped from `arguments` before policy resolution (§7.9.6 rule 5) and
 /// excluded from the §6.1.8 governance projection on the same grounds.

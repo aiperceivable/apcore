@@ -651,6 +651,7 @@ pub(crate) struct ModuleExecutionLease {
     references: Arc<ModuleReferences>,
     execution: Option<u64>,
     pub declared_annotations: Option<ModuleAnnotations>,
+    pub version: Option<String>,
     pub enabled: bool,
 }
 
@@ -2500,6 +2501,7 @@ impl Registry {
                 references,
                 execution,
                 declared_annotations: descriptor.and_then(|entry| entry.annotations.clone()),
+                version: descriptor.map(|entry| entry.version.clone()),
                 enabled: descriptor.is_none_or(|entry| entry.enabled),
             });
             let deprecated = descriptor

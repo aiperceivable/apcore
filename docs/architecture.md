@@ -449,7 +449,7 @@ my-project/
 
 ## 5. Extension Points
 
-apcore provides a formal `ExtensionManager` API for managing pluggable extension points. The six built-in extension points are: `discoverer`, `middleware`, `acl`, `span_exporter`, `module_validator`, and `approval_handler`.
+apcore provides `ExtensionManager` for pluggable extension points. The built-in points are `discoverer`, `middleware`, `acl`, `span_exporter`, `module_validator`, `approval_handler`, and `policy_evaluator`.
 
 ### 5.1 ExtensionManager API
 

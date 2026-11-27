@@ -97,6 +97,8 @@ pub enum ErrorCode {
     ApprovalDenied,
     ApprovalTimeout,
     ApprovalPending,
+    PolicyDenied,
+    PolicyEvaluationError,
     VersionIncompatible,
     ErrorCodeCollision,
     DependencyNotFound,
@@ -317,6 +319,8 @@ impl ErrorCode {
         ErrorCode::ApprovalDenied,
         ErrorCode::ApprovalTimeout,
         ErrorCode::ApprovalPending,
+        ErrorCode::PolicyDenied,
+        ErrorCode::PolicyEvaluationError,
         ErrorCode::VersionIncompatible,
         ErrorCode::ErrorCodeCollision,
         ErrorCode::DependencyNotFound,
@@ -464,6 +468,7 @@ pub fn retryable_for_code(code: ErrorCode) -> Option<bool> {
         // execution, so it carries the annotation without reaching the retry
         // gate.
         ErrorCode::ApprovalTimeout
+        | ErrorCode::PolicyEvaluationError
         | ErrorCode::ModuleTimeout
         | ErrorCode::GeneralInternalError
         // A full task pool is a capacity condition, not a caller fault: the
@@ -504,6 +509,7 @@ pub fn retryable_for_code(code: ErrorCode) -> Option<bool> {
         | ErrorCode::ACLRuleError
         | ErrorCode::ApprovalDenied
         | ErrorCode::ApprovalPending
+        | ErrorCode::PolicyDenied
         | ErrorCode::ModuleDisabled
         // Call-chain structure: retrying reproduces the same chain.
         | ErrorCode::CallDepthExceeded
@@ -580,6 +586,7 @@ pub fn user_fixable_for_code(code: ErrorCode) -> Option<bool> {
         // Caller can fix by changing input/config:
         ErrorCode::SchemaValidationError
         | ErrorCode::GeneralInvalidInput
+        | ErrorCode::PolicyDenied
         | ErrorCode::ModuleNotFound
         | ErrorCode::VersionConstraintInvalid
         // A malformed `parent_id` override is supplied by the caller, so the
@@ -593,6 +600,7 @@ pub fn user_fixable_for_code(code: ErrorCode) -> Option<bool> {
         // Governance / system / structural / transient — not caller-fixable by input:
         ErrorCode::ACLDenied
         | ErrorCode::ApprovalDenied
+        | ErrorCode::PolicyEvaluationError
         | ErrorCode::ApprovalTimeout
         | ErrorCode::ModuleTimeout
         | ErrorCode::ModuleDisabled

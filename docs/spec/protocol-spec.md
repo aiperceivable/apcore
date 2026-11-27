@@ -8,6 +8,7 @@ description: "The canonical apcore protocol specification (RFC 2119): module, sc
 
 > Version: 2.0.0
 > Status: Draft
+> Draft Revision: 2
 > Last Updated: 2026-11-27
 
 ---
@@ -5097,6 +5098,8 @@ These methods **MUST** be asynchronous (async/await) in implementations that sup
 
 Before returning `approved` from `check_approval_for_call`, a handler **MUST** verify the credential's expiry and match the current request to the original approved invocation. The scope **MUST** cover the trusted principal (when present), `caller_id`, canonical target ID, and the arguments. The handler **MUST** consume the approved credential atomically with successful verification. A handler using durable storage **MAY** authorize resumption after a process restart.
 
+A handler that implements final-scope resumption **MUST** explicitly advertise `supports_final_scope` in the SDK's native form. It **MUST** distinguish the final scope from legacy records and verify the resolved module version and canonical argument digest as well as the trusted principal, caller and target. Absence of a final-scope marker on a stored record **MUST NOT** match a final-scope request. An SDK **MUST NOT** expose a pending final-scope credential or pass one to a handler that has not advertised this capability. Fresh synchronous approval remains available to such a handler.
+
 ### 7.3 Data Types
 
 #### 7.3.1 ApprovalRequest
@@ -5111,7 +5114,14 @@ ApprovalRequest:
       description: "Target module's canonical ID"
     arguments:
       type: object
-      description: "Snapshot of the business arguments at the approval gate, before the standard before-middleware and input-validation steps"
+      description: "Detached snapshot of the business arguments at the enforcing approval gate. Step 5 uses submitted arguments. The opted-in Step 7.5 uses the validated execution inputs."
+    module_version:
+      type: [string, "null"]
+      description: "Version on the registration selected by Step 3, when supplied by the final approval gate. Null indicates no registered version."
+    canonical_args_digest:
+      type: [string, "null"]
+      pattern: "^[0-9a-f]{64}$"
+      description: "SHA-256 digest of the final-scope argument encoding. A non-null value indicates final scope. This field is private to the trusted handler contract."
     context:
       type: object
       description: "Execution context (trace_id, identity, call_chain) — see §5.7 Context Parameter Specification"
@@ -5251,9 +5261,25 @@ An implementation that read only the annotation would silently ignore every rule
 - The `_approval_token` mechanism (Phase B) allows clients to retry after external approval without re-triggering the approval flow.
 - The `_approval_token` key **MUST** be removed from business arguments before they reach subsequent steps. This applies to an invocation whose strategy omits the approval gate as well. The executor can carry the credential separately for the approval handler. A preflight has no approval decision to resume.
 
-**Resume semantics.** When a caller retries an `APPROVAL_PENDING` call with `_approval_token` in the request arguments, the executor **MUST** re-enter the pipeline from Step 1. Implementations **MUST NOT** preserve intermediate `PipelineContext` state across suspension and resumption. The fresh traversal receives business arguments separately from the resume credential. Steps 1–4 run on both traversals, so the ACL audit entry (§6.3.1) and tracing occur once per traversal. Modules **MUST NOT** assume those steps are skipped on resume. In the standard strategy, Step 6 (`middleware_before`) and later steps run only after the gate allows the call to continue. Neither module middleware nor the module receives the credential as a business argument. External retry and replay layers can persist `approval_id` and the original inputs to drive this flow. See [Durability Boundary §2.2](./design-durability-boundary.md) for integration patterns.
+**Resume semantics.** When a caller retries an `APPROVAL_PENDING` call with `_approval_token` in the request arguments, the executor **MUST** re-enter the pipeline from Step 1. Implementations **MUST NOT** preserve intermediate `PipelineContext` state across suspension and resumption. The fresh traversal receives business arguments separately from the resume credential. Steps 1–4 run on both traversals, so the ACL audit entry (§6.3.1) and tracing occur once per traversal. Modules **MUST NOT** assume those steps are skipped on resume. With the default approval timing, Step 6 (`middleware_before`) and later steps run only after the gate allows the call to continue. The condition for a host to opt in to final approval is defined in §7.4.1. Neither module middleware nor the module receives the credential as a business argument. External retry and replay layers can persist `approval_id` and the original inputs to drive this flow. See [Durability Boundary §2.2](./design-durability-boundary.md) for integration patterns.
 
 **Scope of approved arguments.** Fresh and resumed requests use the same gate-time snapshot. In the standard strategy, `middleware_before` can transform those inputs after approval, and input validation checks the transformed values. A deployment that lets a transformation change the resource or action being authorized can normalize the values before the gate or enforce a separate authorization check on the transformed values.
+
+#### 7.4.1 Opt-in post-validation policy {#741-post-validation-policy}
+
+A host **MAY** install an instance-scoped `PolicyEvaluator` using the `policy_evaluator` extension point. The evaluator is code supplied by the host. Its asynchronous `evaluate(request)` returns a `PolicyVerdict` with `decision` set to `allow`, `deny`, or `require_approval`, and an optional static `rule_id`. `PolicyEvaluationRequest` carries the canonical target ID, its resolved registration version, `caller_id`, trusted identity, a detached snapshot of the validated execution arguments, and the sensitive instance field paths identified by the input schema as JSON Pointers. The evaluator does not receive the resume credential. Registration version refers to the selection in Step 3, including across async evaluation or reload. A host that changes a module's approval-relevant behavior without changing its version is responsible for invalidating its outstanding approvals.
+
+When an evaluator is installed, the strategy **MUST** preserve the built-in authorization and validation boundaries and run `post_validation_policy` (Step 7.5) after successful input validation and before the module call or stream producer starts. An incompatible strategy **MUST** fail configuration or invocation before execution. A skip, replacement, ignored error or recovery **MUST NOT** bypass the policy decision or dispatch values besides the covered snapshot. Policy evaluation **MUST NOT** receive inputs from a traversal that did not pass ACL and input validation. Step 4 retains its submitted-arguments ACL contract.
+
+Step 5 computes the early approval requirement without prompting, verifying, or consuming the credential. It **MAY** fail early when the built-in strict policy requires a handler and none is configured. Hosts enabling the evaluator **MUST** use before middleware solely for trusted transformations without approval-dependent side effects. Step 7.5 uses the union of the earlier requirement and the evaluator's approval requirement. `allow` **MUST NOT** clear an earlier requirement. The gate performs at most one request or one scoped verification on the final snapshot. Both required approval and submitted credentials require a handler. A submitted credential **MUST** be verified even if the current verdict is `allow`. Reject a mismatched, expired or consumed credential without a fresh approval request or execution. An evaluator's `deny` or failure is terminal before approval or dispatch.
+
+Approval uses the same pending, timeout, and explicit denial results as Step 5. The final scope binds the trusted principal `(identity.type, identity.id)` when present, `caller_id`, canonical target ID, resolved module version, and `canonical_args_digest`. The scope encoding is local to the producing SDK and is independent of the schema content hash. The handler **MUST** compare all scope fields as well as the final-scope marker. Scope digests **MUST NOT** be used to transfer approval between SDKs with different native numeric types.
+
+For the argument digest, the SDK **MUST** encode the effective argument object as UTF-8. Objects and arrays use compact JSON punctuation, strings use JSON escaping with Unicode scalar values preserved, and object names sort by unsigned UTF-16 code units. Encode null and booleans as JSON literals. Encode safe native integers as `i` followed by their signed decimal form and `;`. Encode finite binary64 floats as `f` followed by sixteen lowercase hex digits of their bits and `;`. Where the language has only binary64 numbers, safe integral values use integer encoding except negative zero. Safe integers are in the inclusive range `[-9007199254740991, 9007199254740991]`. Reject integers or integral floats outside the range, lone surrogates, non-finite or cyclic values, and host values for which the SDK cannot prove a lossless JSON-shaped projection. The SDK **MUST** fail closed for an unsupported value and **MUST NOT** change the business value merely to compute a digest.
+
+Preflight evaluates policy on the same validated input its dry traversal obtains after ACL, without running before middleware. It reports the combined approval requirement without prompting, consuming credentials, or emitting approval or policy-decision events. It **MUST NOT** invoke module-level preview or preflight callbacks following an authorization failure. Execution always reevaluates after normal transformations. A preflight result is not an approval or an execution permit.
+
+An evaluator has a finite timeout, defaulting to 1,000 milliseconds and bounded by the invocation deadline. Its timeout, malformed verdict, unsupported input representation, or exception is reported as `POLICY_EVALUATION_ERROR` with `retryable: true` and `user_fixable: false`. A denied verdict is `POLICY_DENIED` with `retryable: false`, `user_fixable: true`, and safe user guidance. External cancellation retains the invocation's cancellation outcome. Policy errors and `apcore.policy.decision` telemetry **MUST NOT** carry raw arguments, argument digests, credentials, or evaluator exceptions. A pending credential uses the caller-only approval delivery in §7.4. The policy event **MAY** include the decision, a safe static rule ID, and sensitive schema field paths.
 
 ### 7.5 Error Types
 
@@ -5788,6 +5814,12 @@ error_codes:
   APPROVAL_PENDING:
     description: "Approval is pending, retry with _approval_token"
     http_status: 202
+  POLICY_DENIED:
+    description: "The installed policy denied the validated invocation"
+    http_status: 403
+  POLICY_EVALUATION_ERROR:
+    description: "The installed policy could not evaluate the invocation safely"
+    http_status: 503
 ```
 
 ### 8.3 Error Propagation
@@ -5935,6 +5967,8 @@ Implementations **MUST NOT** default retry failed module invocations. Retry beha
 | `ACL_DENIED` | **No** | Permission insufficiency won't change with retry |
 | `APPROVAL_DENIED` | **No** | Explicit denial, retry won't change decision |
 | `APPROVAL_PENDING` | **No** | Async approval in progress, use polling instead |
+| `POLICY_DENIED` | **No** | Policy denied the validated invocation |
+| `POLICY_EVALUATION_ERROR` | **Yes** | Policy evaluation could not complete safely |
 | `MODULE_NOT_FOUND` | **No** | Module non-existence won't change with retry |
 | `MODULE_DISABLED` | **No** | Module explicitly disabled, needs re-enabling |
 | `MODULE_LOAD_ERROR` | **No** | Load errors typically need code fixes |
@@ -8800,7 +8834,7 @@ Extensions are registered in code. No key in `apcore.yaml` registers an extensio
 implementations registered for one point are not chained (§11.7) (D-143).
 
 > **NOTE — `ExtensionManager` Extension Point Names:**
-> The extension point names above (`schema_loader`, `id_converter`, `module_loader`, `executor`, `acl_checker`) are the conceptual taxonomy. `ExtensionManager` registers six built-in extension points under the following names:
+> The extension point names above (`schema_loader`, `id_converter`, `module_loader`, `executor`, `acl_checker`) are the conceptual taxonomy. `ExtensionManager` registers the following built-in extension points:
 >
 > | Conceptual name | `ExtensionManager` name | Rationale |
 > |---------------------|--------------------------|-----------|
@@ -8810,10 +8844,11 @@ implementations registered for one point are not chained (§11.7) (D-143).
 > | *(no equivalent)*   | `middleware`             | First-class middleware extension point for runtime pipeline customization |
 > | *(no equivalent)*   | `span_exporter`          | Observability export as a dedicated extension point |
 > | *(no equivalent)*   | `approval_handler`       | The approval gate's handler (§7) as an extension point |
+> | *(no equivalent)*   | `policy_evaluator`       | Opt-in evaluation of validated execution arguments (§7.4.1) |
 > | `id_converter`      | *(not an extension point)* | Not a common runtime customization need |
 > | `executor`          | *(not an extension point)* | Local execution covers the supported use cases |
 >
-> Implementations declaring Level 2 conformance use the `ExtensionManager` names (`discoverer`, `middleware`, `acl`, `span_exporter`, `module_validator`, `approval_handler`).
+> Implementations declaring Level 2 conformance use the `ExtensionManager` names in the table.
 
 ### 11.4 Framework Built-in Middleware
 
@@ -8897,14 +8932,14 @@ Extension Point: Executor
   execute(module: Module, method: String, inputs: Map, context: Context) → Map
 ```
 
-> **NOTE:** The interface contracts above use the conceptual names. See the mapping table in §11.3 for the `ExtensionManager` names (`discoverer`, `middleware`, `acl`, `span_exporter`, `module_validator`, `approval_handler`).
+> **NOTE:** The interface contracts above use the conceptual names. See the mapping table in §11.3 for the `ExtensionManager` names.
 
 ### 11.7 Extension Loading Order
 
 Extensions are registered in code with `ExtensionManager.register(point_name, extension)` and wired
 with `apply(registry, executor)` (§11.3):
 
-1. A single-valued point (`discoverer`, `acl`, `module_validator`, `approval_handler`) holds one
+1. A single-valued point (`discoverer`, `acl`, `module_validator`, `approval_handler`, `policy_evaluator`) holds one
    implementation; registering another replaces it.
 2. A multi-valued point (`middleware`, `span_exporter`) holds every registered implementation in
    registration order.
@@ -9872,6 +9907,8 @@ set remains the closed set in D-80.
 
 The `validate()` preflight method (§12.2, SHOULD level) evaluates the strategy's pure steps. The standard execution checks are context creation, call-chain guard, module lookup, ACL, and input validation (Steps 1–4 and 7). The approval gate is impure and is skipped. `requires_approval` reports the governance-effective requirement without consulting the `ApprovalHandler` or requesting, resuming, or recording an approval decision. The invocation pipeline performs that decision on a formal call. Preflight can also run the optional module-level `preflight()` and `preview()` of §12.8.5.1 when ACL permits disclosure.
 
+With an installed policy evaluator, a successful ACL and schema traversal also evaluates `post_validation_policy` (Step 7.5) and unions its approval requirement into the report. The optional module callbacks require that policy authorizes disclosure (§7.4.1).
+
 #### 12.8.1 Design Principles
 
 1. **Collect, don't throw.** All check failures are appended to a `checks` list. The caller_id sees every problem in one call.
@@ -10306,7 +10343,8 @@ The specification and the SDK have independent version numbers. `CHANGELOG.md` r
 
 | Version | Date | Summary | Records |
 |---|---|---|---|
-| 2.0.0 | Unreleased | Define an in-memory Core Profile and opt-in extensions (§1.8, §12). Deny calls requiring approval when the handler is absent, and require approval for destructive modules by default (§6.6.3.1, §7.4, §7.9). Require invocation-scoped approval resumption and use a non-secret correlation ID in telemetry (§7, §9.16.2). Specify managed drain, recovery, scoped forced removal, reload reports and lifecycle events (§6.7, §9.16.2, §12.7.9). Assign provider projections to Surfaces (§4.17 and Appendix D). Resolve path-typed configuration against one project root (§9.2.2). Clarify pipeline configuration, preflight and approval argument scope (§5.16.1, §7.3–7.4, §12.8), configured redaction (§6.1.8, §10.6.1) and trace IDs (§10.5). Align schema examples with Draft 2020-12 and the validation error format (§4.2, §4.14, §8.1). | D-153, [#113](https://github.com/aiperceivable/apcore/issues/113), [Changelog](https://github.com/aiperceivable/apcore/blob/main/CHANGELOG.md) |
+| 2.0.0 (draft revision 2) | Unreleased | Add the opt-in post-validation policy evaluator, final-input approval binding, and preflight semantics (§7.2–§7.4.1, §11.3, §12.8). | [Changelog](https://github.com/aiperceivable/apcore/blob/main/CHANGELOG.md) |
+| 2.0.0 (draft revision 1) | Unreleased | Define an in-memory Core Profile and opt-in extensions (§1.8, §12). Deny calls requiring approval when the handler is absent, and require approval for destructive modules by default (§6.6.3.1, §7.4, §7.9). Require invocation-scoped approval resumption and use a non-secret correlation ID in telemetry (§7, §9.16.2). Specify managed drain, recovery, scoped forced removal, reload reports and lifecycle events (§6.7, §9.16.2, §12.7.9). Assign provider projections to Surfaces (§4.17 and Appendix D). Resolve path-typed configuration against one project root (§9.2.2). Clarify pipeline configuration, preflight and approval argument scope (§5.16.1, §7.3–7.4, §12.8), configured redaction (§6.1.8, §10.6.1) and trace IDs (§10.5). Align schema examples with Draft 2020-12 and the validation error format (§4.2, §4.14, §8.1). | D-153, [#113](https://github.com/aiperceivable/apcore/issues/113), [Changelog](https://github.com/aiperceivable/apcore/blob/main/CHANGELOG.md) |
 | 1.66.0 | 2026-10-19 | A23 preserves optional enum, const, reference and applicator constraints inside an anyOf-null wrapper; required fields remain unchanged. | [#124](https://github.com/aiperceivable/apcore/issues/124) |
 | 1.65.0 | 2026-10-08 | Add public bare-name canonicalization with structured, non-throwing results in all SDKs; preserve A02, ASCII-only case conversion and existing underscores, and reject non-ASCII, invalid starts and overlong output (§2.2.1). | [Rust #40](https://github.com/aiperceivable/apcore-rust/issues/40) |
 | 1.64.0 | 2026-10-08 | Algorithm A02 is exhaustive and ASCII-scoped: it preserves existing underscores and non-ASCII characters through case conversion, then rejects a result outside the Canonical ID grammar; it never repairs arbitrary identifiers (§2.2). The repairing class-name conversion is named `snake_case_name` and is distinct from A02's `snake_case_identifier` (§2.1.1). | #122 |

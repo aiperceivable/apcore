@@ -1,0 +1,113 @@
+{
+  "feature": "post-validation-policy",
+  "created": "2026-11-27T12:36:41Z",
+  "updated": "2026-11-27T13:24:04Z",
+  "status": "completed",
+  "execution_order": [
+    "shared-contract",
+    "python",
+    "typescript",
+    "rust",
+    "surfaces",
+    "integration"
+  ],
+  "progress": {
+    "total_tasks": 6,
+    "completed": 6,
+    "in_progress": 0,
+    "pending": 0,
+    "skipped": 0,
+    "blocked": 0
+  },
+  "tasks": [
+    {
+      "id": "shared-contract",
+      "file": "tasks/shared-contract.md",
+      "title": "Shared policy contract and conformance",
+      "status": "completed",
+      "started_at": "2026-11-27T12:53:49Z",
+      "completed_at": "2026-11-27T13:15:09Z",
+      "assignee": null,
+      "commits": [],
+      "estimated_hours": 4,
+      "dependencies": []
+    },
+    {
+      "id": "python",
+      "file": "tasks/python.md",
+      "title": "Python post-validation policy",
+      "status": "completed",
+      "started_at": "2026-11-27T13:15:09Z",
+      "completed_at": "2026-11-27T13:15:09Z",
+      "assignee": null,
+      "commits": [],
+      "estimated_hours": 6,
+      "dependencies": [
+        "shared-contract"
+      ]
+    },
+    {
+      "id": "typescript",
+      "file": "tasks/typescript.md",
+      "title": "TypeScript post-validation policy",
+      "status": "completed",
+      "started_at": "2026-11-27T13:15:09Z",
+      "completed_at": "2026-11-27T13:15:09Z",
+      "assignee": null,
+      "commits": [],
+      "estimated_hours": 6,
+      "dependencies": [
+        "shared-contract"
+      ]
+    },
+    {
+      "id": "rust",
+      "file": "tasks/rust.md",
+      "title": "Rust post-validation policy",
+      "status": "completed",
+      "started_at": "2026-11-27T13:15:09Z",
+      "completed_at": "2026-11-27T13:15:09Z",
+      "assignee": null,
+      "commits": [],
+      "estimated_hours": 8,
+      "dependencies": [
+        "shared-contract"
+      ]
+    },
+    {
+      "id": "surfaces",
+      "file": "tasks/surfaces.md",
+      "title": "Surfaces scoped approval",
+      "status": "completed",
+      "started_at": "2026-11-27T13:15:09Z",
+      "completed_at": "2026-11-27T13:24:04Z",
+      "assignee": null,
+      "commits": [],
+      "estimated_hours": 6,
+      "dependencies": [
+        "python",
+        "typescript",
+        "rust"
+      ]
+    },
+    {
+      "id": "integration",
+      "file": "tasks/integration.md",
+      "title": "Candidate integration and verification",
+      "status": "completed",
+      "started_at": "2026-11-27T13:15:09Z",
+      "completed_at": "2026-11-27T13:24:04Z",
+      "assignee": null,
+      "commits": [],
+      "estimated_hours": 4,
+      "dependencies": [
+        "surfaces"
+      ]
+    }
+  ],
+  "metadata": {
+    "source_doc": "planning/post-validation-policy/plan.md",
+    "created_by": "code-forge",
+    "version": "1.0"
+  }
+}

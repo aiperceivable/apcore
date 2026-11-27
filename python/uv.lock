@@ -199,7 +199,7 @@ wheels = [
 
 [[package]]
 name = "apcore"
-version = "1.0.0a2"
+version = "1.0.0a3"
 source = { editable = "." }
 dependencies = [
     { name = "jsonschema" },
