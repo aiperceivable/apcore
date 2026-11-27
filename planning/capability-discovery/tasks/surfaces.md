@@ -1,6 +1,6 @@
 # MCP discovery projection
 
-Pending maintainer approval of the [shared discovery contract](./shared-contract.md). The Core SDK discovery APIs are a prerequisite for this task.
+Verified against the [shared discovery contract](./shared-contract.md) and the installed candidate SDK distributions.
 
 ## Implementation
 
