@@ -57,6 +57,7 @@ describe('governanceState — registration observations', () => {
     const strategy = new ExecutionStrategy('explicitly-gateless', []);
     const state = new Executor({ registry: c.registry, strategy }).governanceState();
     expect(state.builtinApprovalGateWired).toBe(false);
+    expect(state.policyStrict).toBe(false);
     expect(state.controlModulesRegistered).toBe(true);
     expect(state.unprotectedControlSurface).toBe(true);
   });

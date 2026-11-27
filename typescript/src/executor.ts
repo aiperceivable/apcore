@@ -826,7 +826,7 @@ export class Executor {
       : this._approvalHandler !== null;
     const policyStrict = builtinApprovalGateWired
       ? approvalGates.every((gate) => gate.policy.strict)
-      : (this._policy ?? DEFAULT_EXECUTION_POLICY).strict;
+      : this._policy?.strict === true;
 
     // PROTOCOL_SPEC 6.6.5.1. The approval conjunct carries
     // `allControlModulesRequireApproval` because `approval_gate` is per-module
