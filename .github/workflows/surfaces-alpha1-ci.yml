@@ -11,11 +11,11 @@ permissions:
 
 jobs:
   verify:
-    uses: aiperceivable/apcore-surfaces/.github/workflows/core-candidate.yml@1ae19987ed939401ba4ebcb83256dc31d97bb921
+    uses: aiperceivable/apcore-surfaces/.github/workflows/core-candidate.yml@2eca45d07c13600e44089c8c50b8433cf2e1c596
     with:
       core_run_id: '45933698251'
       core_sha: b28e1bfd01b804c8662e9e418d8487d0e08cc0ce
-      surfaces_sha: 1ae19987ed939401ba4ebcb83256dc31d97bb921
+      surfaces_sha: 2eca45d07c13600e44089c8c50b8433cf2e1c596
       python_sha256: 9a7de3440413cf891ec2efb4a634350efbbf28659734ddad1c28db70182e7bff
       npm_sha256: 833e1f2e4c9328c0c4192c02d9e2c8bfbb62ae651fddd62980b448c41d5842db
       rust_sha256: bbc1db3680f3d81b7096fa5eb70476a2c043b333681c2a7bba3597a49bbf11f6
