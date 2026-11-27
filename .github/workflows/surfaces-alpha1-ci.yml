@@ -2,7 +2,7 @@ name: Surfaces alpha.1 verification
 
 on:
   push:
-    branches: [codex/core-alpha1]
+    branches: [core-alpha1]
     paths: [.github/workflows/surfaces-alpha1-ci.yml]
 
 permissions:
