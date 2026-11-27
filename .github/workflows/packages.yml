@@ -41,11 +41,15 @@ jobs:
           cd "$temporary"
           "$temporary/venv/bin/python" -m pip install "${wheel[0]}"
           "$temporary/venv/bin/python" -m pip check
-          "$temporary/venv/bin/python" -c 'from apcore import APCore, Registry'
+          "$temporary/venv/bin/python" -c 'from apcore import APCore, Registry; from importlib.util import find_spec; assert all(find_spec(name) is None for name in ("yaml", "watchdog", "aiohttp", "opentelemetry"))'
           "$temporary/venv/bin/python" -c 'from importlib.resources import files; assert files("apcore").joinpath("py.typed").is_file(), "installed wheel is missing apcore/py.typed"'
           python3 "$GITHUB_WORKSPACE/conformance/extract_doc_examples.py" python "$temporary"
           (cd quick-start && "$temporary/venv/bin/python" -I example.py)
-          (cd governed-stream && "$temporary/venv/bin/python" -I example.py)
+          python -m venv "$temporary/full"
+          "$temporary/full/bin/python" -m pip install "${wheel[0]}[all]"
+          "$temporary/full/bin/python" -m pip check
+          "$temporary/full/bin/python" -c 'from apcore.full import APCore, Config; from apcore.events import SubscriberRegistry; assert APCore(config=Config.from_defaults()).registry is not None'
+          (cd governed-stream && "$temporary/full/bin/python" -I example.py)
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: core-python-distributions
@@ -82,7 +86,7 @@ jobs:
           rust-version = "1.86"
 
           [dependencies]
-          apcore = { path = "sdk", features = ["events"] }
+          apcore = { path = "sdk", features = ["config", "events"] }
           async-trait = "0.1.92"
           futures-util = "0.3"
           serde_json = "1"
@@ -137,11 +141,13 @@ jobs:
           node --input-type=module -e 'import {APCore} from "apcore-js"; import "apcore-js/context-keys"; if (!APCore) throw new Error("APCore is missing");'
           cat > verify-browser.mjs <<'EOF'
           const url = await import.meta.resolve("apcore-js");
-          if (!url.endsWith("/dist/browser/index.js")) throw new Error("browser entry did not resolve");
-          await import("apcore-js");
+          if (!url.endsWith("/dist/index.js")) throw new Error("browser entry did not resolve to the portable root");
+          const core = await import("apcore-js");
+          if (!core.APCore || "Config" in core) throw new Error("invalid Core Profile exports");
           EOF
           node --conditions=browser --experimental-import-meta-resolve verify-browser.mjs
-          node --input-type=module -e 'import {accessSync} from "node:fs"; for (const entry of ["index", "browser/index", "context-keys"]) accessSync(`node_modules/apcore-js/dist/${entry}.d.ts`);'
+          node --input-type=module -e 'import {accessSync} from "node:fs"; for (const entry of ["index", "core", "full", "config-entry", "discovery", "events/entry", "context-keys"]) accessSync(`node_modules/apcore-js/dist/${entry}.d.ts`);'
+          node --input-type=module -e 'import {APCore} from "apcore-js/full"; import {Config} from "apcore-js/config"; import {createFilesystemDiscoveryPlugin} from "apcore-js/discovery"; if (!new APCore({config: new Config(), plugins: [createFilesystemDiscoveryPlugin()]}).registry) throw new Error("invalid full assembly");'
           python3 "$GITHUB_WORKSPACE/conformance/extract_doc_examples.py" typescript "$temporary"
           ./node_modules/.bin/tsc --strict --module NodeNext --target ES2022 --rootDir . --outDir compiled \
             quick-start/example.ts governed-stream/example.ts

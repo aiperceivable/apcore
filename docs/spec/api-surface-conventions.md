@@ -262,7 +262,7 @@ The following differences are by-design consequences of each language's idioms. 
 | Axis | Python / TypeScript | Rust | Why it is not a gap |
 |---|---|---|---|
 | **Error taxonomy shape** | one distinct public exception class per failure (`ModuleNotFoundError`, `ApprovalDeniedError`, …) | variants of a single `pub enum ErrorCode` carried by one `pub struct ModuleError` | Equivalence is at the level of *the error identity being representable*, not *one exported type per error*. The per-type classes have **no** standalone Rust equivalent, and that is correct. |
-| **Namespace depth** | a cohesive area MAY sit behind a public sub-package (`apcore.observability.PrometheusExporter`) | the same symbol is often flattened to the crate root (`PrometheusExporter`) | Both are public. The depth of the documented path is a style choice, not a surface gap. |
+| **Namespace depth** | a cohesive area MAY sit behind a public sub-package (`apcore.observability.MetricsCollector`) | the same symbol is often flattened to the crate root (`MetricsCollector`) | Both are public. Document the import path for each SDK. |
 
 The error-taxonomy difference is concrete:
 
@@ -299,7 +299,7 @@ The error-taxonomy difference is concrete:
 
 This is the line between §8.1's namespace-depth divergence (fine) and a genuine break:
 
-- `apcore.observability.PrometheusExporter` — **fine**: `observability` is a public sub-package with its own `__all__`; the import path is one a caller is meant to use.
+- `apcore.observability.MetricsCollector` is public through the `observability` subpackage.
 - `apcore.registry.registry.MAX_MODULE_ID_LENGTH` — **would be a break** if it were the only path: `registry.registry` is the *implementation module* inside the `registry` package. The constant is therefore exported from both `apcore` and `apcore.registry` and named in each `__all__`, matching its root-public status in TypeScript and Rust.
 
 Quick test: *if the only import path that works names a module callers were never meant to import from, the symbol is private by accident — re-export it through a public path.*

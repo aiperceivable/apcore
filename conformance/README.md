@@ -12,6 +12,11 @@ All fixture files use **JSON** format (`.json`), with one intentional exception:
 
 SDK conformance runners **must** load `.json` files with a JSON parser. The `.yaml` file is consumed directly by binding-loader tests, not by the generic conformance runner.
 
+The `profile` field identifies the runtime profile exercised by a fixture.
+`core` fixtures can run against a default in-memory SDK installation.
+Configuration, Discovery, Events, and System Modules fixtures use their
+declared extension. Adapter wire projections are verified in Surfaces.
+
 > **Note for tooling authors:** Some ecosystem skill docs describe conformance fixtures as YAML; this is incorrect. The canonical format for all conformance test cases is JSON. The README is the authoritative format reference.
 
 ## Fixtures
@@ -62,7 +67,8 @@ SDK conformance runners **must** load `.json` files with a JSON parser. The `.ya
 | `stream_aggregation.json` | — | Stream chunk deep-merge aggregation algorithm |
 | `stream_post_processing.json` | D-20 | Native streams propagate cancellation from after-middleware and report ordinary post-processing failures as events |
 | `stream_completion.json` | SDK streaming completion | One invocation reports its canonical output, individual post-processing outcomes, and termination through the opt-in stream handle |
-| `approval_gate.json` | A05 | Approval gate Step 5: skip/fire conditions, result-status outcomes, and scoped resumption |
+| `approval_gate.json` | A05 | Approval gate Step 5: explicit compatibility policy, result-status outcomes, and scoped resumption |
+| `core_profile_governance.json` | §7.4, §7.9 | Core Profile defaults and explicit overrides through public preflight and execution, including an injected Executor |
 | `approval_request_fields.json` | D-03 | `ApprovalRequest` carries `caller_id` (null for a top-level call) and `action` (= `module_id`) — fields the Contract text already required and no SDK's `ApprovalRequest` carried |
 | `preflight_disclosure.json` | §12.8.5.1 | `Executor.validate()` withholds module-level introspection from a caller the ACL denied: no `module_preflight` / `module_preview` check, empty `predicted_changes`, and the hooks themselves not invoked. Module lookup is Step 3 and the ACL check is Step 4, so all three SDKs gated these hooks on "lookup succeeded" alone and ran module-authored code for a denied caller. Scoped to AUTHORIZATION: a failed `schema` check does **not** suppress introspection. Drivers MUST run the real `validate()` against a real Registry and ACL, and MUST observe hook invocation from inside the hook bodies — see `driver_contract` |
 | `middleware_on_error_recovery.json` | A11 | After-middleware error recovery: first-dict-wins, null passthrough, success non-override |
@@ -112,7 +118,6 @@ SDK conformance runners **must** load `.json` files with a JSON parser. The `.ya
 | `preflight_check_reporting.json` | §12.8, D-134, D-141 | `validate()` reports every check: a failure does not stop later checks and passed checks are never dropped; no module-dependent check when the module is unknown; `preview()` returning null adds no check; `predicted_changes` always present |
 | `json_input_native_types.json` | type-mapping §17.3, D-136 | A module declared from native date-time / UUID / enum types accepts the JSON strings its schema accepts and still rejects what it rejects (a number for a date-time, a string outside the enum) |
 | `binding_file_validation.json` | §5.12.2, §5.12.5, D-139 | Binding files fail loudly: unknown top-level / entry keys, a one-sided schema pair and an invalid `auto_schema` are `BINDING_FILE_INVALID`; an uninferable schema is `BINDING_SCHEMA_INFERENCE_FAILED` in every mode, implicit included; a complete entry with free-form `metadata` still loads |
-| `export_profiles.json` | §4.17, Appendix D.1, D-140 | `anthropic` strips every `x-*` keyword but keeps a property NAMED `x-…`; `mcp` carries `requiresApproval` / `streaming` in `_meta` only when true, never in `annotations`, and keeps `x-*` |
 | `env_prefix_dispatch.json` | §9.8.2, D-146 | `APCORE` is reserved for the `apcore` namespace (`CONFIG_NAMESPACE_RESERVED`), `APCORE_<X>` prefixes are legal, a variable is dispatched to exactly one namespace by longest prefix, an unmatched `APCORE_` variable belongs to `apcore` |
 | `ephemeral_modules.json` | §2.5.1, D-148 | Exactly one registry audit event per ephemeral register / unregister under the standard bootstrap with `caller_id`, `identity` (or null) and `namespace_class`; the bare ID `ephemeral`; `INVALID_MODULE_ID` rejections from `register_internal` and discovery |
 | `error_details_shape.json` | §8.1, D-149 | `SCHEMA_VALIDATION_ERROR` `details.errors` items are exactly `{path, keyword, message}`, `path` an RFC 6901 pointer (`""` for the root); serialized `details` keys are snake_case |

@@ -333,7 +333,7 @@ The approval handler and `ExecutionPolicy` are code, not configuration. Wire the
       Config,
       ExecutionPolicy,
       createApprovalResult,
-    } from "apcore-js";
+    } from "apcore-js/full";
     import type { ApprovalRequest, ApprovalResult } from "apcore-js";
 
     async function askHuman(request: ApprovalRequest): Promise<ApprovalResult> {

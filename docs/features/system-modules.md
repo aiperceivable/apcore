@@ -542,7 +542,7 @@ Hot-reload one module from disk — or every module matching a pattern — witho
 | `reason` | string | *(required)* | Audit reason |
 | `lifecycle` | object | omitted | Opt into [managed reload](#managed-reload) with a configurable drain policy and a structured result |
 
-`module_id` and `path_filter` are mutually exclusive (`MODULE_RELOAD_CONFLICT`). Supply one for a module reload. A `path_filter` matching nothing is a no-op with an empty `reloaded_modules`. Bulk reloads run in dependency order, leaves first. `reload_dependents` is deprecated and ignored (it warns once). To reload dependents, use a `path_filter` that covers them (D-121).
+`module_id` and `path_filter` are mutually exclusive (`MODULE_RELOAD_CONFLICT`). Supply one for a module reload. A `path_filter` matching nothing returns an empty `reloaded_modules`. Bulk reloads run in dependency order, leaves first. To reload dependents, choose a `path_filter` that covers them (D-121).
 
 A selector that includes the reload controller itself returns `RELOAD_FAILED` before the operation changes any registration. Choose a module ID or glob that excludes `system.control.reload_module`.
 
@@ -735,7 +735,7 @@ For an accepted operation, `success: false` indicates a failed reload and is del
 === "TypeScript"
 
     ```typescript
-    import { APCore, Config } from 'apcore-js';
+    import { APCore, Config } from 'apcore-js/full';
 
     const config = Config.load('apcore.yaml'); // sys_modules.enabled: true, events.enabled: true
     const client = new APCore({ config });
@@ -811,7 +811,7 @@ For an accepted operation, `success: false` indicates a failed reload and is del
       InMemoryAuditStore,
       Registry,
       registerSysModules,
-    } from 'apcore-js';
+    } from 'apcore-js/full';
 
     const config = Config.load('apcore.yaml'); // sys_modules.enabled: true, events.enabled: true
     const registry = new Registry({ config });
@@ -897,7 +897,7 @@ sys_modules:
     overrides_path: "/var/lib/apcore/overrides.yaml"
 ```
 
-`sys_modules.usage.retention_hours` and `sys_modules.usage.bucketing_strategy` are accepted but read by no SDK (see [Config Bus § Deprecated and inert keys](./config-bus.md#deprecated-and-inert-keys)).
+`sys_modules.usage.retention_hours` sets how long the collector retains usage records. The supported `sys_modules.usage.bucketing_strategy` is `hourly`.
 
 ## Persistent overrides — pluggable `OverridesStore`
 
@@ -1024,67 +1024,10 @@ The event bus is the minimum auditing surface: events are emitted whether or not
 
 ## Usage metrics in Prometheus
 
-`PrometheusExporter` serves the usage collector's data alongside the call metrics when you attach it:
-
-- `apcore_usage_calls_total{module_id, status}` — counter
-- `apcore_usage_error_rate{module_id}` — gauge (0.0–1.0)
-- `apcore_usage_p50_latency_ms`, `apcore_usage_p95_latency_ms`, `apcore_usage_p99_latency_ms` `{module_id}` — gauges
-
-The exporter is constructed and started in code — there is no configuration key for it. The usage collector to attach is the one `register_sys_modules` created (it is in the returned context), and the metrics collector should be the one registration used:
-
-=== "Python"
-
-    ```python
-    from apcore import Config, Executor, Registry, register_sys_modules
-    from apcore.observability import MetricsCollector, PrometheusExporter
-
-    config = Config.load("apcore.yaml")  # sys_modules.enabled: true
-    registry = Registry(config=config)
-    executor = Executor(registry, config=config)
-    collector = MetricsCollector()
-
-    ctx = register_sys_modules(registry, executor, config, metrics_collector=collector)
-    exporter = PrometheusExporter(collector, usage_collector=ctx["usage_collector"])
-    exporter.start(port=9090, path="/metrics")
-    ```
-
-=== "TypeScript"
-
-    ```typescript
-    import { Config, Executor, MetricsCollector, PrometheusExporter, Registry, registerSysModules } from 'apcore-js';
-
-    const config = Config.load('apcore.yaml'); // sys_modules.enabled: true
-    const registry = new Registry({ config });
-    const executor = new Executor({ registry, config });
-    const collector = new MetricsCollector();
-
-    const ctx = registerSysModules(registry, executor, config, collector);
-    const exporter = new PrometheusExporter({ collector, usageCollector: ctx.usageCollector });
-    exporter.start({ port: 9090, path: '/metrics' });
-    ```
-
-=== "Rust"
-
-    ```rust
-    use std::path::Path;
-    use std::sync::Arc;
-
-    use apcore::{register_sys_modules, Config, Executor, MetricsCollector, PrometheusExporter, Registry};
-
-    #[tokio::main]
-    async fn main() -> Result<(), Box<dyn std::error::Error>> {
-        let config = Config::load(Path::new("apcore.yaml"))?; // sys_modules.enabled: true
-        let registry = Arc::new(Registry::new());
-        let executor = Executor::new(Arc::clone(&registry), config.clone());
-        let collector = MetricsCollector::new();
-
-        // The collectors are cheap clones over shared state.
-        let ctx = register_sys_modules(Arc::clone(&registry), &executor, &config, Some(collector.clone()))?;
-        let exporter = PrometheusExporter::new(collector).with_usage_collector(ctx.usage_collector.clone());
-        exporter.start(9090, "/metrics").await?;
-        Ok(())
-    }
-    ```
+Pass the metrics collector supplied at assembly and the usage collector
+returned by system-module registration to the pure Prometheus renderer.
+See [Prometheus export](./metrics-and-usage.md#prometheus-export) for the
+three SDK calls and the Toolkit listener.
 
 ## Contract: register_sys_modules
 

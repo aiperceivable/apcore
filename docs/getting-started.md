@@ -308,7 +308,7 @@ Middleware can intercept calls for logging, tracing, or security.
 === "TypeScript"
 
     ```typescript
-    import { ObsLoggingMiddleware } from 'apcore-js';
+    import { ObsLoggingMiddleware } from 'apcore-js/full';
 
     client.use(new ObsLoggingMiddleware());
     ```
@@ -487,7 +487,7 @@ When configured with `sys_modules.enabled: true`, APCore auto-registers built-in
 === "TypeScript"
 
     ```typescript
-    import { APCore, Config } from 'apcore-js';
+    import { APCore, Config } from 'apcore-js/full';
 
     const config = Config.load('apcore.yaml');
     const client = new APCore({ config });

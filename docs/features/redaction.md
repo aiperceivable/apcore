@@ -170,7 +170,7 @@ Things to know:
 
 === "TypeScript"
     ```typescript
-    import { APCore, Config, ObsLoggingMiddleware, RedactionConfig } from "apcore-js";
+    import { APCore, Config, ObsLoggingMiddleware, RedactionConfig } from "apcore-js/full";
 
     const config = Config.load("apcore.yaml"); // the file shown above
     const client = new APCore({ config }); // the executor's capture point uses obs.redaction.*

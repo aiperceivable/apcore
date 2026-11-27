@@ -108,7 +108,7 @@
         },
         "subscribers": {
           "type": "array",
-          "description": "Declarative subscriber definitions instantiated at registration time. Each entry needs a `type` naming a registered subscriber factory (webhook, a2a, file, stdout, filter).",
+          "description": "Declarative subscriber definitions instantiated at registration time. The host's factory registry resolves `type`. Built-in types are webhook, file, stdout, and filter. Adapters can supply additional factories.",
           "items": {
             "type": "object",
             "required": ["type"],

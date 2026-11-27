@@ -123,7 +123,7 @@ There are three ways environment variables can feed into config:
 === "TypeScript"
 
     ```typescript
-    import { Config } from 'apcore-js';
+    import { Config } from 'apcore-js/config';
 
     Config.envMap({ PORT: 'port', DATABASE_URL: 'db_url' });
 
@@ -163,7 +163,7 @@ Global env_map maps to the **config root level**, not inside any namespace. This
 === "TypeScript"
 
     ```typescript
-    import { Config } from 'apcore-js';
+    import { Config } from 'apcore-js/config';
 
     Config.registerNamespace({
       name: 'myapp',
@@ -211,7 +211,7 @@ Namespace env_map maps into the specified namespace. Use for env vars with well-
 === "TypeScript"
 
     ```typescript
-    import { Config } from 'apcore-js';
+    import { Config } from 'apcore-js/config';
 
     Config.registerNamespace({ name: 'myapp' });  // envPrefix auto-derived as "MYAPP"
 
@@ -268,7 +268,7 @@ The same bare env var name cannot appear in more than one env_map (global or nam
 === "TypeScript"
 
     ```typescript
-    import { Config } from 'apcore-js';
+    import { Config } from 'apcore-js/config';
 
     Config.envMap({ PORT: 'port' });
     Config.registerNamespace({
@@ -324,7 +324,7 @@ Matches the env var suffix against the `defaults` tree structure. Flat keys matc
 === "TypeScript"
 
     ```typescript
-    import { Config } from 'apcore-js';
+    import { Config } from 'apcore-js/config';
 
     Config.registerNamespace({
       name: 'myapp',
@@ -441,7 +441,7 @@ env_map / env_prefix overrides  >  YAML file  >  namespace defaults
 === "TypeScript"
 
     ```typescript
-    import { Config } from 'apcore-js';
+    import { Config } from 'apcore-js/config';
 
     const config = Config.load('apcore.yaml');
 
@@ -494,7 +494,7 @@ Attach data from a file or in-memory dict to a namespace. Mounted data is merged
 === "TypeScript"
 
     ```typescript
-    import { Config } from 'apcore-js';
+    import { Config } from 'apcore-js/config';
 
     const config = Config.load('apcore.yaml');
     config.mount('my-plugin', { fromDict: { timeout: 10000 } });
@@ -542,7 +542,7 @@ Re-read the source YAML, re-detect mode, re-apply namespace defaults, env overri
 === "TypeScript"
 
     ```typescript
-    import { Config } from 'apcore-js';
+    import { Config } from 'apcore-js/config';
 
     const config = Config.load('apcore.yaml');
     config.reload();
@@ -602,7 +602,7 @@ The discovery entry point differs by SDK: Python exposes the search as the modul
 
     ```typescript
     import process from 'node:process';
-    import { Config } from 'apcore-js';
+    import { Config } from 'apcore-js/config';
 
     Config.load('my-custom-config.yaml');               // explicit path
     process.env.APCORE_CONFIG_FILE = 'custom.yaml';     // via env var
@@ -719,14 +719,11 @@ Every key in `schemas/apcore-config.schema.json` is accepted, but 16 of them are
 | `logging.level` | deprecated, warns | construct a `ContextLogger` and pass it to `ObsLoggingMiddleware(logger=...)`; log from modules through the host application's logger (D-67) |
 | `logging.format` | deprecated, warns | as for `logging.level` |
 | `observability.metrics.enabled` | deprecated, warns | pass a `MetricsCollector` to the client (`APCore(metrics_collector=...)`) |
-| `observability.metrics.exporter` | deprecated, warns | construct the exporter (e.g. `PrometheusExporter`) in code |
+| `observability.metrics.exporter` | deprecated, warns | pass the Core text renderer to a host-owned listener |
 | `extensions.lazy_load` | inert | — (discovery runs on an explicit `discover()` call) |
 | `extensions.namespace` | inert | — |
 | `id_map.auto_detect` | inert | — (a configured ID map is always applied) |
 | `middleware.disabled` | inert | remove middleware in code, or remove steps with `pipeline.remove` |
-| `project.version` | inert | — |
-| `sys_modules.usage.bucketing_strategy` | inert | — |
-| `sys_modules.usage.retention_hours` | inert | — |
 | `$schema` | inert by design | an editor hint; never read at runtime |
 
 `extensions.auto_discover` is **partial**: only `validate()` reads it (for a semantic warning). Setting it to `false` does not stop discovery.
@@ -830,7 +827,7 @@ An SDK **MUST NOT** return a boolean or a "list of problems" in place of raising
 === "TypeScript"
 
     ```typescript
-    import { Config } from 'apcore-js';
+    import { Config } from 'apcore-js/config';
 
     const namespaces = Config.registeredNamespaces();
     // [{ name: 'observability', envPrefix: 'APCORE_OBSERVABILITY', hasSchema: false }, ...]
@@ -862,7 +859,7 @@ An SDK **MUST NOT** return a boolean or a "list of problems" in place of raising
 === "TypeScript"
 
     ```typescript
-    import { Config } from 'apcore-js';
+    import { Config } from 'apcore-js/config';
 
     Config.registerNamespace({ name: 'myapp' });
     const cfg = Config.load('apcore.yaml');
@@ -908,7 +905,7 @@ An SDK **MUST NOT** return a boolean or a "list of problems" in place of raising
 === "TypeScript"
 
     ```typescript
-    import { Config } from 'apcore-js';
+    import { Config } from 'apcore-js/config';
 
     Config.envMap({ PORT: 'port' });
     Config.registerNamespace({
@@ -979,7 +976,7 @@ An SDK **MUST NOT** return a boolean or a "list of problems" in place of raising
 === "TypeScript"
 
     ```typescript
-    import { Config } from 'apcore-js';
+    import { Config } from 'apcore-js/config';
 
     Config.envMap({ PORT: 'port', DATABASE_URL: 'db_url' });
     Config.registerNamespace({

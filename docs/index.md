@@ -24,10 +24,10 @@ A schema makes a capability contract machine-readable and validatable. It does n
 
 | Component | Package | Stable | In development |
 |---|---|---|---|
-| Protocol specification | [protocol-spec.md](spec/protocol-spec.md) | `1.66.0` | `2.1.0` (draft) |
-| Python SDK | `apcore` | `0.33.0` | `1.0.0a1` |
-| TypeScript SDK | `apcore-js` | `0.33.0` | `1.0.0-alpha.1` |
-| Rust SDK | `apcore` | `0.33.0` | `1.0.0-alpha.1` |
+| Protocol specification | [protocol-spec.md](spec/protocol-spec.md) | `1.66.0` | `3.0.0` (draft) |
+| Python SDK | `apcore` | `0.33.0` | `1.0.0a2` |
+| TypeScript SDK | `apcore-js` | `0.33.0` | `1.0.0-alpha.2` |
+| Rust SDK | `apcore` | `0.33.0` | `1.0.0-alpha.2` |
 
 The three core SDKs share a release line. Surface adapters (`apcore-mcp`, `apcore-a2a`, `apcore-cli`, `apcore-toolkit`) are versioned independently and declare the core range they support in their package metadata.
 

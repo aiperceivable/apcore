@@ -1,12 +1,14 @@
 {
-  "description": "Approval gate enforcement at Executor Step 5. Verifies gate fires only when both handler is configured and module declares requires_approval=true, and that all four result statuses map to the correct outcomes. Since D-96 (spec v1.50.0) the three `governance_sources` cases state the module and descriptor declarations SEPARATELY: the original `module_requires_approval` boolean could be satisfied from either source, so all three SDKs passed it while disagreeing about which one decides.",
+  "description": "Approval gate enforcement at Executor Step 5, including the explicit compatibility policy, handler outcomes, and scoped resumption.",
+  "profile": "core",
   "algorithm": "A05",
   "test_cases": [
     {
       "id": "skip_when_no_handler",
-      "description": "Gate is skipped entirely when no ApprovalHandler is configured",
+      "description": "An explicit compatibility policy permits a call without an approval handler.",
       "approval_handler_configured": false,
       "module_requires_approval": true,
+      "execution_policy": {"strict": false, "gate_destructive": false},
       "approval_result": null,
       "expected": {
         "gate_invoked": false,

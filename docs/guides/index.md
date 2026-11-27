@@ -21,6 +21,8 @@ The guides are arranged as a learning path. Read the Foundations in order, then 
 
 ## Integration
 
+- [Runtime Profiles](./runtime-profiles.md) — Assemble the in-memory or full runtime and migrate host integrations
+
 - [Python Golden Path](https://github.com/aiperceivable/apcore/tree/main/examples/python/golden-path) — Register an existing function and verify the same governance from Python and MCP
 - [Multi-Language](./multi-language.md) — Sharing schemas and module IDs across the Python, TypeScript, and Rust SDKs
 - [Adapter Development](./adapter-development.md) — Exposing modules through a web framework

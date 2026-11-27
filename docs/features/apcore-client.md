@@ -88,7 +88,7 @@ A supplied Registry or Executor can retain modules and middleware installed befo
 
 === "TypeScript"
     ```typescript
-    import { APCore, Config } from 'apcore-js';
+    import { APCore, Config } from 'apcore-js/full';
 
     const config = new Config({ sys_modules: { enabled: true } });
     const client = new APCore({ config, failOnError: true });
@@ -417,7 +417,7 @@ Assumes an `apcore.yaml` with `sys_modules.enabled: true` and `sys_modules.event
     ```
 === "TypeScript"
     ```typescript
-    import { APCore, Config } from "apcore-js";
+    import { APCore, Config } from "apcore-js/full";
 
     const client = new APCore({ config: Config.load("apcore.yaml") });
 

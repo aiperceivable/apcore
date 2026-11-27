@@ -61,7 +61,7 @@ jobs:
 
       - name: Install SDKs
         run: |
-          python3 -m pip install --quiet -e "./python[dev]"
+          python3 -m pip install --quiet -e "./python[all,dev]"
           pnpm --dir typescript install --frozen-lockfile
           cargo build --manifest-path rust/Cargo.toml --tests --all-features
 

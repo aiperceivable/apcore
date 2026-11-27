@@ -206,7 +206,7 @@ All three SDKs read schema files at runtime with `SchemaLoader` — there is no 
 === "TypeScript"
 
     ```typescript
-    import { APCore, Config, FunctionModule, SchemaLoader } from 'apcore-js';
+    import { APCore, Config, FunctionModule, SchemaLoader } from 'apcore-js/full';
 
     const loader = new SchemaLoader(Config.fromDefaults());
     const schemaDef = loader.load('executor.email.send_email');

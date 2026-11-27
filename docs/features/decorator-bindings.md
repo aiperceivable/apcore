@@ -300,7 +300,7 @@ The pattern is matched against each file name (not recursively) with Algorithm A
     ```
 === "TypeScript"
     ```typescript
-    import { BindingLoader, Config, Registry } from "apcore-js";
+    import { BindingLoader, Config, Registry } from "apcore-js/full";
 
     const config = Config.load("apcore.yaml"); // may set bindings.dir / bindings.pattern
     const registry = new Registry();

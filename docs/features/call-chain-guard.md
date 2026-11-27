@@ -176,7 +176,7 @@ The same keys can be set programmatically before the client is built:
     ```
 === "TypeScript"
     ```typescript
-    import { APCore, Config } from "apcore-js";
+    import { APCore, Config } from "apcore-js/full";
 
     const config = Config.fromDefaults();
     config.set("executor.max_call_depth", 16);

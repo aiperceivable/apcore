@@ -155,6 +155,54 @@ def _usage_enabled() -> str | None:
     return _group_probe("usage", {"system.usage.summary", "system.usage.module"})
 
 
+@probe("sys_modules.usage.retention_hours")
+def _usage_retention() -> str | None:
+    from datetime import datetime, timedelta, timezone
+
+    from apcore import Executor
+    from apcore.config import Config
+    from apcore.registry import Registry
+    from apcore.sys_modules.registration import register_sys_modules
+
+    def call_count(retention_hours: int) -> int:
+        config = Config.from_defaults()
+        config.set("sys_modules.enabled", True)
+        config.set("sys_modules.usage.retention_hours", retention_hours)
+        registry = Registry()
+        executor = Executor(registry, config=config)
+        context = register_sys_modules(registry, executor, config)
+        collector = context["usage_collector"]
+        now = datetime.now(timezone.utc)
+        for age in (5, 0):
+            collector.record("usage.sample", "probe", 1.0, True, (now - timedelta(hours=age)).isoformat())
+        return executor.call("system.usage.summary", {"period": "24h"})["total_calls"]
+
+    short, long = call_count(2), call_count(12)
+    if (short, long) != (1, 2):
+        return f"usage retention of 2h and 12h produced {(short, long)!r} calls, expected (1, 2)"
+    return None
+
+
+@probe("sys_modules.usage.bucketing_strategy")
+def _usage_bucketing() -> str | None:
+    from apcore.config import Config
+    from apcore.errors import ConfigError
+    from apcore.full import APCore
+
+    config = Config.from_defaults()
+    config.set("sys_modules.enabled", True)
+    config.set("sys_modules.usage.bucketing_strategy", "hourly")
+    APCore(config=config, fail_on_error=True).call("system.usage.summary", {})
+
+    config.set("sys_modules.usage.bucketing_strategy", "invalid")
+    try:
+        APCore(config=config, fail_on_error=True)
+    except ConfigError as exc:
+        if "bucketing_strategy" in str(exc):
+            return None
+    return "the system-module startup path accepted an invalid usage bucketing strategy"
+
+
 @probe("sys_modules.control.enabled")
 def _control_enabled() -> str | None:
     """The Level 2 write plane (6.7). The one an operator turns off deliberately."""
@@ -1211,6 +1259,23 @@ def _project_name() -> str | None:
         reported = manifest(name)
         if reported != name:
             return f"project.name={name!r} was reported as {reported!r}"
+    return None
+
+
+@probe("project.version")
+def _project_version() -> str | None:
+    from apcore.config import Config
+    from apcore.full import APCore
+
+    for version in ("1.2.3", "2.3.4"):
+        config = Config.from_defaults()
+        config.set("sys_modules.enabled", True)
+        config.set("project.name", "fixture")
+        config.set("project.version", version)
+        client = APCore(config=config, fail_on_error=True)
+        project = client.call("system.health.summary", {})["project"]
+        if project != {"name": "fixture", "version": version}:
+            return f"project.version={version!r} produced {project!r}"
     return None
 
 

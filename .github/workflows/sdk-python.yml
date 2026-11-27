@@ -38,9 +38,9 @@ jobs:
         python -m pip install --upgrade pip
         # If a constraints.txt file is present, use it to pin critical dependency versions.
         if [ -f constraints.txt ]; then
-          pip install -e ".[dev]" -c constraints.txt
+          pip install -e ".[all,dev]" -c constraints.txt
         else
-          pip install -e ".[dev]"
+          pip install -e ".[all,dev]"
         fi
 
     - name: Verify canonical conformance fixture checkout

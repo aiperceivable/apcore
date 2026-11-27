@@ -47,7 +47,7 @@ This is what lets a Context cross a queue, a job board, or a persistent task sto
 
 The approval gate (pipeline Step 5, [protocol-spec §7](./protocol-spec.md#7-approval-system)) is the **only** suspension point in apcore's pipeline. Its Phase B contract:
 
-1. The gate fires when any governance source requires approval — the module's annotations, annotations the registry holds for it (binding file, `*_meta.yaml`, `metadata`), an ACL rule with `approval: required`, or `ExecutionPolicy.gate_destructive` for a destructive module ([protocol-spec §7.4, §6.9](./protocol-spec.md#74-executor-integration-step-5)). It calls the configured `ApprovalHandler`; with no handler the gate is skipped with a warning, unless `ExecutionPolicy(strict = true)` makes it fail closed.
+1. The gate evaluates the module and registry annotations, the ACL approval decision, and the execution policy. The default policy also requires approval for destructive modules and rejects approval-required calls when the host lacks an `ApprovalHandler`. [Protocol specification §7.4](./protocol-spec.md#74-executor-integration-step-5).
 2. If the handler returns `pending`, the executor raises `ApprovalPendingError` carrying an `approval_id`.
 3. The caller persists `approval_id` and the original inputs (apcore does not), waits for an out-of-band approval signal, and re-invokes the same module with `_approval_token = approval_id` in the arguments.
 4. On resume the executor re-enters the pipeline **from Step 1**. The gate removes `_approval_token` from the arguments and calls `handler.check_approval_for_call(token, request)` with the current invocation.

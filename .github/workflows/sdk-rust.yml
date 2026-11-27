@@ -68,6 +68,11 @@ jobs:
       - name: Build
         run: cargo build --locked --all-features
 
+      - name: Test the in-memory Core Profile
+        run: cargo test --locked --no-default-features --lib --test core_profile
+        env:
+          CONFORMANCE_SPEC_REPO: ${{ github.workspace }}
+
       - name: Run tests
         run: cargo test --locked --all-features
         env:

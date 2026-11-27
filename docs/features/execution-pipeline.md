@@ -567,7 +567,7 @@ A `type` names a factory registered in code before the executor is built. `handl
 
 === "TypeScript"
     ```typescript
-    import { APCore, Config, registerStepType } from 'apcore-js';
+    import { APCore, Config, registerStepType } from 'apcore-js/full';
     import type { PipelineContext, Step, StepResult } from 'apcore-js';
 
     class RateLimitStep implements Step {

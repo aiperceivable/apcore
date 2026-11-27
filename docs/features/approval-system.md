@@ -248,15 +248,15 @@ These handlers are provided by the respective bridge packages, not by apcore cor
 An `ExecutionPolicy` is an execution-time governance layer attached to the Executor (§7.9). It lets an operator change the governance of already-registered modules without editing them:
 
 - **`rules`** — `PolicyRule`s, each with a module-ID `pattern` (ACL wildcard semantics) and optional overrides for `requires_approval` and `destructive` (unset = keep the module's value), plus a `reason` for the audit trail. The most specific matching rule wins (ACL specificity scoring); on a tie the more restrictive rule wins. A matched override beats the module's own declaration.
-- **`gate_destructive`** — when true, a module whose effective `destructive` is true needs approval even if `requires_approval` is false.
-- **`strict`** — when true, a call that needs approval but has no `ApprovalHandler` fails closed with `ApprovalDeniedError` instead of being skipped with a warning.
+- **`gate_destructive`** defaults to true and requires approval for a module whose effective `destructive` is true.
+- **`strict`** defaults to true and denies calls requiring approval when no `ApprovalHandler` is configured.
 
 The gate applies these sources in order.
 
 1. Combine the live module's `requires_approval` and `destructive` flags with the corresponding declared metadata flags. A true value from either source counts. The registry can receive those declarations from `*.binding.yaml`, `*_meta.yaml`, `metadata=`, or a Rust `ModuleDescriptor` (D-96, D-125).
 2. Resolve the module-scoped requirement using the winning policy rule, if any, then add the requirement from `gate_destructive` when it applies. A policy rule can override a module annotation.
 3. Combine that result with the ACL's `approval: required` decision for this invocation. If either requires approval, the gate requires approval. A policy override cannot clear the ACL's requirement.
-4. Enforce the resulting requirement using the `ApprovalHandler`, or deny it under strict policy if the handler is absent. With neither configured, the gate warns and continues.
+4. Ask the `ApprovalHandler` when approval is required. The default strict gate denies the call if the handler is absent. An explicit `strict: false` policy warns and continues in that case.
 
 Built-in policy rules match on the module ID. The invocation arguments reach policy resolution for the audit trail after `_approval_token` is stripped (§7.9.6).
 
@@ -488,7 +488,7 @@ The emitter is the one given to the Executor: `Executor(registry, event_emitter=
 ## Testing Strategy
 
 - **Union tests** verify that the gate fires when any single governance source requires approval (annotation, declared metadata, ACL `approval: required`, policy rule, `gate_destructive`) and that a `false` in one source never cancels a `true` in another.
-- **Skip tests** confirm the gate is skipped (with a warning) when no handler is set, and fails closed when `strict` is set.
+- **Default and opt-out tests** cover zero executions for a denied call and the warning from an explicit non-strict policy.
 - **Handler tests** confirm each built-in handler returns the expected `ApprovalResult` status.
 - **Error mapping tests** verify that `rejected` → `ApprovalDeniedError`, `timeout` → `ApprovalTimeoutError`, `pending` → `ApprovalPendingError`, and that a handler exception propagates unchanged.
 - **Token tests** verify that `_approval_token` is removed from the inputs on every path and routed to `check_approval`.

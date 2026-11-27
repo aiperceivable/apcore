@@ -21,7 +21,7 @@ With `sys_modules.enabled` and `sys_modules.events.enabled`, `APCore` creates th
 - Define the `EventSubscriber` protocol: an async `on_event()` plus optional `event_pattern`, `subscriber_id`, `subscriber_type`, `retry` and `on_failure` members.
 - Errors in one subscriber **MUST NOT** propagate to other subscribers or to the emitter's caller.
 - Retry failed deliveries per subscriber and emit `apcore.event.delivery_failed` when retries are exhausted.
-- Provide built-in `webhook`, `a2a`, `file`, `stdout` and `filter` subscribers, and a registry of subscriber factories for config-driven instantiation.
+- Provide built-in `webhook`, `file`, `stdout`, and `filter` subscribers, and a host-owned registry of factories for configured subscribers.
 
 ## Technical Design
 
@@ -103,7 +103,7 @@ Events are immutable once emitted (Python `frozen=True`, TypeScript `readonly`, 
 === "TypeScript"
 
     ```typescript
-    import type { ApCoreEvent, EventRetryConfig } from "apcore-js";
+    import type { ApCoreEvent, EventRetryConfig } from "apcore-js/full";
 
     export interface EventSubscriber {
         onEvent(event: ApCoreEvent): void | Promise<void>;
@@ -156,7 +156,7 @@ Python's `EventEmitter.subscribe()` raises `TypeError` when `on_event` is not a 
 === "TypeScript"
 
     ```typescript
-    import type { ApCoreEvent, EventSubscriber } from "apcore-js";
+    import type { ApCoreEvent, EventSubscriber } from "apcore-js/full";
 
     export declare class EventEmitter {
         constructor(maxPending?: number);                // default 1000
@@ -214,7 +214,7 @@ Python's `EventEmitter.subscribe()` raises `TypeError` when `on_event` is not a 
     ```
 === "TypeScript"
     ```typescript
-    import { APCore, Config, type ApCoreEvent } from "apcore-js";
+    import { APCore, Config, type ApCoreEvent } from "apcore-js/full";
 
     const client = new APCore({ config: Config.load("apcore.yaml") }); // sys_modules.events.enabled: true
 
@@ -266,7 +266,7 @@ Python's `EventEmitter.subscribe()` raises `TypeError` when `on_event` is not a 
     ```
 === "TypeScript"
     ```typescript
-    import { APCore, Config, type EventSubscriber } from "apcore-js";
+    import { APCore, Config, type EventSubscriber } from "apcore-js/full";
 
     const client = new APCore({ config: Config.load("apcore.yaml") });
 
@@ -317,160 +317,64 @@ A subscriber whose pattern is `"*"` receives every event **except** `apcore.even
 | Type | Delivers to | Config fields (besides `id`, `retry`) |
 |------|-------------|---------------------------------------|
 | `webhook` | HTTP POST of the event JSON | `url`, `headers`, `timeout_ms` (default 5000); `retry_count` (retries after the first attempt, i.e. `max_attempts = retry_count + 1`; ignored when `retry` is present) |
-| `a2a` | HTTP POST of `{"skillId": …, "event": {…}}` | `platform_url`, `auth` (string → `Authorization: Bearer <auth>`, map → merged into headers), `skill_id` (default `"apevo.event_receiver"`), `timeout_ms` |
 | `file` | Appends to a local file | `path`, `append` (default `true`), `format` (`json` default / `text`), `rotate_bytes` |
 | `stdout` | Standard output | `format` (`text` default / `json`), `level_filter` |
 | `filter` | Another subscriber, for matching events only | `delegate_type`, `delegate_config`, `include_events`, `exclude_events` |
 
-- **HTTP delivery (`webhook`, `a2a`).** Sends `Content-Type: application/json`. 2xx is success. 5xx, connection errors and timeouts raise inside the subscriber, so the emitter's retry policy applies. 4xx is logged as a permanent failure and is not retried. Python needs the `events` extra (`pip install apcore[events]`, which provides `aiohttp`) — without it every delivery fails with `ImportError` and takes the retry/dead-letter path; Rust needs the `events` cargo feature.
+- **Webhook delivery.** Sends `Content-Type: application/json`. A successful 2xx response completes delivery. The emitter applies retry policy to 5xx, connection failures, and timeouts. Install Python's `events` extra or enable Rust's `events` feature to use the built-in HTTP transport.
 - **`filter`.** When `include_events` is present it is decisive: an event is forwarded if it matches any entry and discarded otherwise, and `exclude_events` is not consulted. Otherwise an event matching any `exclude_events` entry is discarded. Both lists use A25. Because a pattern that fails to match means the event is *delivered*, `exclude_events` fails open — keep its patterns simple and test them.
 - **`id`.** Every subscriber has a stable `subscriber_id`; when the config omits `id`, the SDK generates `"<type>-<n>"`. It appears in dead-letter and circuit events.
 
-Constructors of the two HTTP subscribers:
-
-=== "Python"
-
-    ```python
-    from apcore.events import A2ASubscriber, EventRetryConfig, WebhookSubscriber
-
-    webhook = WebhookSubscriber(
-        "https://example.com/hook",
-        headers={"X-Source": "apcore"},
-        timeout_ms=5000,
-        id="audit-hook",
-        retry=EventRetryConfig(max_attempts=5),
-        event_pattern="apcore.*",
-    )
-
-    a2a = A2ASubscriber(
-        "https://agent.example.com",
-        auth="bearer-token-123",
-        timeout_ms=5000,
-        skill_id="myapp.event_receiver",
-        id="agent-bridge",
-    )
-    ```
-
-=== "TypeScript"
-
-    ```typescript
-    import { A2ASubscriber, WebhookSubscriber } from "apcore-js";
-
-    const webhook = new WebhookSubscriber(
-        "https://example.com/hook",
-        { "X-Source": "apcore" },
-        { timeoutMs: 5000, id: "audit-hook", retry: { maxAttempts: 5 } },
-    );
-
-    const a2a = new A2ASubscriber(
-        "https://agent.example.com",
-        "bearer-token-123",
-        { timeoutMs: 5000, id: "agent-bridge", skillId: "myapp.event_receiver" },
-    );
-    ```
-
-=== "Rust"
-
-    ```rust
-    use apcore::events::subscribers::{A2AAuth, A2ASubscriber};
-    use apcore::events::{EventRetryConfig, WebhookSubscriber};
-
-    fn main() {
-        let mut webhook = WebhookSubscriber::new("audit-hook", "https://example.com/hook", "apcore.*")
-            .with_retry(EventRetryConfig { max_attempts: 5, ..Default::default() });
-        webhook.headers.insert("X-Source".to_string(), "apcore".to_string());
-
-        let mut a2a = A2ASubscriber::new("agent-bridge", "https://agent.example.com", "*")
-            .with_skill_id("myapp.event_receiver");
-        a2a.auth = Some(A2AAuth::Bearer("bearer-token-123".to_string()));
-    }
-    ```
-
 ### Subscriber Factories
 
-Config-driven subscribers are built by factories keyed by `type`. The five built-in types are registered automatically; add your own with `register_subscriber_type` — the factory is called once per configured entry and receives that entry's config object:
+The host's factory registry builds subscribers keyed by `type`, including
+filter delegates. The factory receives the configuration for one subscriber.
+Use the [A2A adapter](https://github.com/aiperceivable/apcore-surfaces/tree/main/a2a)
+to add delivery to an A2A receiver.
 
 === "Python"
     ```python
-    from apcore.events import ApCoreEvent
-    from apcore.sys_modules.registration import register_subscriber_type
+    from apcore.events import SubscriberRegistry, StdoutSubscriber
+    from apcore.full import APCore, Config
 
-
-    class SlackSubscriber:
-        subscriber_type = "slack"
-
-        def __init__(self, webhook_url: str, channel: str = "#general") -> None:
-            self.webhook_url = webhook_url
-            self.channel = channel
-
-        async def on_event(self, event: ApCoreEvent) -> None:
-            print(f"post {event.event_type} to {self.channel}")
-
-
-    register_subscriber_type(
-        "slack",
-        lambda config: SlackSubscriber(config["webhook_url"], config.get("channel", "#general")),
-    )
+    subscribers = SubscriberRegistry()
+    subscribers.register("console", lambda config: StdoutSubscriber(output_format=config.get("format", "text")))
+    client = APCore(config=Config.load("apcore.yaml"), subscriber_registry=subscribers)
     ```
+
 === "TypeScript"
     ```typescript
-    import { registerSubscriberType, type ApCoreEvent, type EventSubscriber } from "apcore-js";
+    import { Config } from "apcore-js/config";
+    import { StdoutSubscriber } from "apcore-js/events";
+    import { APCore } from "apcore-js/full";
+    import { createSysModulesPlugin } from "apcore-js/sys-modules";
 
-    class SlackSubscriber implements EventSubscriber {
-        readonly subscriberType = "slack";
-
-        constructor(
-            private readonly webhookUrl: string,
-            private readonly channel: string,
-        ) {}
-
-        async onEvent(event: ApCoreEvent): Promise<void> {
-            console.log(`post ${event.eventType} to ${this.channel} via ${this.webhookUrl}`);
-        }
-    }
-
-    registerSubscriberType("slack", (config) =>
-        new SlackSubscriber(String(config.webhook_url), String(config.channel ?? "#general")),
-    );
+    const client = new APCore({
+      config: Config.load("apcore.yaml"),
+      plugins: [createSysModulesPlugin({
+        subscriberFactories: { console: () => new StdoutSubscriber() },
+      })],
+    });
     ```
+
 === "Rust"
     ```rust
-    use apcore::errors::ModuleError;
-    use apcore::events::{register_subscriber_type, ApCoreEvent, EventSubscriber};
-    use async_trait::async_trait;
-    use serde_json::Value;
+    use std::path::Path;
 
-    #[derive(Debug)]
-    struct SlackSubscriber {
-        webhook_url: String,
-        channel: String,
-    }
+    use apcore::events::{StdoutSubscriber, SubscriberRegistry};
+    use apcore::{APCore, APCoreOptions, Config};
 
-    #[async_trait]
-    impl EventSubscriber for SlackSubscriber {
-        fn subscriber_type(&self) -> &str { "slack" }
-
-        async fn on_event(&self, event: &ApCoreEvent) -> Result<(), ModuleError> {
-            println!("post {} to {} via {}", event.event_type, self.channel, self.webhook_url);
-            Ok(())
-        }
-    }
-
-    fn main() {
-        register_subscriber_type(
-            "slack",
-            Box::new(|config: &Value| {
-                let subscriber = SlackSubscriber {
-                    webhook_url: config["webhook_url"].as_str().unwrap_or_default().to_string(),
-                    channel: config["channel"].as_str().unwrap_or("#general").to_string(),
-                };
-                Ok(Box::new(subscriber) as Box<dyn EventSubscriber>)
-            }),
-        );
+    fn main() -> Result<(), Box<dyn std::error::Error>> {
+        let mut subscribers = SubscriberRegistry::new();
+        subscribers.register("console", |_| Ok(Box::new(StdoutSubscriber::default())));
+        let options = APCoreOptions {
+            config: Some(Config::load(Path::new("apcore.yaml"))?),
+            ..Default::default()
+        };
+        let _client = APCore::try_start_with_subscribers(options, &subscribers)?;
+        Ok(())
     }
     ```
-
-The registry also offers `unregister_subscriber_type(type_name)`, `reset_subscriber_registry()` (back to the built-ins) and a function that builds one subscriber from a config object (`create_subscriber_from_config` / `createSubscriberFromConfig` / `create_subscriber`). Python additionally re-exports the registration function as `apcore.events.register_subscriber_factory`.
 
 ### Configuration
 
@@ -500,17 +404,14 @@ sys_modules:
 
       - type: "filter"
         id: "health-pager"
-        delegate_type: "a2a"
+        delegate_type: "webhook"
         delegate_config:
-          platform_url: "https://agent.example.com"
-          auth: "bearer-token-123"
-          skill_id: "myapp.event_receiver"
+          url: "https://events.example.com/health"
         include_events:
           - "apcore.health.*"
 
-      - type: "slack"              # a type added with register_subscriber_type
-        webhook_url: "https://hooks.slack.com/services/..."
-        channel: "#alerts"
+      - type: "console"           # supplied by this host's factory registry
+        format: "text"
 ```
 
 ## Event Naming Convention
@@ -658,7 +559,7 @@ A subscriber may also define `on_failure(event, error, attempt_count)`. It is in
     ```
 === "TypeScript"
     ```typescript
-    import { EventEmitter, type ApCoreEvent, type EventSubscriber } from "apcore-js";
+    import { EventEmitter, type ApCoreEvent, type EventSubscriber } from "apcore-js/full";
 
     class HealthAlertSubscriber implements EventSubscriber {
         readonly eventPattern = "apcore.health.*";
@@ -738,7 +639,7 @@ Python wraps every subscriber created from `sys_modules.events.subscribers` in a
     | File | Purpose |
     |------|---------|
     | `src/apcore/events/emitter.py` | `EventEmitter`, `ApCoreEvent`, `EventSubscriber`, retry and dead-letter delivery |
-    | `src/apcore/events/subscribers.py` | `WebhookSubscriber`, `A2ASubscriber`, `FileSubscriber`, `StdoutSubscriber`, `FilterSubscriber` |
+    | `src/apcore/events/subscribers.py` | Webhook, file, stdout, and filter delivery |
     | `src/apcore/events/circuit_breaker.py` | `CircuitBreakerWrapper` |
     | `src/apcore/events/retry.py` | `EventRetryConfig` |
     | `src/apcore/sys_modules/registration.py` | Subscriber factory registry, config-driven subscribers |
@@ -836,22 +737,6 @@ Python wraps every subscriber created from `sys_modules.events.subscribers` in a
 ### Errors
 - Raises (Rust: returns `Err`) on 5xx responses, connection errors and timeouts, so the emitter retries per the subscriber's `retry` policy and emits `apcore.event.delivery_failed` when attempts are exhausted. Nothing reaches the code that called `emit()`.
 - A 4xx response is logged as a permanent failure and not retried.
-
-### Returns
-- Nothing on 2xx.
-
-### Properties
-- async: true
-- thread_safe: true
-- pure: false (outbound HTTP)
-
-## Contract: A2ASubscriber.on_event
-
-### Inputs
-- `event` (`ApCoreEvent`, required) — sent as `{"skillId": <skill_id>, "event": {<event fields>}}` to `platform_url`. A string `auth` becomes `Authorization: Bearer <auth>`; a map is merged into the headers.
-
-### Errors
-- As for `WebhookSubscriber.on_event`: 5xx, connection errors and timeouts go through the retry policy and the dead-letter path; 4xx is logged and not retried.
 
 ### Returns
 - Nothing on 2xx.
