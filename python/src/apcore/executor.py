@@ -914,16 +914,30 @@ class Executor:
             c.check == _ACL_CHECK and not c.passed for c in checks
         )
         can_disclose = not acl_denied and (evaluator is None or pipe_ctx._policy_requires_approval is not None)
+        module = pipe_ctx.module if can_disclose else None
+        disclosure_inputs, disclosure_context = inputs, pipe_ctx.context
+        if evaluator is not None and module is not None:
+            try:
+                invocation = pipe_ctx._policy_invocation
+                if invocation is None:
+                    raise PolicyEvaluationError()
+                disclosure_inputs, disclosure_context = invocation.preflight_snapshot(pipe_ctx)
+            except PolicyEvaluationError as exc:
+                checks.append(PreflightCheckResult(check=_preflight_check_for(exc), passed=False, error=exc.to_dict()))
+                module = None
+
+        def callback_inputs() -> tuple[dict[str, Any], Context[Any]]:
+            if evaluator is None:
+                return disclosure_inputs, disclosure_context
+            callback_context = copy(disclosure_context)
+            callback_context.identity = deepcopy(disclosure_context.identity)
+            callback_context.call_chain = list(disclosure_context.call_chain)
+            return deepcopy(disclosure_inputs), callback_context
 
         # Module-level preflight (optional)
-        if (
-            can_disclose
-            and pipe_ctx.module is not None
-            and hasattr(pipe_ctx.module, "preflight")
-            and callable(pipe_ctx.module.preflight)
-        ):
+        if module is not None and callable(getattr(module, "preflight", None)):
             try:
-                preflight_warnings = pipe_ctx.module.preflight(inputs, pipe_ctx.context)
+                preflight_warnings = module.preflight(*callback_inputs())
                 if isinstance(preflight_warnings, list) and preflight_warnings:
                     checks.append(
                         PreflightCheckResult(
@@ -948,14 +962,9 @@ class Executor:
         # surface the failure as a warning on the module_preview check rather
         # than failing validation. This mirrors preflight() exception semantics.
         predicted_changes: list[Change] = []
-        if (
-            can_disclose
-            and pipe_ctx.module is not None
-            and hasattr(pipe_ctx.module, "preview")
-            and callable(pipe_ctx.module.preview)
-        ):
+        if module is not None and callable(getattr(module, "preview", None)):
             try:
-                raw = pipe_ctx.module.preview(inputs, pipe_ctx.context)
+                raw = module.preview(*callback_inputs())
                 # Support both sync and async preview() implementations.
                 if inspect.isawaitable(raw):
                     raw = await raw

@@ -1437,7 +1437,7 @@ impl Executor {
         ctx: &PipelineContext,
         error: &ModuleError,
     ) -> Option<OnErrorOutcome> {
-        if ctx.terminal_gate_failure
+        if ctx.blocks_error_recovery()
             || error.code == ErrorCode::ExecutionCancelled
             || ctx.executed_middlewares.is_empty()
         {

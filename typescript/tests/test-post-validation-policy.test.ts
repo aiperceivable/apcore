@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { join } from 'node:path';
+import { Kind, Type, TypeRegistry } from '@sinclair/typebox';
 import { describe, expect, it, vi } from 'vitest';
 import {
   ACL,
@@ -165,6 +166,63 @@ describe('post-validation policy executor integration', () => {
     expect(preview).not.toHaveBeenCalled();
   });
 
+  it('discloses independently detached validated inputs to preflight and preview', async () => {
+    const registry = new Registry();
+    const businessArgs = { nested: { amount: 10 } };
+    const schema = Type.Object({ nested: Type.Object({ amount: Type.Number() }) });
+    const preflight = vi.fn((args: typeof businessArgs) => {
+      expect(args.nested.amount).toBe(10);
+      args.nested.amount = 30;
+      return [];
+    });
+    const preview = vi.fn((args: typeof businessArgs) => {
+      expect(args.nested.amount).toBe(10);
+      return null;
+    });
+    await registry.register(moduleId, {
+      description: 'Preview validated inputs', inputSchema: schema, outputSchema: schema,
+      execute: (args: typeof businessArgs) => args, preflight, preview,
+    });
+    const executor = new Executor({ registry, policyEvaluator: {
+      async evaluate(request) {
+        expect(request.arguments).toEqual({ nested: { amount: 10 } });
+        await Promise.resolve();
+        businessArgs.nested.amount = 20;
+        return { decision: 'allow' };
+      },
+    } });
+    const report = await executor.validate(moduleId, businessArgs);
+    expect(report.valid).toBe(true);
+    expect(report.checks.flatMap(check => check.warnings ?? [])).toEqual([]);
+    expect(preflight).toHaveBeenCalledOnce();
+    expect(preview).toHaveBeenCalledOnce();
+    expect(businessArgs.nested.amount).toBe(20);
+  });
+
+  it('stops preflight disclosure when the module changes the policy-bound caller', async () => {
+    const registry = new Registry();
+    const preflight = vi.fn((_args: unknown, context: Context) => {
+      Reflect.set(context, 'callerId', 'replacement.caller');
+      return ['unexpected result'];
+    });
+    const preview = vi.fn(() => null);
+    await registry.register(moduleId, {
+      description: 'Probe preflight binding', inputSchema, outputSchema: inputSchema,
+      execute: (args: Record<string, unknown>) => args, preflight, preview,
+    });
+    const executor = new Executor({ registry, policyEvaluator: {
+      async evaluate() { return { decision: 'allow' }; },
+    } });
+    const report = await executor.validate(moduleId, input);
+    expect(preflight).toHaveBeenCalledOnce();
+    expect(preview).not.toHaveBeenCalled();
+    expect(report.valid).toBe(false);
+    expect(report.checks).toContainEqual(expect.objectContaining({
+      check: 'post_validation_policy', passed: false, error: expect.objectContaining({ code: 'POLICY_EVALUATION_ERROR' }),
+    }));
+    expect(report.checks.flatMap(check => check.warnings ?? [])).toEqual([]);
+  });
+
   it('prevents error middleware from recovering a rejected policy', async () => {
     const { registry, execute, stream } = await makeRegistry();
     const onError = vi.fn(() => input);
@@ -271,6 +329,61 @@ describe('post-validation policy executor integration', () => {
     expect(approval.mock.lastCall?.[0].canonicalArgsDigest).toBe(expected);
     expect(Object.is(result['10'], -0)).toBe(true);
   });
+
+  it.each([false, true])('binds exactly the TypeBox-validated input when a validator retains a reference (%s)',
+    async (mutateAfterValidation) => {
+      const kind = 'Test:NormalizePolicyInput';
+      let checked: { message: string } | null = null;
+      TypeRegistry.Set(kind, (_schema, value) => {
+        if (value === null || typeof value !== 'object' || !('message' in value) || typeof value.message !== 'string') return false;
+        checked = value as { message: string };
+        checked.message = checked.message.trim();
+        return true;
+      });
+      try {
+        const registry = new Registry();
+        const echo = (args: Record<string, unknown>) => args;
+        const schema = Type.Unsafe({ [Kind]: kind, type: 'object' });
+        await registry.register(moduleId, {
+          description: 'Return the validated inputs', inputSchema: schema,
+          outputSchema: Type.Object({ message: Type.String() }), execute: echo,
+        });
+        const approval = vi.fn(async (_request: ApprovalRequest) => createApprovalResult({
+          status: 'pending', approvalId: 'validator-scope',
+        }));
+        const resume = vi.fn(async (token: string, request: ApprovalRequest) => {
+          const original = approval.mock.lastCall?.[0];
+          const matches = token === 'validator-scope' && original !== undefined && sameApprovalScope(original, request);
+          return createApprovalResult({ status: matches ? 'approved' : 'rejected' });
+        });
+        const executor = new Executor({
+          registry,
+          approvalHandler: {
+            supportsFinalScope: true, requestApproval: approval, checkApprovalForCall: resume,
+            checkApproval: async () => createApprovalResult({ status: 'rejected' }),
+          },
+          policyEvaluator: {
+            async evaluate(request) {
+              expect(request.arguments).toEqual({ message: 'hello' });
+              await Promise.resolve();
+              if (checked && mutateAfterValidation) checked.message = 'changed after validation';
+              return { decision: 'require_approval' };
+            },
+          },
+        });
+        await expect(executor.call(moduleId, { message: '  hello  ' }))
+          .rejects.toMatchObject({ code: 'APPROVAL_PENDING' });
+        const expected = createHash('sha256').update('{"message":"hello"}').digest('hex');
+        expect(approval.mock.lastCall?.[0].canonicalArgsDigest).toBe(expected);
+        expect(approval.mock.lastCall?.[0].arguments).toEqual({ message: 'hello' });
+        const result = await executor.call(moduleId, { message: 'hello ', _approval_token: 'validator-scope' });
+        expect(resume.mock.lastCall?.[1].canonicalArgsDigest).toBe(expected);
+        expect(resume.mock.lastCall?.[1].arguments).toEqual({ message: 'hello' });
+        expect(result).toEqual({ message: 'hello' });
+      } finally {
+        TypeRegistry.Delete(kind);
+      }
+    });
 
   it.each(['call', 'streamWithCompletion'] as const)('bounds evaluator work in %s by the invocation deadline', async (entry) => {
     vi.useFakeTimers();

@@ -10,7 +10,7 @@ import re
 import struct
 import time
 from contextlib import suppress
-from copy import deepcopy
+from copy import copy, deepcopy
 from typing import TYPE_CHECKING, Any
 
 from apcore.errors import PolicyEvaluationError
@@ -19,6 +19,7 @@ from apcore.policy import PolicyEvaluationRequest, PolicyEvaluator, PolicyVerdic
 
 if TYPE_CHECKING:
     from apcore.cancel import CancelToken
+    from apcore.context import Context
     from apcore.pipeline import PipelineContext
 
 _SAFE_INT = (1 << 53) - 1
@@ -77,14 +78,20 @@ class _PolicyInvocation:
         self.digest = _argument_digest(arguments)
         self.arguments = deepcopy(arguments)
 
-    def checked_arguments(self, ctx: PipelineContext) -> dict[str, Any]:
-        capture = deepcopy(self.arguments)
+    def _check_binding(self, ctx: PipelineContext) -> None:
         if (
             ctx.module_id != self.module_id
             or ctx.module is not self.module
             or ctx.context.caller_id != self.caller_id
             or ctx.context.identity != self.identity
-            or ctx.validated_inputs is None
+        ):
+            raise PolicyEvaluationError()
+
+    def checked_arguments(self, ctx: PipelineContext) -> dict[str, Any]:
+        self._check_binding(ctx)
+        capture = deepcopy(self.arguments)
+        if (
+            ctx.validated_inputs is None
             or capture is None
             or self.digest is None
             or _argument_digest(ctx.validated_inputs) != self.digest
@@ -92,6 +99,15 @@ class _PolicyInvocation:
         ):
             raise PolicyEvaluationError()
         return capture
+
+    def preflight_snapshot(self, ctx: PipelineContext) -> tuple[dict[str, Any], Context[Any]]:
+        self._check_binding(ctx)
+        if self.arguments is None or self.digest is None or _argument_digest(self.arguments) != self.digest:
+            raise PolicyEvaluationError()
+        context = copy(ctx.context)
+        context.identity = deepcopy(self.identity)
+        context.call_chain = list(ctx.context.call_chain)
+        return self.arguments, context
 
 
 async def _evaluate_policy(
@@ -110,6 +126,7 @@ async def _evaluate_policy(
         raise PolicyEvaluationError()
 
     loop = asyncio.get_running_loop()
+    expires_at = loop.time() + remaining
     cancelled = loop.create_future()
 
     def report_cancellation() -> None:
@@ -126,7 +143,8 @@ async def _evaluate_policy(
         await asyncio.wait((task, cancelled), timeout=remaining, return_when=asyncio.FIRST_COMPLETED)
         if token is not None:
             token.check()
-        if not task.done():
+        # A non-yielding evaluator can finish before the loop services its timer.
+        if not task.done() or loop.time() >= expires_at:
             raise PolicyEvaluationError()
         return task.result()
     finally:

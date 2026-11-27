@@ -808,30 +808,22 @@ export class BuiltinInputValidation implements Step {
   async execute(ctx: PipelineContext): Promise<StepResult> {
     const invocation = policyInvocationOf(ctx);
     if (invocation) assertPolicyBinding(ctx, invocation);
-    const snapshot = invocation ? copyPolicyInputs(ctx) : null;
-    const inputs = snapshot?.arguments ?? ctx.inputs;
+    let snapshot = invocation ? copyPolicyInputs(ctx.moduleId, ctx.inputs) : null;
     const mod = ctx.module as Record<string, unknown>;
     const inputSchema = resolveSchema(mod, 'inputSchema');
-    if (inputSchema == null) {
-      // Refresh the capture after middleware_before, as the schema branch
-      // does, with the configured rules (PROTOCOL_SPEC 10.6.1).
-      ctx.context.redactedInputs = redactSensitive(inputs, {}, this._redaction);
-      ctx.validatedInputs = ctx.inputs;
-      if (invocation && snapshot) invocation.validated = snapshot;
-      return { action: 'continue' };
+    if (inputSchema !== null) {
+      validateSchema(inputSchema, snapshot?.arguments ?? ctx.inputs, 'Input');
+      // Native TypeBox validators can change the inputs and retain aliases.
+      // Capture both the values and their encoding from the detached result.
+      if (snapshot) snapshot = copyPolicyInputs(ctx.moduleId, snapshot.arguments);
     }
 
-    // Throws SchemaValidationError directly for error type preservation
-    validateSchema(inputSchema, inputs, 'Input');
-
-    ctx.context.redactedInputs = redactSensitive(
-      inputs,
-      inputSchema as unknown as Record<string, unknown>,
-      this._redaction,
-    );
-    ctx.validatedInputs = ctx.inputs;
+    const effectiveSchema = inputSchema ?? {};
+    const effectiveInputs = snapshot?.arguments ?? ctx.inputs;
+    ctx.context.redactedInputs = redactSensitive(effectiveInputs, effectiveSchema, this._redaction);
+    ctx.validatedInputs = snapshot ? structuredClone(effectiveInputs) : effectiveInputs;
     if (invocation && snapshot) {
-      snapshot.sensitiveFields = sensitivePolicyFields(inputs, inputSchema);
+      snapshot.sensitiveFields = sensitivePolicyFields(effectiveInputs, effectiveSchema);
       invocation.validated = snapshot;
     }
     return { action: 'continue' };

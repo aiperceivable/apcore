@@ -58,7 +58,8 @@ pub type RunUntilPredicate = Box<dyn Fn(&PipelineState) -> bool + Send + Sync>;
 ///   `value`, the failure is treated as a successful continue, and
 ///   `after_step` still fires for the recovered step. Returning `Ok(None)`
 ///   lets the original error propagate, subject to `ignore_errors`.
-///   Built-in ACL and approval gate failures propagate after all entered
+///   Built-in governance gate failures and failures before an installed
+///   post-validation policy admits the invocation propagate after all entered
 ///   middleware observes the error in reverse order for cleanup.
 ///
 /// Invocation order (`features/middleware-system.md` "Pipeline Step Middleware"
@@ -459,6 +460,14 @@ impl PipelineContext {
 
     pub(crate) fn has_approval_credential(&self) -> bool {
         self.approval_credential.is_some()
+    }
+
+    fn policy_admission_pending(&self) -> bool {
+        self.policy_evaluator.is_some() && self.policy_effect.is_none()
+    }
+
+    pub(crate) fn blocks_error_recovery(&self) -> bool {
+        self.terminal_gate_failure || self.policy_admission_pending()
     }
 
     pub(crate) fn bind_policy_inputs(&mut self) -> Result<(), ModuleError> {
@@ -1534,8 +1543,8 @@ impl PipelineEngine {
                         idx += 1;
                         continue;
                     }
-                    let is_gate = step.builtin_gate().is_some() || ctx.terminal_gate_failure;
-                    let recovery = if is_gate {
+                    let terminal = step.builtin_gate().is_some() || ctx.blocks_error_recovery();
+                    let recovery = if terminal {
                         ctx.terminal_gate_failure = true;
                         observe_step_error_hooks(
                             middlewares,
@@ -1568,7 +1577,7 @@ impl PipelineEngine {
                                 Some("error_recovered".to_string()),
                             )
                         }
-                        Ok(None) if step_ignore_errors && !is_gate => {
+                        Ok(None) if step_ignore_errors && !terminal => {
                             tracing::warn!(step = step.name(), error = %err, "Step failed (ignored)");
                             ctx.trace.steps.push(StepTrace {
                                 name: step.name().to_string(),
@@ -1692,6 +1701,12 @@ impl PipelineEngine {
                     return Ok((ctx.output.clone(), ctx.trace.clone()));
                 }
                 "skip_to" => {
+                    if ctx.policy_admission_pending() {
+                        return Err(ModuleError::new(
+                            ErrorCode::PipelineConfigurationError,
+                            "Pipeline jumps require completed post-validation policy admission",
+                        ));
+                    }
                     let target = skip_target.as_deref().unwrap_or("");
                     // O(1) lookup via the strategy's name_to_idx map (§1.5).
                     // The lookup must reject same-position and backward

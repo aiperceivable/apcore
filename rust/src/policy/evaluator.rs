@@ -68,6 +68,7 @@ pub(crate) async fn evaluate(
     request: &PolicyEvaluationRequest,
     context: &Context<Value>,
 ) -> Result<PolicyVerdict, ModuleError> {
+    let started = tokio::time::Instant::now();
     let timeout = context.global_deadline.map_or(1.0, |deadline| {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -80,10 +81,8 @@ pub(crate) async fn evaluate(
     if !timeout.is_finite() || timeout <= 0.0 {
         return Err(evaluation_error());
     }
-    let decision = tokio::time::timeout(
-        Duration::from_secs_f64(timeout),
-        evaluator.evaluate(request),
-    );
+    let expiration = started + Duration::from_secs_f64(timeout);
+    let decision = tokio::time::timeout_at(expiration, evaluator.evaluate(request));
     let result = if let Some(token) = &context.cancel_token {
         tokio::select! {
             biased;
@@ -96,6 +95,13 @@ pub(crate) async fn evaluate(
     } else {
         decision.await
     };
+    if let Some(token) = &context.cancel_token {
+        token.check_for(&request.module_id)?;
+    }
+    // An evaluator that never yielded may finish after the timer expired.
+    if tokio::time::Instant::now() >= expiration {
+        return Err(evaluation_error());
+    }
     result
         .ok()
         .and_then(Result::ok)

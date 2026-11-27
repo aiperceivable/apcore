@@ -4,6 +4,7 @@ use std::sync::{Arc, Mutex};
 use apcore::approval::{ApprovalHandler, ApprovalRequest, ApprovalResult};
 use apcore::errors::ErrorCode;
 use apcore::middleware::Middleware;
+use apcore::pipeline::{PipelineState, StepMiddleware};
 use apcore::registry::ModuleDescriptor;
 use apcore::{
     ChunkStream, Config, Context, Executor, Module, ModuleAnnotations, ModuleError, PolicyEffect,
@@ -48,12 +49,24 @@ impl Module for Probe {
         _context: &Context<Value>,
     ) -> Result<Value, ModuleError> {
         self.starts.fetch_add(1, Ordering::Relaxed);
-        Ok(inputs)
+        Self::result(inputs)
     }
 
     fn stream(&self, inputs: Value, _context: &Context<Value>) -> Option<ChunkStream> {
         self.starts.fetch_add(1, Ordering::Relaxed);
-        Some(Box::pin(stream::iter([Ok(inputs)])))
+        Some(Box::pin(stream::iter([Self::result(inputs)])))
+    }
+}
+
+impl Probe {
+    fn result(inputs: Value) -> Result<Value, ModuleError> {
+        if inputs.get("fail_execution") == Some(&Value::Bool(true)) {
+            return Err(ModuleError::new(
+                ErrorCode::ModuleExecuteError,
+                "probe failed",
+            ));
+        }
+        Ok(inputs)
     }
 }
 
@@ -89,7 +102,10 @@ impl PolicyEvaluator for Evaluator {
 }
 
 #[derive(Debug)]
-struct Rewrite(Value);
+enum Rewrite {
+    Amount(Value),
+    Reject,
+}
 
 #[async_trait]
 impl Middleware for Rewrite {
@@ -103,8 +119,16 @@ impl Middleware for Rewrite {
         mut inputs: Value,
         _context: &Context<Value>,
     ) -> Result<Option<Value>, ModuleError> {
-        inputs["amount"] = self.0.clone();
-        Ok(Some(inputs))
+        match self {
+            Self::Amount(amount) => {
+                inputs["amount"] = amount.clone();
+                Ok(Some(inputs))
+            }
+            Self::Reject => Err(ModuleError::new(
+                ErrorCode::GeneralInvalidInput,
+                "normalization failed",
+            )),
+        }
     }
 
     async fn after(
@@ -298,11 +322,11 @@ async fn post_validation_policy_matches_shared_fixture() {
         executor.set_approval_handler_shared(approver.clone());
         if let Some(amount) = case.get("rewrite_amount") {
             executor
-                .use_middleware(Box::new(Rewrite(amount.clone())))
+                .use_middleware(Box::new(Rewrite::Amount(amount.clone())))
                 .unwrap();
         } else if matches!(case["verdict"].as_str(), Some("deny" | "throw")) {
             executor
-                .use_middleware(Box::new(Rewrite(
+                .use_middleware(Box::new(Rewrite::Amount(
                     contract["business_input"]["amount"].clone(),
                 )))
                 .unwrap();
@@ -363,6 +387,10 @@ fn register_version(registry: &Registry, version: &str) {
         requirements: false,
         starts: Arc::new(AtomicUsize::new(0)),
     };
+    register_probe(registry, version, probe);
+}
+
+fn register_probe(registry: &Registry, version: &str, probe: Probe) {
     let descriptor = serde_json::from_value(json!({
         "module_id": "demo.policy",
         "version": version,
@@ -569,4 +597,223 @@ async fn policy_timeout_is_distinct_from_caller_cancellation() {
         },
     );
     assert_eq!(result.unwrap_err().code, ErrorCode::ExecutionCancelled);
+}
+
+struct LateApproval {
+    expiration: std::time::SystemTime,
+    evaluations: AtomicUsize,
+}
+
+#[async_trait]
+impl PolicyEvaluator for LateApproval {
+    async fn evaluate(
+        &self,
+        _request: &PolicyEvaluationRequest,
+    ) -> Result<PolicyVerdict, ModuleError> {
+        self.evaluations.fetch_add(1, Ordering::Relaxed);
+        let remaining = self
+            .expiration
+            .duration_since(std::time::SystemTime::now())
+            .unwrap_or_default();
+        // Deliberately do not yield before returning the verdict.
+        std::thread::sleep(remaining + std::time::Duration::from_millis(20));
+        Ok(PolicyVerdict {
+            decision: PolicyEffect::RequireApproval,
+            rule_id: None,
+        })
+    }
+}
+
+fn counted_policy_probe() -> (Registry, Arc<AtomicUsize>) {
+    let registry = Registry::new();
+    let starts = Arc::new(AtomicUsize::new(0));
+    register_probe(
+        &registry,
+        "1.0.0",
+        Probe {
+            schema: json!({"type":"object", "properties":{"amount":{"type":"integer"}},"required":["amount"]}),
+            requirements: false,
+            starts: Arc::clone(&starts),
+        },
+    );
+    (registry, starts)
+}
+
+#[tokio::test]
+async fn a_late_nonyielding_verdict_cannot_advance_admission() {
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+    let (registry, starts) = counted_policy_probe();
+    let mut executor = Executor::new(registry, Config::in_memory());
+    let approver = pending_approver(true);
+    executor.set_approval_handler_shared(approver.clone());
+    for entry in ["call", "stream", "preflight"] {
+        let expiration = SystemTime::now() + Duration::from_millis(200);
+        let evaluator = Arc::new(LateApproval {
+            expiration,
+            evaluations: AtomicUsize::new(0),
+        });
+        executor
+            .set_policy_evaluator(Some(evaluator.clone()))
+            .unwrap();
+        let mut context = Context::anonymous();
+        context.global_deadline =
+            Some(expiration.duration_since(UNIX_EPOCH).unwrap().as_secs_f64());
+
+        let input = json!({"amount": 10});
+        let error_code = match entry {
+            "call" => executor
+                .call("demo.policy", input, Some(&context), None)
+                .await
+                .unwrap_err()
+                .code
+                .wire_str(),
+            "stream" => executor
+                .stream("demo.policy", input, Some(&context), None)
+                .next()
+                .await
+                .unwrap()
+                .unwrap_err()
+                .code
+                .wire_str(),
+            _ => {
+                let report = executor
+                    .validate("demo.policy", &input, Some(&context))
+                    .await
+                    .unwrap();
+                assert!(!report.valid && !report.requires_approval);
+                report
+                    .checks
+                    .iter()
+                    .find(|check| check.check == "post_validation_policy")
+                    .and_then(|check| check.error.as_ref())
+                    .unwrap()["code"]
+                    .as_str()
+                    .unwrap()
+                    .to_owned()
+            }
+        };
+        assert_eq!(evaluator.evaluations.load(Ordering::Relaxed), 1, "{entry}");
+        assert_eq!(error_code, "POLICY_EVALUATION_ERROR", "{entry}");
+    }
+    assert!(approver.requested.lock().unwrap().is_empty());
+    assert_eq!(starts.load(Ordering::Relaxed), 0);
+}
+
+#[tokio::test]
+async fn module_recovery_is_gated_by_successful_final_admission() {
+    let (registry, starts) = counted_policy_probe();
+    let mut executor = Executor::new(registry, Config::in_memory());
+    let evaluator = spy_evaluator("allow");
+    executor
+        .set_policy_evaluator(Some(evaluator.clone()))
+        .unwrap();
+    executor
+        .use_middleware(Box::new(Rewrite::Amount(json!("invalid"))))
+        .unwrap();
+
+    let input = json!({"amount": 10});
+    let error = executor
+        .call("demo.policy", input.clone(), None, None)
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, ErrorCode::SchemaValidationError);
+    let error = executor
+        .stream("demo.policy", input.clone(), None, None)
+        .next()
+        .await
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(error.code, ErrorCode::SchemaValidationError);
+    assert!(evaluator.observed.lock().unwrap().is_empty());
+    assert_eq!(starts.load(Ordering::Relaxed), 0);
+
+    // Legacy calls retain recovery from the same pre-dispatch failure.
+    executor.set_policy_evaluator(None).unwrap();
+    assert_eq!(
+        executor
+            .call("demo.policy", input, None, None)
+            .await
+            .unwrap(),
+        json!({"recovered":true})
+    );
+
+    // Once the policy admits an invocation, execution errors remain recoverable.
+    executor.remove("fixture-rewrite");
+    executor
+        .use_middleware(Box::new(Rewrite::Amount(json!(10))))
+        .unwrap();
+    executor.set_policy_evaluator(Some(evaluator)).unwrap();
+    let input = json!({"amount": 10, "fail_execution": true});
+    assert_eq!(
+        executor
+            .call("demo.policy", input.clone(), None, None)
+            .await
+            .unwrap(),
+        json!({"recovered":true})
+    );
+    assert_eq!(
+        executor
+            .stream("demo.policy", input, None, None)
+            .next()
+            .await
+            .unwrap()
+            .unwrap(),
+        json!({"recovered":true})
+    );
+    assert_eq!(starts.load(Ordering::Relaxed), 2);
+}
+
+struct StepRecovery(AtomicUsize);
+
+#[async_trait]
+impl StepMiddleware for StepRecovery {
+    async fn on_step_error(
+        &self,
+        _step_name: &str,
+        _state: &PipelineState<'_>,
+        _error: &ModuleError,
+    ) -> Result<Option<Value>, ModuleError> {
+        self.0.fetch_add(1, Ordering::Relaxed);
+        Ok(Some(json!({"recovered": true})))
+    }
+}
+
+#[tokio::test]
+async fn step_recovery_cannot_advance_a_failed_normalization_to_policy() {
+    let (registry, starts) = counted_policy_probe();
+    let observer = Arc::new(StepRecovery(AtomicUsize::new(0)));
+    let mut strategy = apcore::builtin_steps::build_standard_strategy();
+    strategy.add_step_middleware(observer.clone());
+    let mut executor = Executor::with_strategy(registry, Config::in_memory(), strategy);
+    let evaluator = spy_evaluator("allow");
+    executor
+        .set_policy_evaluator(Some(evaluator.clone()))
+        .unwrap();
+    executor.use_middleware(Box::new(Rewrite::Reject)).unwrap();
+
+    let input = json!({"amount": 10});
+    let error = executor
+        .call("demo.policy", input.clone(), None, None)
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, ErrorCode::GeneralInvalidInput);
+    let error = executor
+        .stream("demo.policy", input.clone(), None, None)
+        .next()
+        .await
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(error.code, ErrorCode::GeneralInvalidInput);
+    assert!(evaluator.observed.lock().unwrap().is_empty());
+    assert_eq!(starts.load(Ordering::Relaxed), 0);
+    assert_eq!(observer.0.load(Ordering::Relaxed), 2);
+
+    // Dry-run preflight still reads the submitted input without normalizing it.
+    let report = executor
+        .validate("demo.policy", &input, None)
+        .await
+        .unwrap();
+    assert!(report.valid);
+    assert_eq!(evaluator.observed.lock().unwrap().len(), 1);
 }

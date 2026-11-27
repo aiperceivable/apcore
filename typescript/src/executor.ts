@@ -14,7 +14,7 @@ import {
 import { type ApprovalHandler, discardApprovalToken, prepareApprovalInputs, stripApprovalToken } from './approval.js';
 import { DEFAULT_EXECUTION_POLICY, type ExecutionPolicy } from './policy.js';
 import {
-  beginPolicyInvocation, endPolicyInvocation, policyIngressInputs, policyInvocationOf, type PolicyEvaluator,
+  assertPolicyBinding, beginPolicyInvocation, endPolicyInvocation, policyIngressInputs, policyInvocationOf, type PolicyEvaluator,
 } from './policy-evaluation.js';
 import {
   BuiltinACLCheck,
@@ -1653,39 +1653,56 @@ export class Executor {
       // on lookup alone runs module code for a caller the ACL just denied and
       // hands back what it said.
       //
-      // Scoped to authorization deliberately: a failed `schema` check does NOT
-      // suppress introspection, because a caller the ACL permits is entitled to
-      // the module's account of what would happen even when its inputs are
-      // malformed.
+      // Without an evaluator, the ACL can permit introspection even for
+      // malformed inputs. The opted-in path requires policy approval of a
+      // successfully validated snapshot before any module callback runs.
       const aclEnforced = strategy.steps.some((step) => step instanceof BuiltinACLCheck && step.acl !== null);
       const aclDenied = (aclEnforced && pipeCtx.aclAllowed !== true)
         || checks.some((c) => c.check === Executor.ACL_CHECK && !c.passed);
-      const discloseModule = !aclDenied && (!protectedCall || policyInvocationOf(pipeCtx)?.approvedForDispatch === true);
+      const invocation = policyInvocationOf(pipeCtx);
+      let discloseModule = !aclDenied && (!protectedCall || invocation?.approvedForDispatch === true);
+      const module = (invocation ? invocation.selected?.module : pipeCtx.module) as Module | null | undefined;
+      const callbackContext = invocation?.context ?? pipeCtx.context;
+      const callbackInputs = (): Record<string, unknown> => invocation?.validated
+        ? structuredClone(invocation.validated.arguments) : effectiveInputs;
+      // Each callback can await or mutate its context. Recheck the binding
+      // before invocation and before using any result from that invocation.
+      const canDisclose = (): boolean => {
+        if (!discloseModule || !invocation) return discloseModule;
+        try {
+          assertPolicyBinding(pipeCtx, invocation);
+          return true;
+        } catch (error) {
+          if (!(error instanceof PolicyEvaluationError)) throw error;
+          checks.push({ check: 'post_validation_policy', passed: false, error: error.toJSON() });
+          discloseModule = false;
+          return false;
+        }
+      };
 
       // Module-level preflight (optional)
-      if (discloseModule && pipeCtx.module != null) {
-        const mod = pipeCtx.module as Record<string, unknown>;
-        const modWithPreflight = mod as { preflight?: Module['preflight'] };
-        if (typeof modWithPreflight.preflight === 'function') {
+      if (canDisclose() && module != null) {
+        const preflight = module.preflight;
+        if (typeof preflight === 'function' && canDisclose()) {
           try {
-            const preflightWarnings = await modWithPreflight.preflight(effectiveInputs, pipeCtx.context);
-            if (Array.isArray(preflightWarnings) && preflightWarnings.length > 0) {
+            const preflightWarnings = await preflight.call(module, callbackInputs(), callbackContext);
+            if (canDisclose()) {
               checks.push({
                 check: Executor.MODULE_PREFLIGHT_CHECK,
                 passed: true,
-                warnings: preflightWarnings,
+                ...(Array.isArray(preflightWarnings) && preflightWarnings.length > 0 && { warnings: preflightWarnings }),
               });
-            } else {
-              checks.push({ check: Executor.MODULE_PREFLIGHT_CHECK, passed: true });
             }
           } catch (exc: unknown) {
-            const excName = exc instanceof Error ? exc.constructor.name : 'Error';
-            const excMsg = exc instanceof Error ? exc.message : String(exc);
-            checks.push({
-              check: Executor.MODULE_PREFLIGHT_CHECK,
-              passed: true,
-              warnings: [`preflight() raised ${excName}: ${excMsg}`],
-            });
+            if (canDisclose()) {
+              const excName = exc instanceof Error ? exc.constructor.name : 'Error';
+              const excMsg = exc instanceof Error ? exc.message : String(exc);
+              checks.push({
+                check: Executor.MODULE_PREFLIGHT_CHECK,
+                passed: true,
+                warnings: [`preflight() raised ${excName}: ${excMsg}`],
+              });
+            }
           }
         }
       }
@@ -1696,29 +1713,30 @@ export class Executor {
       // throws or async rejections) are treated as advisory warnings and do NOT
       // fail validation, mirroring `preflight()` semantics (RFC Open Question 1).
       let predictedChanges: Change[] = [];
-      if (discloseModule && pipeCtx.module != null) {
-        const mod = pipeCtx.module as Record<string, unknown>;
-        const modWithPreview = mod as { preview?: Module['preview'] };
-        if (typeof modWithPreview.preview === 'function') {
+      if (canDisclose() && module != null) {
+        const preview = module.preview;
+        if (typeof preview === 'function' && canDisclose()) {
           try {
-            const raw = modWithPreview.preview(effectiveInputs, pipeCtx.context);
+            const raw = preview.call(module, callbackInputs(), callbackContext);
             // Support both sync and async preview() implementations.
             const result: PreviewResult | null =
               raw != null && typeof (raw as Promise<unknown>).then === 'function'
                 ? await (raw as Promise<PreviewResult | null>)
                 : (raw as PreviewResult | null);
-            if (result != null) {
+            if (canDisclose() && result != null) {
               predictedChanges = Array.isArray(result.changes) ? result.changes : [];
               checks.push({ check: Executor.MODULE_PREVIEW_CHECK, passed: true });
             }
           } catch (exc: unknown) {
-            const excName = exc instanceof Error ? exc.constructor.name : 'Error';
-            const excMsg = exc instanceof Error ? exc.message : String(exc);
-            checks.push({
-              check: Executor.MODULE_PREVIEW_CHECK,
-              passed: true,
-              warnings: [`preview() raised ${excName}: ${excMsg}`],
-            });
+            if (canDisclose()) {
+              const excName = exc instanceof Error ? exc.constructor.name : 'Error';
+              const excMsg = exc instanceof Error ? exc.message : String(exc);
+              checks.push({
+                check: Executor.MODULE_PREVIEW_CHECK,
+                passed: true,
+                warnings: [`preview() raised ${excName}: ${excMsg}`],
+              });
+            }
           }
         }
       }

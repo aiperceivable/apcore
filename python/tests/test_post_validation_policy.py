@@ -8,6 +8,7 @@ from typing import Any
 
 import pytest
 
+import apcore._post_validation_policy as post_validation_policy
 from apcore import (
     ACL,
     ApprovalPendingError,
@@ -17,6 +18,7 @@ from apcore import (
     Context,
     Executor,
     ExtensionManager,
+    Identity,
     ModuleAnnotations,
     ModuleError,
     PolicyEvaluationRequest,
@@ -74,6 +76,51 @@ async def test_denied_acl_prevents_provider_and_preview_disclosure() -> None:
             await executor.call_async("demo.observe", {"amount": 1})
         assert denied.value.code == "ACL_DENIED"
     assert module.starts == module.previews == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("changed", ["arguments", "identity"])
+async def test_module_preflight_and_preview_use_the_policy_snapshot(changed: str) -> None:
+    evaluating, resume = asyncio.Event(), asyncio.Event()
+    observed: list[tuple[int, str | None]] = []
+
+    class Inspect(Operation):
+        def preflight(self, inputs: dict[str, Any], context: Context) -> list[str]:
+            observed.append((inputs["order"]["amount"], context.caller_id))
+            inputs["order"]["amount"] = 30
+            context.caller_id = "demo.other"
+            return []
+
+        def preview(self, inputs: dict[str, Any], context: Context) -> None:
+            observed.append((inputs["order"]["amount"], context.caller_id))
+
+    class Check:
+        async def evaluate(self, request: PolicyEvaluationRequest) -> PolicyVerdict:
+            evaluating.set()
+            await resume.wait()
+            return PolicyVerdict("allow" if request.arguments["order"]["amount"] == 1 else "deny")
+
+    registry = Registry()
+    await registry.register_async("demo.observe", Inspect())
+    arguments = {"order": {"amount": 1}}
+    identity = Identity(id="operator", type="user", attrs={"team": "review"})
+    with Executor(registry, policy_evaluator=Check()) as executor:
+        pending = asyncio.create_task(executor.validate_async("demo.observe", arguments, Context.create(identity)))
+        await asyncio.wait_for(evaluating.wait(), 1)
+        if changed == "arguments":
+            arguments["order"]["amount"] = 20
+        else:
+            identity.attrs["team"] = "another"
+        resume.set()
+        report = await pending
+
+    if changed == "arguments":
+        assert report.valid
+        assert observed == [(1, None), (1, None)]
+    else:
+        assert not report.valid
+        assert any(error["code"] == "POLICY_EVALUATION_ERROR" for error in report.errors)
+        assert observed == []
 
 
 @pytest.mark.asyncio
@@ -230,4 +277,28 @@ async def test_evaluator_timeout_and_cancellation_remain_distinct(entry: str, en
         assert rejected.value.code == expected
         if entry == "stream":
             assert (await stream.completion()).error_code == expected
+    assert module.starts == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("entry", ["call", "stream"])
+async def test_late_non_yielding_policy_cannot_authorize_dispatch(entry: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(post_validation_policy, "_EVALUATOR_TIMEOUT_SECONDS", 0.02)
+
+    class LateAllow:
+        async def evaluate(self, request: PolicyEvaluationRequest) -> PolicyVerdict:
+            time.sleep(0.05)
+            return PolicyVerdict("allow")
+
+    registry, module = await _registered()
+    with Executor(registry, policy_evaluator=LateAllow()) as executor:
+        with pytest.raises(ModuleError) as rejected:
+            if entry == "call":
+                await executor.call_async("demo.observe", {"amount": 1})
+            else:
+                stream = executor.stream_with_completion("demo.observe", {"amount": 1})
+                await anext(stream.chunks)
+        assert rejected.value.code == "POLICY_EVALUATION_ERROR"
+        if entry == "stream":
+            assert (await stream.completion()).error_code == "POLICY_EVALUATION_ERROR"
     assert module.starts == 0

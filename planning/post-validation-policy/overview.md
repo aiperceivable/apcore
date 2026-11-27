@@ -33,7 +33,7 @@ Python with pytest, TypeScript with Vitest and pnpm, Rust with Cargo and Tokio, 
 
 ## Progress
 
-Core implementation commit `83f627cb300a42b5c46550a04b48d18745147f21` and Surfaces commit `86a6f22bfa82a54a3f105ec434ab880687155b4f` passed local verification. The Core artifact builds and repository-level integration are separate checks. The working branches remain local.
+Core implementation commit `83f627cb300a42b5c46550a04b48d18745147f21` and Surfaces commit `86a6f22bfa82a54a3f105ec434ab880687155b4f` passed the local verification recorded below. The Core artifact builds and repository-level integration are separate checks.
 
 ## Verification results
 

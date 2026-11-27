@@ -970,11 +970,11 @@ impl Step for BuiltinPostValidationPolicy {
             )
             .with_ai_guidance("Change the arguments to satisfy the configured policy."));
         }
-        ctx.policy_effect = Some(verdict.decision);
         if !ctx.dry_run {
-            Self::authorize(ctx, &request, digest).await?;
+            Self::authorize(ctx, &request, digest, verdict.decision).await?;
             ctx.policy_inputs = Some(request.arguments);
         }
+        ctx.policy_effect = Some(verdict.decision);
         Ok(StepResult::continue_step())
     }
 }
@@ -984,6 +984,7 @@ impl BuiltinPostValidationPolicy {
         ctx: &mut PipelineContext,
         request: &PolicyEvaluationRequest,
         digest: String,
+        effect: PolicyEffect,
     ) -> Result<(), ModuleError> {
         if let Some(token) = &ctx.context.cancel_token {
             token.check_for(&ctx.module_id)?;
@@ -993,7 +994,7 @@ impl BuiltinPostValidationPolicy {
             .take()
             .ok_or_else(|| missing_pipeline_input("policy_approval_annotations"))?;
         if annotations.requires_approval
-            || ctx.policy_effect == Some(PolicyEffect::RequireApproval)
+            || effect == PolicyEffect::RequireApproval
             || ctx.has_approval_credential()
         {
             let Some(handler) = ctx.approval_handler.clone() else {

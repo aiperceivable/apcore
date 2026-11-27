@@ -163,17 +163,17 @@ function copyObject(value: object, parts: string[], active: Set<object>): Record
   return Object.fromEntries(keys.map((key) => [key, copies.get(key)]));
 }
 
-/** @internal Copy the inputs once, before validation; hash only if approval is needed. */
-export function copyPolicyInputs(ctx: PipelineContext): ValidationSnapshot {
+/** @internal Detach the inputs and capture their canonical encoding. */
+export function copyPolicyInputs(moduleId: string, inputs: Record<string, unknown>): ValidationSnapshot {
   try {
     const parts: string[] = [];
-    const args = copyArgument(ctx.inputs, parts, new Set());
+    const args = copyArgument(inputs, parts, new Set());
     if (args === null || typeof args !== 'object' || Array.isArray(args) || Object.hasOwn(args, '_approval_token')) {
       throw new Error('Policy requires an object of business arguments.');
     }
     return { arguments: args as Record<string, unknown>, canonical: parts, sensitiveFields: [] };
   } catch {
-    throw new PolicyEvaluationError(ctx.moduleId);
+    throw new PolicyEvaluationError(moduleId);
   }
 }
 
