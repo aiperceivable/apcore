@@ -38,10 +38,11 @@ The approved alpha.1 build hashes remain the comparison baseline. Validate alpha
 The local review identified an Anthropic recursive-schema regression, a missing
 TypeScript public export, and an inconsistent custom-strategy diagnostic. The
 revised converters, packaged imports and governance tests cover these cases.
-Candidate branches are local. GitHub review and hosted CI are pending. Tags
-and package publication remain paused.
+Follow hosted CI and review in [Core PR #236](https://github.com/aiperceivable/apcore/pull/236)
+and [Surfaces PR #125](https://github.com/aiperceivable/apcore-surfaces/pull/125).
+Tags and package publication remain paused.
 
-### Core candidate artifacts
+### Initial local Core candidate artifacts
 
 | Distribution | SDK version | SHA-256 |
 | --- | --- | --- |

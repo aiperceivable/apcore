@@ -81,37 +81,53 @@ At the module-invocation boundary validation is strict: no type coercion is appl
 
 ### SchemaExporter and ExportProfile
 
-`SchemaExporter.export(schema_def, profile, ...)` converts a schema definition into a target format selected by `ExportProfile` (§4.17):
-
-- **`mcp`** — MCP tool definition; keeps `x-*` fields and maps annotations to hints.
-- **`openai`** — OpenAI function-calling definition; strips `x-*`, applies strict mode.
-- **`anthropic`** — Anthropic tool-use definition.
-- **`generic`** — provider-neutral representation.
+Core exports a provider-neutral representation of a module's schema and keeps
+the JSON Schema extension fields. TypeScript also accepts `ExportProfile.GENERIC`
+in `SchemaExporter.export()`. The MCP, OpenAI, and Anthropic profiles belong to
+the adapter layer ([§4.17](../spec/protocol-spec.md#417-export-profiles)).
 
 === "Python"
     ```python
-    from apcore.schema import ExportProfile
+    from apcore.schema import SchemaDefinition, SchemaExporter
 
-    profile = ExportProfile.MCP
-    # ExportProfile.OPENAI, ExportProfile.ANTHROPIC, ExportProfile.GENERIC
-    print(profile.value)  # "mcp"
+    definition = SchemaDefinition(
+        module_id="common.echo",
+        description="Echo a message.",
+        input_schema={"type": "object"},
+        output_schema={"type": "object"},
+    )
+    print(SchemaExporter().export_generic(definition)["module_id"])
     ```
 === "TypeScript"
     ```typescript
-    import { ExportProfile } from "apcore-js";
+    import { SchemaExporter } from "apcore-js";
 
-    const profile: ExportProfile = ExportProfile.MCP;
-    // ExportProfile.OPENAI, ExportProfile.ANTHROPIC, ExportProfile.GENERIC
-    console.log(profile); // "mcp"
+    const definition = {
+      moduleId: "common.echo",
+      description: "Echo a message.",
+      inputSchema: { type: "object" },
+      outputSchema: { type: "object" },
+      definitions: {},
+      version: "1.0.0",
+    };
+    console.log(new SchemaExporter().exportGeneric(definition).module_id);
     ```
 === "Rust"
     ```rust
-    use apcore::schema::ExportProfile;
+    use apcore::schema::{export_generic, SchemaDefinition};
+    use serde_json::json;
 
     fn main() {
-        let profile = ExportProfile::Mcp;
-        // ExportProfile::OpenAi, ExportProfile::Anthropic, ExportProfile::Generic
-        println!("{profile:?}");
+        let definition = SchemaDefinition {
+            module_id: "common.echo".into(),
+            description: "Echo a message.".into(),
+            input_schema: json!({"type": "object"}),
+            output_schema: json!({"type": "object"}),
+            error_schema: None,
+            definitions: None,
+            version: None,
+        };
+        println!("{}", export_generic(&definition)["module_id"]);
     }
     ```
 

@@ -10,6 +10,9 @@ import asyncio
 import copy
 import json
 import os
+import subprocess
+import sys
+import textwrap
 import time
 from dataclasses import asdict
 from datetime import datetime
@@ -528,6 +531,41 @@ async def test_d133_sync_call_inside_async_loop_returns_before_cooperative_drain
     assert captured["token"].is_cancelled
     assert not completed.is_set()
     assert await asyncio.to_thread(completed.wait, 1)
+
+
+def test_d133_sync_bridge_cleanup_does_not_delay_process_exit() -> None:
+    program = textwrap.dedent("""\
+        import asyncio
+        from apcore import APCore
+        from apcore.errors import ModuleTimeoutError
+
+        class SlowModule:
+            input_schema = {"type": "object"}
+            output_schema = {"type": "object"}
+            description = "A module with slow cancellation cleanup"
+
+            async def execute(self, inputs, context):
+                try:
+                    await asyncio.sleep(30)
+                finally:
+                    await asyncio.sleep(30)
+
+        async def main():
+            client = APCore()
+            await client.register_async("sample.slow", SlowModule())
+            try:
+                client.executor.call("sample.slow", timeout_ms=300)
+            except ModuleTimeoutError:
+                print("caller saw timeout", flush=True)
+            else:
+                raise AssertionError("expected the sync bridge deadline to expire")
+            client.close()
+            print("client closed", flush=True)
+
+        asyncio.run(main())
+        """)
+    result = subprocess.run([sys.executable, "-c", program], capture_output=True, text=True, timeout=5, check=True)
+    assert result.stdout.splitlines() == ["caller saw timeout", "client closed"]
 
 
 def test_d136_native_python_inputs_remain_supported() -> None:

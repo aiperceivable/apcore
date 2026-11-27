@@ -780,7 +780,7 @@ Clients sharing a Registry get the same shutdown operation ID and the same modul
 
 The report status is `pending`, `completed`, or `failed`. A batch has one row per input. If its dispatch deadline leaves entries unstarted, its final status is `failed` with `stop_reason: operation_deadline`. A forced removal records any leases still active at unload and whether they are still settling. The coordinator waits for an active drain hook before unloading.
 
-Use `snapshot()` inside a lifecycle callback to inspect its operation, and await the handle from the host outside that callback. In the TypeScript browser entry, the reentry guard covers the synchronous part of a callback. After the callback yields, awaiting its own operation can leave both the callback and the operation waiting indefinitely.
+Use `snapshot()` inside a lifecycle callback to inspect its operation, and await the handle from the host outside that callback. In the default TypeScript entry, the reentry guard covers the synchronous part of a callback. After the callback yields, awaiting its own operation can leave both the callback and the operation waiting indefinitely. In Node, the full assembly or `createNodeLifecyclePlugin()` extends the guard across async callbacks.
 
 === "Python"
 

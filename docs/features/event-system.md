@@ -361,8 +361,7 @@ to add delivery to an A2A receiver.
     ```rust
     use std::path::Path;
 
-    use apcore::events::{StdoutSubscriber, SubscriberRegistry};
-    use apcore::{APCore, APCoreOptions, Config};
+    use apcore::{APCore, APCoreOptions, Config, StdoutSubscriber, SubscriberRegistry};
 
     fn main() -> Result<(), Box<dyn std::error::Error>> {
         let mut subscribers = SubscriberRegistry::new();

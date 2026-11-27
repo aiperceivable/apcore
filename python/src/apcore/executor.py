@@ -646,7 +646,7 @@ class Executor:
 
         Sync wrapper around :meth:`call_async`. Each thread caches its own
         loop for synchronous calls. A call made inside a running loop uses a
-        bounded worker pool instead.
+        background worker, with a bound on concurrent workers.
 
         Args:
             module_id: The module to execute.

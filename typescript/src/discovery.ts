@@ -17,6 +17,10 @@ export function createDiscoveryRegistry(options?: DiscoveryRegistryOptions): Reg
 /** Install filesystem discovery on the registry this client constructs. */
 export function createFilesystemDiscoveryPlugin(options?: Omit<DiscoveryRegistryOptions, 'config'>): APCorePlugin {
   return {
-    createRegistry: (config, lifecycleCallbacks) => createDiscoveryRegistry({ ...options, config, lifecycleCallbacks }),
+    createRegistry: (config, lifecycleCallbacks) => createDiscoveryRegistry({
+      ...options,
+      config,
+      lifecycleCallbacks: lifecycleCallbacks ?? options?.lifecycleCallbacks,
+    }),
   };
 }

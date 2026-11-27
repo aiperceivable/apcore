@@ -54,6 +54,20 @@ describe('instance-scoped assembly extensions', () => {
     }
   });
 
+  it('keeps the lifecycle callbacks configured on the discovery registry', () => {
+    const callbacks = createDiscoveryRegistry().lifecycleCallbacks;
+    const discovery = createFilesystemDiscoveryPlugin({ lifecycleCallbacks: callbacks });
+    const client = new APCore({ plugins: [discovery] });
+
+    expect(client.registry.lifecycleCallbacks).toBe(callbacks);
+  });
+
+  it('requires an ACL discovery plugin only for an explicitly configured ACL path', () => {
+    const plugins = [createFilesystemDiscoveryPlugin()];
+    expect(new APCore({ config: Config.fromDefaults(), plugins }).executor.governanceState().aclConfigured).toBe(false);
+    expect(() => new APCore({ config: new Config({ acl: { root: 'acl' } }), plugins })).toThrow(/ACL discovery plugin/);
+  });
+
   it('loads ACL files explicitly and lets the client assemble only its own executor', async () => {
     const root = await mkdtemp(join(tmpdir(), 'apcore-acl-plugin-'));
     try {

@@ -8,7 +8,7 @@ import threading
 import time
 import weakref
 from collections.abc import Coroutine
-from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import Future
 from typing import Any
 
 from apcore.errors import ErrorCodes, ModuleError, ModuleTimeoutError
@@ -31,7 +31,6 @@ class _SyncBridge:
         self._lock = threading.Lock()
         self._local = threading.local()
         self._loops: weakref.WeakSet[_ThreadLoop] = weakref.WeakSet()
-        self._pool: ThreadPoolExecutor | None = None
         self._slots = threading.BoundedSemaphore(_NESTED_WORKERS)
 
     def close(self) -> None:
@@ -42,9 +41,6 @@ class _SyncBridge:
                 owner.retired = True
                 if not owner.active:
                     owner.close()
-            pool, self._pool = self._pool, None
-        if pool is not None:
-            pool.shutdown(wait=False)
 
     def run(self, coro: Coroutine[Any, Any, Any], module_id: str, wait: float | None) -> Any:
         try:
@@ -77,7 +73,7 @@ class _SyncBridge:
     def _run_on_worker(self, coro: Coroutine[Any, Any, Any], module_id: str, wait: float | None) -> Any:
         deadline = None if wait is None else time.monotonic() + wait
         reentrant = getattr(_worker_thread, "active", False)
-        # A worker waiting for another slot could deadlock the pool. It can
+        # A worker waiting for another slot could deadlock the bridge. It can
         # make a nested sync call while there is spare capacity.
         admitted = self._slots.acquire(blocking=False) if reentrant else self._slots.acquire(timeout=wait)
         if not admitted:
@@ -131,10 +127,8 @@ class _SyncBridge:
                 self._slots.release()
 
         try:
-            with self._lock:
-                if self._pool is None:
-                    self._pool = ThreadPoolExecutor(max_workers=_NESTED_WORKERS, thread_name_prefix="apcore-sync")
-                self._pool.submit(run)
+            # A timed-out caller can exit even when module cleanup is slow.
+            threading.Thread(target=run, name="apcore-sync", daemon=True).start()
         except BaseException:
             self._slots.release()
             coro.close()

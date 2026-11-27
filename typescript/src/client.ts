@@ -189,7 +189,8 @@ export class APCore {
 
     // Respect ACLs already configured on a supplied Executor.
     if (this.config && prebuiltExecutor === undefined) {
-      if (discoverAcl === undefined && this.config.get('acl.root') != null) {
+      const aclRoot = this.config.getDeclared('acl.root');
+      if (discoverAcl === undefined && aclRoot != null && aclRoot !== '') {
         throw new InvalidInputError('Configured ACL paths require an ACL discovery plugin or a configured executor');
       }
       const discovered = discoverAcl?.(this.config);
