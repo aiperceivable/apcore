@@ -52,6 +52,10 @@ import { type EventEmitter, createEvent } from './events/emitter.js';
 import { Context } from './context.js';
 import { hasScopeCeiling } from './identity.js';
 import { assertScopeGate, assertScopedInvocation, beginScopedInvocation, isScopedAdmissionError, isStockScopeAcl } from './scoped-invocation.js';
+import {
+  assertDeclarationDispatch, assertDeclarationInvocation, beginDeclarationInvocation, isDeclarationAdmissionError,
+  type BoundDeclaration,
+} from './declaration-invocation.js';
 import { governanceUnion } from './schema/annotations.js';
 import { sourceSchemaFor } from './schema/loader-pure.js';
 import { RedactionConfig } from './observability/context-logger.js';
@@ -60,6 +64,7 @@ import {
   ErrorCodes,
   InvalidInputError,
   ModuleError,
+  ModuleNotFoundError,
   ModuleTimeoutError,
   PolicyEvaluationError,
 } from './errors.js';
@@ -80,6 +85,7 @@ import type {
 } from './module.js';
 import { createPreflightResult, isModuleIdempotent } from './module.js';
 import type {
+  ExecutionStrategy,
   GovernanceState,
   PipelineContext,
   PipelineTrace,
@@ -87,7 +93,6 @@ import type {
   StrategyInfo,
 } from './pipeline.js';
 import {
-  ExecutionStrategy,
   PipelineAbortError,
   PipelineEngine,
   PipelineStepError,
@@ -1256,12 +1261,25 @@ export class Executor {
     return output;
   }
 
+  /** @internal Execute a typed handle over the ordinary pipeline using its original registration. */
+  async callDeclaration(
+    moduleId: string,
+    declaration: BoundDeclaration,
+    inputs: Record<string, unknown>,
+    context?: Context | null,
+    versionHint?: string | null,
+  ): Promise<Record<string, unknown>> {
+    const [output] = await this._callWithTrace(moduleId, inputs, context, this._strategy, versionHint, declaration);
+    return output;
+  }
+
   private async _callWithTrace(
     moduleId: string,
     inputs: Record<string, unknown> | null | undefined,
     context: Context | null | undefined,
     strategy: ExecutionStrategy,
     versionHint: string | null | undefined,
+    declaration?: BoundDeclaration,
   ): Promise<[Record<string, unknown>, PipelineTrace]> {
     this._validateModuleId(moduleId);
     // Per-call strategies use the providers owned by this executor (D-129).
@@ -1296,6 +1314,7 @@ export class Executor {
     try {
       while (true) {
         try {
+          beginDeclarationInvocation(pipeCtx, declaration);
           beginScopedInvocation(pipeCtx);
           if (protectedCall) {
             beginPolicyInvocation(pipeCtx);
@@ -1304,6 +1323,7 @@ export class Executor {
           prepareApprovalInputs(pipeCtx);
           const [output, trace] = await this._pipelineEngine.run(strategy, pipeCtx);
           assertScopedInvocation(pipeCtx, true);
+          assertDeclarationDispatch(pipeCtx);
           if (protectedCall && !policyInvocationOf(pipeCtx)?.dispatched) throw new PolicyEvaluationError(moduleId);
           return [(output ?? {}) as Record<string, unknown>, trace];
         } catch (exc) {
@@ -1323,7 +1343,9 @@ export class Executor {
             unwrapped instanceof MiddlewareChainError ? unwrapped.original : (unwrapped as Error);
           if (underlying instanceof ExecutionCancelledError) throw underlying;
           const wrapped = propagateError(underlying, moduleId, ctxObj);
-          if (isScopedAdmissionError(pipeCtx, underlying)) throw wrapped;
+          if (isScopedAdmissionError(pipeCtx, underlying) || isDeclarationAdmissionError(pipeCtx, underlying)) {
+            throw wrapped;
+          }
           if (protectedCall && !policyInvocationOf(pipeCtx)?.dispatched) throw wrapped;
           const executedMw = pipeCtx.executedMiddlewares;
           if (executedMw && executedMw.length > 0) {
@@ -1715,6 +1737,25 @@ export class Executor {
     inputs?: Record<string, unknown> | null,
     context?: Context | null,
   ): Promise<PreflightResult> {
+    return this._validate(moduleId, inputs, context);
+  }
+
+  /** @internal Preflight a typed handle against its original registration. */
+  validateDeclaration(
+    moduleId: string,
+    declaration: BoundDeclaration,
+    inputs: Record<string, unknown>,
+    context?: Context | null,
+  ): Promise<PreflightResult> {
+    return this._validate(moduleId, inputs, context, declaration);
+  }
+
+  private async _validate(
+    moduleId: string,
+    inputs: Record<string, unknown> | null | undefined,
+    context: Context | null | undefined,
+    declaration?: BoundDeclaration,
+  ): Promise<PreflightResult> {
     const checks: PreflightCheckResult[] = [];
 
     // Check 0: module_id format (before pipeline)
@@ -1777,6 +1818,7 @@ export class Executor {
       dryRun: true,
     };
     if (protectedCall) beginPolicyInvocation(pipeCtx);
+    beginDeclarationInvocation(pipeCtx, declaration);
     beginScopedInvocation(pipeCtx);
 
     try {
@@ -1828,6 +1870,18 @@ export class Executor {
       // Convert pipeline trace to PreflightResult checks
       if (trace !== null) {
         checks.push(...this._traceToChecks(trace));
+      }
+
+      // An async validator can finish after the selected generation has been replaced.
+      if (declaration && (checks.some(check => check.check === 'module_lookup' && check.passed) ||
+        checks.every(check => check.passed))) {
+        try {
+          assertDeclarationInvocation(pipeCtx);
+        } catch (error) {
+          if (!(error instanceof ModuleNotFoundError)) throw error;
+          checks.push({ check: 'module_lookup', passed: false, error: error.toJSON() });
+          return createPreflightResult(checks);
+        }
       }
 
       // Detect requires_approval

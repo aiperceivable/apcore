@@ -8,6 +8,7 @@ import {
   type BoundModule,
   type StandardSchemaV1,
 } from '../src/index.js';
+import { Type } from '@sinclair/typebox';
 
 const id = 'orders.quote';
 const draft = 'https://json-schema.org/draft/2020-12/schema';
@@ -29,6 +30,12 @@ interface RawInput { units: string }
 interface ParsedInput { units: number }
 interface RawOutput { total: string }
 interface ParsedOutput { total: number }
+
+function deferred() {
+  let release!: () => void;
+  const promise = new Promise<void>(resolve => { release = resolve; });
+  return { promise, release };
+}
 
 function schemas() {
   const nativeInput = vi.fn(() => Object.defineProperty({ ...wireInput }, '~standard', {
@@ -105,6 +112,96 @@ describe('APCore.define', () => {
     expect(client.registry.get(id)).not.toBeNull();
     expect(nativeInput).not.toHaveBeenCalled();
     expect(nativeOutput).not.toHaveBeenCalled();
+  });
+
+  it('rejects a stale handle while leaving ordinary calls and preflight on the replacement', async () => {
+    const client = new APCore();
+    const { input, output } = schemas();
+    const original = await client.define({ id, description: 'Quote an order', input, output,
+      execute: ({ units }) => ({ total: String(units) }) });
+    expect(client.registry.unregister(id)).toBe(true);
+    const replacement = vi.fn(() => ({ total: 'different result type' }));
+    const preflight = vi.fn(() => []);
+    await client.register(id, {
+      description: 'Replacement quote', inputSchema: wireInput,
+      outputSchema: Type.Object({ total: Type.String() }), execute: replacement, preflight,
+    });
+
+    await expect(original.invoke({ units: '2' })).rejects.toMatchObject({ code: 'MODULE_NOT_FOUND' });
+    expect(await original.validate({ units: '2' })).toMatchObject({
+      valid: false, errors: [expect.objectContaining({ code: 'MODULE_NOT_FOUND' })],
+    });
+    expect(replacement).not.toHaveBeenCalled();
+    expect(preflight).not.toHaveBeenCalled();
+    await expect(client.call(id, { units: '2' })).resolves.toEqual({ total: 'different result type' });
+    expect((await client.validate(id, { units: '2' })).valid).toBe(true);
+    expect(preflight).toHaveBeenCalledOnce();
+  });
+
+  it.each(['module_lookup', 'execute'])('rejects replacement while the old invocation waits at %s', async step => {
+    const client = new APCore();
+    const { input, output } = schemas();
+    const execute = vi.fn(({ units }: ParsedInput) => ({ total: String(units) }));
+    const original = await client.define({ id, description: 'Quote an order', input, output, execute });
+    const replacement = vi.fn(() => ({ total: 'different result type' }));
+    const hookEntered = deferred();
+    const hookReleased = deferred();
+    const recover = vi.fn(() => ({ total: 'middleware recovery' }));
+    client.executor.addStepMiddleware({
+      async beforeStep(name) {
+        if (name !== step) return;
+        hookEntered.release();
+        await hookReleased.promise;
+      },
+      onStepError: recover,
+    });
+
+    const obsolete = original.invoke({ units: '2' });
+    try {
+      await hookEntered.promise;
+      expect(client.registry.unregister(id)).toBe(true);
+      await client.register(id, {
+        description: 'Replacement quote', inputSchema: wireInput,
+        outputSchema: Type.Object({ total: Type.String() }), execute: replacement,
+      });
+    } finally {
+      hookReleased.release();
+    }
+    await expect(obsolete).rejects.toMatchObject({ code: 'MODULE_NOT_FOUND' });
+    expect(recover).toHaveBeenCalledOnce();
+    expect(execute).not.toHaveBeenCalled();
+    expect(replacement).not.toHaveBeenCalled();
+    await expect(client.call(id, { units: '2' })).resolves.toEqual({ total: 'different result type' });
+  });
+
+  it('keeps a completed validation from certifying an unregistered generation', async () => {
+    const client = new APCore();
+    const { input, output } = schemas();
+    const schema = input['~standard'];
+    const validationStarted = deferred();
+    const validationReleased = deferred();
+    const slowInput = { '~standard': { ...schema, async validate(value: unknown) {
+      validationStarted.release();
+      await validationReleased.promise;
+      return schema.validate(value);
+    } } };
+    const execute = vi.fn(({ units }: ParsedInput) => ({ total: String(units) }));
+    const original = await client.define({ id, description: 'Quote an order', input: slowInput, output, execute });
+    const originalRegistration = client.registry.get(id);
+
+    const preflight = original.validate({ units: '2' });
+    try {
+      await validationStarted.promise;
+      expect(client.registry.unregister(id)).toBe(true);
+      await client.register(id, originalRegistration);
+    } finally {
+      validationReleased.release();
+    }
+
+    await expect(preflight).resolves.toMatchObject({ valid: false, errors: [expect.objectContaining({ code: 'MODULE_NOT_FOUND' })] });
+    await expect(original.invoke({ units: '2' })).rejects.toMatchObject({ code: 'MODULE_NOT_FOUND' });
+    expect(execute).not.toHaveBeenCalled();
+    await expect(client.call(id, { units: '2' })).resolves.toEqual({ total: 2 });
   });
 
   it('rejects declarations without compatible validation and export contracts', async () => {

@@ -18,6 +18,7 @@ import type { Config } from './config.js';
 import { getDefault } from './config-defaults.js';
 import { CancelToken, awaitExecution } from './cancel.js';
 import { Context } from './context.js';
+import { assertDeclarationInvocation, recordDeclarationDispatch } from './declaration-invocation.js';
 import { authorityKeyOf, hasScopeCeiling } from './identity.js';
 import { assertScopedInvocation, isStockScopeAcl, recordScopedGrant, recordScopedLookup } from './scoped-invocation.js';
 import {
@@ -260,6 +261,7 @@ export class BuiltinModuleLookup implements Step {
     if (mod === null || (!(invocation?.preflight ?? ctx.dryRun) && this._registry.isDraining(ctx.moduleId))) {
       throw new ModuleNotFoundError(ctx.moduleId);
     }
+    assertDeclarationInvocation(ctx, mod);
 
     // Inline toggle check — matches apcore-python builtin_steps.py:231 and
     // apcore-rust builtin_steps.rs:219 (sync finding A-D-011).
@@ -830,6 +832,7 @@ export class BuiltinInputValidation implements Step {
   readonly provides = ['validated_inputs'] as const;
 
   async execute(ctx: PipelineContext): Promise<StepResult> {
+    assertDeclarationInvocation(ctx);
     const invocation = policyInvocationOf(ctx);
     if (invocation) assertPolicyBinding(ctx, invocation);
     let snapshot = invocation ? copyPolicyInputs(ctx.moduleId, ctx.inputs) : null;
@@ -968,6 +971,7 @@ export class BuiltinExecute implements Step {
 
   async execute(ctx: PipelineContext): Promise<StepResult> {
     assertScopedInvocation(ctx, true);
+    assertDeclarationInvocation(ctx);
     const invocation = policyInvocationOf(ctx);
     const declaration = declarationOf(ctx.module);
     let inputs = declaration ? takeDeclarationInputs(ctx) : ctx.inputs;
@@ -1046,6 +1050,7 @@ export class BuiltinExecute implements Step {
     const release = moduleExecutionLeases.get(ctx)?.();
     let executionPromise: Promise<Record<string, unknown>>;
     try {
+      recordDeclarationDispatch(ctx);
       if (invocation) invocation.dispatched = true;
       executionPromise = Promise.resolve(
         (

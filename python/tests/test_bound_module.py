@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from inspect import iscoroutinefunction, signature
-from typing import Any, Literal, assert_type
+from typing import Annotated, Any, Literal, assert_type
 from uuid import UUID
 
 import pytest
@@ -30,6 +30,7 @@ from apcore.errors import (
     ApprovalDeniedError,
     ApprovalPendingError,
     PolicyDeniedError,
+    PolicyEvaluationError,
     SchemaValidationError,
 )
 from apcore.module import Change
@@ -43,6 +44,10 @@ class Order(BaseModel):
 class Receipt(BaseModel):
     order: Order
     quantity: int
+
+
+class NativePayload(BaseModel):
+    value: Annotated[str | UUID, Field(union_mode="left_to_right")]
 
 
 def test_bound_module_preserves_native_results_and_callable_metadata() -> None:
@@ -73,6 +78,48 @@ def test_bound_module_preserves_native_results_and_callable_metadata() -> None:
         bound.invoke(order=order)  # type: ignore[call-arg]
     with pytest.raises(SchemaValidationError):
         bound.invoke(order, quantity="2")  # type: ignore[arg-type]
+
+
+def test_bound_module_keeps_the_native_union_branch() -> None:
+    client = APCore()
+
+    @client.module("payload.classify")
+    def classify(payload: NativePayload) -> str:
+        return type(payload.value).__name__
+
+    value = UUID("23416db0-3d95-44b0-8072-578bed43391a")
+    payload = NativePayload(value=value)
+    assert classify.raw(payload) == "UUID"
+    assert client.call("payload.classify", {"payload": payload}) == {"result": "UUID"}
+    assert classify.invoke(payload) == "UUID"
+    assert classify.invoke(NativePayload(value=str(value))) == "str"
+
+
+def test_final_policy_rejects_a_native_union_branch_with_a_colliding_json_projection() -> None:
+    calls: list[dict[str, Any]] = []
+
+    class Evaluator:
+        async def evaluate(self, request: PolicyEvaluationRequest) -> PolicyVerdict:
+            calls.append(request.arguments)
+            return PolicyVerdict("allow")
+
+    client = APCore(executor=Executor(Registry(), policy_evaluator=Evaluator()))
+
+    @client.module("payload.classify")
+    def classify(payload: NativePayload) -> str:
+        return type(payload.value).__name__
+
+    value = UUID("23416db0-3d95-44b0-8072-578bed43391a")
+    assert classify.invoke(NativePayload(value=str(value))) == "str"
+    calls.clear()
+    payload = NativePayload(value=value)
+    preflight = classify.validate(payload)
+    assert [error["code"] for error in preflight.errors] == ["POLICY_EVALUATION_ERROR"]
+    with pytest.raises(PolicyEvaluationError):
+        client.call("payload.classify", {"payload": payload})
+    with pytest.raises(PolicyEvaluationError):
+        classify.invoke(payload)
+    assert calls == []
 
 
 def test_bound_module_routes_acl_approval_and_preview_through_executor() -> None:

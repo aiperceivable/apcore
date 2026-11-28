@@ -4,6 +4,7 @@
 
 import type { GovernanceProjection } from './acl-handlers.js';
 import type { Context } from './context.js';
+import { isDeclarationAdmissionError } from './declaration-invocation.js';
 import { ModuleError, ModuleTimeoutError } from './errors.js';
 import type { ErrorOptions } from './errors.js';
 import { MiddlewareChainError } from './middleware/manager.js';
@@ -1259,6 +1260,7 @@ export class PipelineEngine {
         // 3 b onStepError hooks: reverse registration order (onion model),
         //     first non-null recovery wins and short-circuits the rest (§2.2).
         const isGovernanceGate = governanceGateOf(step) !== null || isScopedAdmissionError(ctx, cause) ||
+          isDeclarationAdmissionError(ctx, cause) ||
           (policyInvocation !== undefined && !policyInvocation.dispatched);
         const observedCancellation = observeStep !== undefined &&
           cause instanceof ModuleError && cause.code === 'EXECUTION_CANCELLED';

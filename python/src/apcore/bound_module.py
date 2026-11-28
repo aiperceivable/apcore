@@ -8,12 +8,11 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, ParamSpec, Protocol, Self, TypeVar, get_origin, get_type_hints, overload
 
 from pydantic import BaseModel, TypeAdapter
-from pydantic_core import PydanticSerializationError, to_json, to_jsonable_python
+from pydantic_core import PydanticSerializationError, to_json
 
 from apcore.context import Context, _APPROVAL_TOKEN_KEY
 from apcore.decorator import FunctionModule, _context_param_name, _forward_function
 from apcore.module import PreflightResult, PreviewResult
-from apcore.utils.module_output import normalize_module_output
 
 if TYPE_CHECKING:
     from apcore.client import APCore
@@ -123,12 +122,12 @@ class _Invocation:
                 inputs[name] = value
         if inputs.keys() & extras.keys():
             raise TypeError("A positional argument and a keyword extra cannot use the same module input name")
-        wire_inputs: dict[str, Any] = to_jsonable_python(normalize_module_output({**inputs, **extras}))
+        inputs.update(extras)
         if self.approval_token is not None:
-            if _APPROVAL_TOKEN_KEY in wire_inputs:
+            if _APPROVAL_TOKEN_KEY in inputs:
                 raise TypeError("An approval token is already present in the module inputs")
-            wire_inputs[_APPROVAL_TOKEN_KEY] = self.approval_token
-        return wire_inputs, context
+            inputs[_APPROVAL_TOKEN_KEY] = self.approval_token
+        return inputs, context
 
     def bind(self, args: tuple[Any, ...], kwargs: dict[str, Any]) -> inspect.BoundArguments:
         if self.context_parameter is None:

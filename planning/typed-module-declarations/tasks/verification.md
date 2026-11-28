@@ -18,3 +18,10 @@ local tool calls using the governed handles.
 
 The candidate workflow stages dependency overrides for compatibility tests.
 GitHub CI and review follow when the candidate branches are opened.
+
+PR review added regression coverage for native Python inputs and replaced
+TypeScript registrations. Python passed 6,750 tests, including rejection of
+ambiguous native argument projections before hosted policy evaluates.
+TypeScript passed 5,959 tests, including replacement before lookup, before
+dispatch, and during preflight. Ordinary ID-based calls still resolve the
+current registration.

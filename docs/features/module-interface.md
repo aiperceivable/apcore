@@ -539,6 +539,10 @@ that executor to expose the same module and governance policy.
     Use the governed methods for application calls and `raw` for isolated unit
     tests.
 
+    A governed call passes native arguments to the registered function's
+    input validator. With a post-validation evaluator, native values must have
+    an unambiguous JSON-shaped representation under the input declaration.
+
     <!-- executable-example: typed-module -->
     ```python
     from apcore import APCore
@@ -571,6 +575,9 @@ that executor to expose the same module and governance policy.
     `inputSchema` and `outputSchema` explicitly on the affected side. The
     handler receives normalized inputs and the caller receives the normalized
     output. Both use JSON-compatible objects.
+
+    A handle belongs to its registered declaration. After replacing or
+    re-registering the module, use the handle returned for the new declaration.
 
     <!-- executable-example: typed-module -->
     ```typescript

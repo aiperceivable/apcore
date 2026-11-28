@@ -11,10 +11,11 @@ import struct
 import time
 from contextlib import suppress
 from copy import copy, deepcopy
-from typing import TYPE_CHECKING, Any
-from uuid import UUID
+from typing import TYPE_CHECKING, Any, Annotated, get_args, get_origin
+from uuid import UUID, SafeUUID
 
 from pydantic import AliasPath, BaseModel, RootModel
+from pydantic.fields import FieldInfo
 
 from apcore.errors import PolicyEvaluationError
 from apcore.context import _APPROVAL_TOKEN_KEY
@@ -60,29 +61,59 @@ def _argument_digest(arguments: dict[str, Any]) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
-def _project_function_value(value: Any) -> Any:
-    """Project validated function values using declared fields, without application serializers."""
-    if isinstance(value, BaseModel):
-        if value.__pydantic_private__:
+def _project_function_model(value: BaseModel) -> Any:
+    fields = type(value).model_fields
+    extras = value.model_extra or {}
+    stored = vars(value)
+    # A detached JSON object cannot preserve private state or whether a field
+    # equal to its default was actually supplied.
+    if (
+        value.__pydantic_private__
+        or stored.keys() != fields.keys()
+        or value.model_fields_set != fields.keys() | extras.keys()
+    ):
+        raise PolicyEvaluationError()
+    if isinstance(value, RootModel):
+        return _project_function_value(stored["root"], fields["root"].annotation)
+    projected = {key: _project_function_value(item, Any) for key, item in extras.items()}
+    for name, field in fields.items():
+        if isinstance(field.validation_alias, AliasPath):
             raise PolicyEvaluationError()
-        if isinstance(value, RootModel):
-            return _project_function_value(value.root)
-        fields = dict(value.model_extra or {})
-        for name, field in type(value).model_fields.items():
-            if isinstance(field.validation_alias, AliasPath):
-                raise PolicyEvaluationError()
-            wire_name = _validation_property_name(name, field.validation_alias, name)
-            if wire_name in fields:
-                raise PolicyEvaluationError()
-            fields[wire_name] = getattr(value, name)
-        return _project_function_value(fields)
-    if type(value) is UUID:
+        wire_name = _validation_property_name(name, field.validation_alias, name)
+        if wire_name in projected:
+            raise PolicyEvaluationError()
+        projected[wire_name] = _project_function_value(stored[name], field.annotation)
+    return projected
+
+
+def _project_function_value(value: Any, annotation: Any) -> Any:
+    """Project native values only at paths where the declaration fixes their type."""
+    if get_origin(annotation) is Annotated:
+        annotation = get_args(annotation)[0]
+    if annotation is UUID or type(value) is UUID:
+        if annotation is not UUID or type(value) is not UUID or value.is_safe is not SafeUUID.unknown:
+            raise PolicyEvaluationError()
         return str(value)
+    model_type = isinstance(annotation, type) and issubclass(annotation, BaseModel)
+    if model_type or isinstance(value, BaseModel):
+        if not model_type or type(value) is not annotation:
+            raise PolicyEvaluationError()
+        return _project_function_model(value)
+    parameters = get_args(annotation)
     if type(value) is dict:
-        return {key: _project_function_value(item) for key, item in value.items()}
+        item_type = parameters[1] if get_origin(annotation) is dict and parameters else Any
+        return {key: _project_function_value(item, item_type) for key, item in value.items()}
     if type(value) is list:
-        return [_project_function_value(item) for item in value]
+        item_type = parameters[0] if get_origin(annotation) is list and parameters else Any
+        return [_project_function_value(item, item_type) for item in value]
     return value
+
+
+def _project_function_arguments(arguments: dict[str, Any], fields: dict[str, FieldInfo]) -> dict[str, Any]:
+    return {
+        name: _project_function_value(value, fields[name].annotation if name in fields else Any)
+        for name, value in arguments.items()
+    }
 
 
 class _PolicyInvocation:
@@ -101,6 +132,7 @@ class _PolicyInvocation:
             raise PolicyEvaluationError() from None
         self.arguments: dict[str, Any] | None = None
         self._native_arguments: dict[str, Any] | None = None
+        self._function_fields: dict[str, FieldInfo] | None = None
         self.digest: str | None = None
         self.authorized = False
 
@@ -110,10 +142,19 @@ class _PolicyInvocation:
             raise PolicyEvaluationError()
         try:
             if isinstance(self.module, FunctionModule):
+                self._function_fields = dict(getattr(self.module.input_schema, "model_fields", {}))
+                projected = _project_function_arguments(arguments, self._function_fields)
+                self.digest = _argument_digest(projected)
                 self._native_arguments = deepcopy(arguments)
-                arguments = _project_function_value(arguments)
-            self.digest = _argument_digest(arguments)
-            self.arguments = deepcopy(arguments)
+                if (
+                    _argument_digest(_project_function_arguments(self._native_arguments, self._function_fields))
+                    != self.digest
+                ):
+                    raise PolicyEvaluationError()
+                self.arguments = projected
+            else:
+                self.digest = _argument_digest(arguments)
+                self.arguments = deepcopy(arguments)
         except Exception:
             raise PolicyEvaluationError() from None
 
@@ -132,11 +173,11 @@ class _PolicyInvocation:
         self._check_binding(ctx)
         capture = deepcopy(self.arguments)
         current = ctx.validated_inputs
-        if self._native_arguments is not None:
+        if self._function_fields is not None:
             try:
-                if current != self._native_arguments:
+                if current is None or current != self._native_arguments:
                     raise PolicyEvaluationError()
-                current = _project_function_value(current)
+                current = _project_function_arguments(current, self._function_fields)
             except Exception:
                 raise PolicyEvaluationError() from None
         if (
@@ -148,7 +189,7 @@ class _PolicyInvocation:
         ):
             raise PolicyEvaluationError()
         if dispatch and self._native_arguments is not None:
-            return deepcopy(self._native_arguments)
+            return self._native_arguments
         return capture
 
     def preflight_snapshot(self, ctx: PipelineContext) -> tuple[dict[str, Any], Context[Any]]:

@@ -322,13 +322,14 @@ export class APCore {
     };
     bindDeclaration(module, { input, inputSchema: preparedInput.compiled, outputSchema: preparedOutput.compiled });
     await this.register(id, module);
+    const declaration = { module, isCurrent: this.registry.bindRegistration(id, module) };
 
     return Object.freeze({
       id,
       invoke: async (inputs: StandardSchemaInput<Input>, context?: Context | null, versionHint?: string | null) =>
-        await this.call(id, inputs as Record<string, unknown>, context, versionHint) as StandardSchemaOutput<Output>,
+        await this.executor.callDeclaration(id, declaration, inputs as Record<string, unknown>, context, versionHint) as StandardSchemaOutput<Output>,
       validate: (inputs: StandardSchemaInput<Input>, context?: Context | null) =>
-        this.validate(id, inputs as Record<string, unknown>, context),
+        this.executor.validateDeclaration(id, declaration, inputs as Record<string, unknown>, context),
     });
   }
 
