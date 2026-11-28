@@ -127,6 +127,31 @@ describe('capability discovery lifecycle and identity', () => {
     expect(executor.getCallableDefinition('demo.echo', requester())).toBeNull();
   });
 
+  it.each(['context_creation', 'module_lookup'] as const)(
+    'withholds discovery when configured %s does not apply to the target', async step => {
+      const { registry, execute } = await fixtureRegistry();
+      const context = requester().child('agent.reader');
+      const acl = new ACL([{
+        callers: ['agent.reader'], targets: ['demo.echo'], effect: 'allow', description: '',
+        conditions: { max_call_depth: 2 },
+      }]);
+      const executorFor = (pattern: string): Executor => new Executor({
+        registry, acl,
+        config: new Config({ pipeline: { configure: { [step]: { match_modules: [pattern] } } } }),
+      });
+      const skipped = executorFor('other.*');
+
+      await expect(skipped.call('demo.echo', { message: 'test' }, context)).rejects.toThrow();
+      expect(execute).not.toHaveBeenCalled();
+      expect(skipped.listCallable(context).items).toEqual([]);
+      expect(skipped.getCallableDefinitions(['demo.echo'], context)).toEqual([]);
+
+      const matching = executorFor('demo.*');
+      expect(matching.listCallable(context).items.map(item => item.moduleId)).toEqual(['demo.echo']);
+      await expect(matching.call('demo.echo', { message: 'test' }, context)).resolves.toEqual({});
+    },
+  );
+
   it('scopes a continuation to principal, attrs, roles, parent frame, executor and filters', async () => {
     const { registry } = await fixtureRegistry();
     const client = new APCore({ registry });
@@ -149,6 +174,75 @@ describe('capability discovery lifecycle and identity', () => {
     expect(() => new APCore({ registry }).listCallable(context, options)).toThrow(/cursor/i);
   });
 
+  it('rejects a continuation at its expiry boundary', async () => {
+    const { registry } = await fixtureRegistry();
+    const executor = new Executor({ registry });
+    const context = requester();
+    const now = vi.spyOn(Date, 'now').mockReturnValue(1_000);
+    try {
+      const { nextCursor } = executor.listCallable(context, { limit: 1 });
+      expect(nextCursor).toEqual(expect.any(String));
+      now.mockReturnValue(301_000 - 1);
+      expect(executor.listCallable(context, { limit: 1, cursor: nextCursor }).items.map(item => item.moduleId))
+        .toEqual(['demo.review']);
+      now.mockReturnValue(301_000);
+      expect(() => executor.listCallable(context, { limit: 1, cursor: nextCursor }))
+        .toThrow(/expired capability cursor/i);
+    } finally {
+      now.mockRestore();
+    }
+  });
+
+  it.each([
+    [{ query: 42 }, /query and prefix must be strings/i],
+    [{ tags: 'message' }, /tags must be a list/i],
+    [{ limit: 101 }, /limit must be an integer/i],
+    [{ includeApprovalRequired: 'false' }, /filters must be booleans/i],
+    [{ readonly: null }, /filters must be booleans/i],
+  ])('rejects invalid discovery options %j', async (options, error) => {
+    const { registry } = await fixtureRegistry();
+    const executor = new Executor({ registry });
+    expect(() => executor.listCallable(null, options as CapabilitySearchOptions)).toThrow(error);
+  });
+
+  it('lists read-only capabilities and rejects malformed definition and cursor requests', async () => {
+    const { registry } = await fixtureRegistry();
+    const executor = new Executor({ registry });
+    expect(executor.listCallable(null, { readonly: true }).items.map(item => item.moduleId)).toEqual(['demo.echo']);
+    expect(() => executor.getCallableDefinitions(['demo.echo', 5] as unknown as string[]))
+      .toThrow(/module IDs must be a list of strings/i);
+    expect(() => executor.listCallable(null, { cursor: 'not-issued' })).toThrow(/cursor/i);
+
+    const page = executor.listCallable(null, { limit: 1 });
+    expect(executor.listCallable(null, { cursor: page.nextCursor, limit: 1 }).items.map(item => item.moduleId))
+      .toEqual(['demo.review']);
+    const nonCanonicalIdentity = requester([], 'reader', { groups: new Set(['test']) });
+    expect(() => executor.listCallable(nonCanonicalIdentity, { limit: 1 })).toThrow(/cursor/i);
+  });
+
+  it('rejects a capability provider that returns a non-list', async () => {
+    const { registry } = await fixtureRegistry();
+    const executor = new Executor({ registry, capabilitySearchProvider: { search: () => 'demo.echo' as never } });
+    expect(() => executor.listCallable()).toThrow(/search must return a list of module IDs/i);
+  });
+
+  it.each([
+    ['a proven branch of OR', { $or: [{ roles: ['reader'] }, { arguments: { has_key: ['message'] } }] }, true],
+    ['all false branches of OR', { $or: [{ roles: ['owner'] }, { roles: ['writer'] }] }, false],
+    ['an unknown branch of OR', { $or: [{ roles: ['owner'] }, { arguments: { has_key: ['message'] } }] }, false],
+    ['a false predicate under NOT', { $not: { roles: ['owner'] } }, true],
+    ['an unknown predicate under NOT', { $not: { arguments: { has_key: ['message'] } } }, false],
+  ] as const)('proves discovery outcomes for %s without call arguments', async (_label, conditions, visible) => {
+    const { registry, execute } = await fixtureRegistry();
+    const acl = new ACL([{
+      callers: ['@external'], targets: ['demo.echo'], effect: 'allow', description: '', conditions,
+    }]);
+    const executor = new Executor({ registry, acl });
+    expect(executor.listCallable(requester(['reader'])).items.map(item => item.moduleId))
+      .toEqual(visible ? ['demo.echo'] : []);
+    expect(execute).not.toHaveBeenCalled();
+  });
+
   it('filters revoked, inactive and unknown candidates on every request and returns detached definitions', async () => {
     const { registry } = await fixtureRegistry();
     const search = vi.fn(() => ['demo.hidden', 'demo.echo', 'demo.review', 'demo.unknown', 'demo.echo']);
@@ -162,6 +256,7 @@ describe('capability discovery lifecycle and identity', () => {
     expect(search).toHaveBeenCalledTimes(1);
     expect(search).toHaveBeenCalledWith(undefined, ['demo.echo', 'demo.review']);
     expect(executor.getCallableDefinition('demo.echo', requester(), '2.0.0')).toBeNull();
+    expect(executor.getCallableDefinition('demo.echo', requester(), '^1.0.0')?.version).toBe('1.0.0');
     const current = executor.getCallableDefinition('demo.echo', requester(), '1.0.0');
     expect(current?.inputSchema).toEqual(inputSchema);
     delete current!.inputSchema['properties'];

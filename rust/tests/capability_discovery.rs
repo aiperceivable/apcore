@@ -321,6 +321,43 @@ fn test_capability_discovery_fails_closed_without_the_stock_gate() {
         .is_none());
 }
 
+#[tokio::test]
+async fn test_capability_visibility_requires_context_creation_for_the_target() {
+    let strategy = apcore::pipeline_config::build_strategy_from_config(&json!({
+        "configure": {"context_creation": {"match_modules": ["demo.included"]}}
+    }))
+    .unwrap();
+    let mut executor = Executor::with_strategy(Registry::new(), Config::default(), strategy);
+    executor.set_acl(ACL::new(
+        vec![apcore::ACLRule::new(
+            vec!["worker.reader".into()],
+            vec!["demo.*".into()],
+            "allow",
+        )],
+        "deny",
+        None,
+    ));
+    for module_id in ["demo.included", "demo.skipped"] {
+        register(&executor, &json!({"module_id": module_id}));
+    }
+    let mut parent = reader("requester", vec![]);
+    parent.call_chain.push("worker.reader".into());
+    let denied = executor
+        .call("demo.skipped", json!({}), Some(&parent), None)
+        .await
+        .unwrap_err();
+    assert_eq!(denied.code, apcore::ErrorCode::ACLDenied);
+
+    let page = executor
+        .list_callable(Some(&parent), CapabilityQuery::default())
+        .unwrap();
+    assert_eq!(page.items.len(), 1);
+    assert_eq!(page.items[0].module_id, "demo.included");
+    assert!(executor
+        .get_callable_descriptor("demo.skipped", None, Some(&parent))
+        .is_none());
+}
+
 #[test]
 fn test_capability_hint_tracks_the_legacy_unguarded_approval_profile() {
     let mut executor = Executor::new(Registry::new(), Config::default());

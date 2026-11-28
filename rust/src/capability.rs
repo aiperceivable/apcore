@@ -437,11 +437,13 @@ impl Executor {
         if permits_lookup != Some(true) {
             return None;
         }
-        if !strategy
-            .steps()
+        let steps = strategy.steps();
+        let acl_index = steps
             .iter()
-            .any(|step| step.builtin_gate() == Some(BuiltinGate::Acl))
-        {
+            .position(|step| step.builtin_gate() == Some(BuiltinGate::Acl))?;
+        if !steps[..acl_index].iter().any(|step| {
+            crate::pipeline_config::builtin_context_creation_applies(step.as_ref(), module_id)
+        }) {
             return None;
         }
         if let Some(acl) = &self.acl {
@@ -511,5 +513,40 @@ impl Executor {
                 (Arc::ptr_eq(current, &module) && descriptor.version == summary.version)
                     .then_some(summary)
             })?
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Config, ErrorCode, Registry};
+
+    #[test]
+    fn test_capability_discovery_rejects_an_expired_cursor() {
+        let executor = Executor::new(Registry::new(), Config::default());
+        let context = Context::anonymous();
+        let query = CapabilityQuery::default();
+        let token = executor.capability_discovery.save(
+            CursorScope::from(&context),
+            query.clone(),
+            CursorPosition {
+                candidates: Arc::new(Vec::new()),
+                offset: 0,
+                custom_search: false,
+                provider_revision: 0,
+            },
+        );
+        let resume = CapabilityQuery {
+            cursor: Some(token),
+            ..query
+        };
+        assert!(executor
+            .list_callable(Some(&context), resume.clone())
+            .is_ok());
+
+        executor.capability_discovery.cursors.lock()[0].created = Instant::now() - CURSOR_TTL;
+        let error = executor.list_callable(Some(&context), resume).unwrap_err();
+        assert_eq!(error.code, ErrorCode::GeneralInvalidInput);
+        assert_eq!(error.message, "Invalid capability cursor");
     }
 }

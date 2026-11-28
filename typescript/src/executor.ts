@@ -89,6 +89,7 @@ import {
   PipelineEngine,
   PipelineStepError,
   StrategyNotFoundError,
+  stepMatchesModule,
 } from './pipeline.js';
 import { MAX_MODULE_ID_LENGTH, MODULE_ID_PATTERN } from './registry/registry.js';
 import type { Registry } from './registry/registry.js';
@@ -880,14 +881,21 @@ export class Executor {
     moduleId: string, parent: Context,
   ): { generation: object; approvalRequired: boolean; approvalConditional: boolean } | null {
     const steps = this._strategy.steps;
-    const lookup = steps.find(step => step.name === 'module_lookup');
-    if (!(lookup instanceof BuiltinModuleLookup) || !lookup.usesRegistry(this._registry) ||
-        lookup.toggleState.isDisabled(moduleId) ||
-        !steps.some(step => step instanceof BuiltinContextCreation)) return null;
+    const contextIndex = steps.findIndex(step => step.name === 'context_creation');
+    const lookupIndex = steps.findIndex(step => step.name === 'module_lookup');
+    const createContext = steps[contextIndex];
+    const lookup = steps[lookupIndex];
+    if (!(createContext instanceof BuiltinContextCreation) ||
+        Object.getPrototypeOf(createContext) !== BuiltinContextCreation.prototype ||
+        createContext.execute !== BuiltinContextCreation.prototype.execute ||
+        !stepMatchesModule(createContext, moduleId) || contextIndex >= lookupIndex) return null;
+    if (!(lookup instanceof BuiltinModuleLookup) || Object.getPrototypeOf(lookup) !== BuiltinModuleLookup.prototype ||
+        lookup.execute !== BuiltinModuleLookup.prototype.execute || !stepMatchesModule(lookup, moduleId) ||
+        !lookup.usesRegistry(this._registry) || lookup.toggleState.isDisabled(moduleId)) return null;
     const generation = this._registry.publicGeneration(moduleId);
     if (generation === null) return null;
     const gates = steps.filter(step => step.name === 'acl_check' || step instanceof BuiltinACLCheck);
-    if (gates.length === 0) return null;
+    if (gates.length === 0 || steps.indexOf(gates[0]) <= lookupIndex) return null;
     const target = parent.child(moduleId);
     let approvalRequired = false;
     let approvalConditional = false;

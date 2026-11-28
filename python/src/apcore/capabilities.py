@@ -13,9 +13,10 @@ from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
 
 from apcore._post_validation_policy import _argument_digest
 from apcore.acl import ACL, VisibilityDecision
-from apcore.builtin_steps import BuiltinACLCheck, BuiltinApprovalGate, BuiltinModuleLookup
+from apcore.builtin_steps import BuiltinACLCheck, BuiltinApprovalGate, BuiltinContextCreation, BuiltinModuleLookup
 from apcore.context import Context, Identity
 from apcore.errors import InvalidInputError, PolicyEvaluationError
+from apcore.pipeline import _any_match
 from apcore.policy import ExecutionPolicy
 from apcore.schema.annotations import governance_union
 
@@ -310,15 +311,26 @@ class _CapabilityDiscovery:
     def _visible(
         executor: Executor, module_id: str, context: Context, version_hint: str | None
     ) -> tuple[_Registration, VisibilityDecision] | None:
-        steps = executor.current_strategy.steps
-        lookup = next((step for step in steps if type(step) is BuiltinModuleLookup), None)
+        context_ready = False
+        lookup = None
+        gate = None
+        for step in executor.current_strategy.steps:
+            patterns = getattr(step, "match_modules", None)
+            if patterns is not None and not _any_match(patterns, module_id):
+                continue
+            if type(step) is BuiltinContextCreation:
+                context_ready = True
+            elif type(step) is BuiltinModuleLookup:
+                lookup = step
+            elif type(step) is BuiltinACLCheck:
+                gate = step
+                break
+        if not context_ready or gate is None:
+            return None
         if lookup is None or lookup._registry is not executor.registry or lookup.toggle_state.is_disabled(module_id):
             return None
         selected = executor.registry._discovery_registration(module_id, version_hint)
         if selected is None:
-            return None
-        gate = next((step for step in steps if type(step) is BuiltinACLCheck), None)
-        if gate is None:
             return None
         access = _visibility_decision(gate.acl, module_id, context)
         if access.visible and _still_current(executor, module_id, version_hint, selected):

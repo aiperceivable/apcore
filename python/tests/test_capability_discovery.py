@@ -5,9 +5,12 @@ from typing import Any
 import pytest
 
 from apcore import APCore, Context, Executor, Identity, ModuleAnnotations, Registry
+from apcore import capabilities
 from apcore.acl import ACL, ACLRule
+from apcore.builtin_steps import build_standard_strategy
 from apcore.config import Config
-from apcore.errors import ACLDeniedError, InvalidInputError, SchemaValidationError
+from apcore.errors import ACLDeniedError, InvalidInputError, ModuleError, SchemaValidationError
+from apcore.pipeline import BaseStep, ExecutionStrategy, PipelineContext, StepResult
 
 
 class Module:
@@ -64,6 +67,60 @@ def test_cursor_distinguishes_identity_attribute_types(original: Any, other: Any
         altered = Context.create(identity=Identity("reader", attrs={"tenant": [other]}))
         with pytest.raises(InvalidInputError, match="Invalid discovery cursor"):
             executor.list_callable(altered, limit=1, cursor=first.next_cursor)
+
+
+def test_cursor_expires_at_its_monotonic_deadline(monkeypatch: pytest.MonkeyPatch) -> None:
+    registry = Registry()
+    for module_id in ("demo.a", "demo.b"):
+        registry.register(module_id, Module())
+    now = 1_000.0
+    monkeypatch.setattr(capabilities, "monotonic", lambda: now)
+    with Executor(registry) as executor:
+        cursor = executor.list_callable(limit=1).next_cursor
+        assert cursor
+        now = 1_299.999
+        assert [item.module_id for item in executor.list_callable(limit=1, cursor=cursor).items] == ["demo.b"]
+        now = 1_300.0
+        with pytest.raises(InvalidInputError, match="Invalid discovery cursor"):
+            executor.list_callable(limit=1, cursor=cursor)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("step_name", ["context_creation", "module_lookup"])
+async def test_discovery_omits_targets_skipped_by_essential_pipeline_step(step_name: str) -> None:
+    registry = Registry()
+    registry.register("demo.visible", Module())
+    registry.register("demo.matching", Module())
+    acl = ACL([ACLRule(["worker.reader"], ["demo.*"], "allow")])
+    config = Config({"pipeline": {"configure": {step_name: {"match_modules": ["demo.match*"]}}}})
+    context = Context.create().child("worker.reader")
+    with Executor(registry, acl=acl, config=config) as executor:
+        with pytest.raises(ModuleError) as actual:
+            await executor.call_async("demo.visible", {}, context)
+        if step_name == "context_creation":
+            assert isinstance(actual.value, ACLDeniedError)
+        assert executor.get_callable_descriptor("demo.visible", context) is None
+        assert [item.module_id for item in executor.list_callable(context).items] == ["demo.matching"]
+
+
+@pytest.mark.asyncio
+async def test_discovery_does_not_guess_a_custom_context_step() -> None:
+    class HostContextStep(BaseStep):
+        async def execute(self, ctx: PipelineContext) -> StepResult:
+            return StepResult(action="continue")
+
+    registry = Registry()
+    registry.register("demo.visible", Module())
+    acl = ACL([ACLRule(["worker.reader"], ["demo.*"], "allow")])
+    steps = build_standard_strategy(registry=registry).steps
+    steps[0] = HostContextStep(name="context_creation", description="Host caller frame", provides=("context",))
+    strategy = ExecutionStrategy("host-context", steps)
+    context = Context.create().child("worker.reader")
+    with Executor(registry, acl=acl, strategy=strategy) as executor:
+        with pytest.raises(ACLDeniedError):
+            await executor.call_async("demo.visible", {}, context)
+        assert executor.get_callable_descriptor("demo.visible", context) is None
+        assert not executor.list_callable(context).items
 
 
 def test_full_definition_uses_live_version_and_detaches_schemas() -> None:

@@ -7,7 +7,7 @@ use std::sync::OnceLock;
 
 use serde_json::Value;
 
-use crate::builtin_steps::build_standard_strategy;
+use crate::builtin_steps::{build_standard_strategy, BuiltinContextCreation};
 use crate::errors::{ErrorCode, ModuleError};
 use crate::pipeline::{ExecutionStrategy, Step};
 
@@ -85,6 +85,24 @@ struct ConfiguredStep {
     ignore_errors: bool,
     pure: bool,
     timeout_ms: u64,
+}
+
+pub(crate) fn builtin_context_creation_applies(step: &dyn Step, module_id: &str) -> bool {
+    // The outermost overlay supplies the engine's matcher. Inspect wrapped
+    // steps only for their implementation identity.
+    step.match_modules().is_none_or(|patterns| {
+        patterns
+            .iter()
+            .any(|pattern| crate::utils::helpers::match_pattern(pattern, module_id))
+    }) && is_builtin_context_creation(step)
+}
+
+fn is_builtin_context_creation(step: &dyn Step) -> bool {
+    let implementation = step as &dyn std::any::Any;
+    implementation.downcast_ref::<ConfiguredStep>().map_or_else(
+        || implementation.is::<BuiltinContextCreation>(),
+        |configured| is_builtin_context_creation(configured.inner.as_ref()),
+    )
 }
 
 #[async_trait::async_trait]
