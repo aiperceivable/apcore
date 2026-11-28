@@ -45,6 +45,7 @@ jobs:
           "$temporary/venv/bin/python" -c 'from importlib.resources import files; assert files("apcore").joinpath("py.typed").is_file(), "installed wheel is missing apcore/py.typed"'
           python3 "$GITHUB_WORKSPACE/conformance/extract_doc_examples.py" python "$temporary"
           (cd quick-start && "$temporary/venv/bin/python" -I example.py)
+          (cd typed-module && "$temporary/venv/bin/python" -I example.py)
           python -m venv "$temporary/full"
           "$temporary/full/bin/python" -m pip install "${wheel[0]}[all]"
           "$temporary/full/bin/python" -m pip check
@@ -65,17 +66,26 @@ jobs:
       - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc
         with:
           toolchain: 1.86.0
-      - run: cargo package --locked --all-features
+      - name: Package the macro and its SDK
+        shell: bash
+        run: |
+          cargo package --locked -p apcore-macros
+          # Cargo resolves the normalized SDK manifest against crates.io.
+          # Provide the same macro locally while the candidate is unpublished.
+          cargo --config "patch.crates-io.apcore-macros.path='$PWD/apcore-macros'" \
+            package --locked -p apcore --all-features
       - name: Run downstream examples against the packaged crate
         shell: bash
         env:
           CARGO_RESOLVER_INCOMPATIBLE_RUST_VERSIONS: fallback
         run: |
-          archives=( "$PWD"/target/package/*.crate )
+          sdk=( "$PWD"/target/package/apcore-[0-9]*.crate )
+          macro=( "$PWD"/target/package/apcore-macros-[0-9]*.crate )
           temporary=$(mktemp -d)
           cd "$temporary"
-          mkdir sdk
-          tar -xzf "${archives[0]}" --strip-components=1 -C sdk
+          mkdir sdk macros
+          tar -xzf "${sdk[0]}" --strip-components=1 -C sdk
+          tar -xzf "${macro[0]}" --strip-components=1 -C macros
           cp sdk/Cargo.lock Cargo.lock
           python3 "$GITHUB_WORKSPACE/conformance/extract_doc_examples.py" rust "$temporary"
           cat > Cargo.toml <<'EOF'
@@ -86,11 +96,16 @@ jobs:
           rust-version = "1.86"
 
           [dependencies]
-          apcore = { path = "sdk", features = ["config", "events"] }
+          apcore = { path = "sdk", features = ["config", "events", "macros"] }
           async-trait = "0.1.92"
           futures-util = "0.3"
+          schemars = "0.8"
+          serde = { version = "1", features = ["derive"] }
           serde_json = "1"
           tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+
+          [patch.crates-io]
+          apcore-macros = { path = "macros" }
 
           [[bin]]
           name = "quick-start"
@@ -99,9 +114,14 @@ jobs:
           [[bin]]
           name = "governed-stream"
           path = "governed-stream/example.rs"
+
+          [[bin]]
+          name = "typed-module"
+          path = "typed-module/example.rs"
           EOF
           (cd quick-start && cargo run --quiet --manifest-path ../Cargo.toml --bin quick-start)
           (cd governed-stream && cargo run --locked --quiet --manifest-path ../Cargo.toml --bin governed-stream)
+          (cd typed-module && cargo run --locked --quiet --manifest-path ../Cargo.toml --bin typed-module)
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: core-rust-distribution
@@ -137,7 +157,7 @@ jobs:
           cd "$temporary"
           npm init -y
           npm pkg set type=module
-          npm install --ignore-scripts "${archive[0]}" typescript@5.5.4 @types/node@20
+          npm install --ignore-scripts "${archive[0]}" typescript@5.5.4 @types/node@20 zod@4
           node --input-type=module -e 'import {APCore} from "apcore-js"; import "apcore-js/context-keys"; if (!APCore) throw new Error("APCore is missing");'
           cat > verify-browser.mjs <<'EOF'
           const url = await import.meta.resolve("apcore-js");
@@ -150,9 +170,10 @@ jobs:
           node --input-type=module -e 'import {APCore} from "apcore-js/full"; import {Config} from "apcore-js/config"; import {createFilesystemDiscoveryPlugin} from "apcore-js/discovery"; if (!new APCore({config: new Config(), plugins: [createFilesystemDiscoveryPlugin()]}).registry) throw new Error("invalid full assembly");'
           python3 "$GITHUB_WORKSPACE/conformance/extract_doc_examples.py" typescript "$temporary"
           ./node_modules/.bin/tsc --strict --module NodeNext --target ES2022 --rootDir . --outDir compiled \
-            quick-start/example.ts governed-stream/example.ts
+            quick-start/example.ts governed-stream/example.ts typed-module/example.ts
           (cd quick-start && node ../compiled/quick-start/example.js)
           (cd governed-stream && node ../compiled/governed-stream/example.js)
+          (cd typed-module && node ../compiled/typed-module/example.js)
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: core-npm-distribution

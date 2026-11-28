@@ -4,11 +4,13 @@
 
 import type { GovernanceProjection } from './acl-handlers.js';
 import type { Context } from './context.js';
+import { isDeclarationAdmissionError } from './declaration-invocation.js';
 import { ModuleError, ModuleTimeoutError } from './errors.js';
 import type { ErrorOptions } from './errors.js';
 import { MiddlewareChainError } from './middleware/manager.js';
 import { matchPattern } from './utils/pattern.js';
 import { policyInvocationOf } from './policy-evaluation.js';
+import { StandardValidationError } from './schema/standard.js';
 import { isScopedAdmissionError } from './scoped-invocation.js';
 
 // ---------------------------------------------------------------------------
@@ -1244,7 +1246,12 @@ export class PipelineEngine {
           trace.steps.push({ name: step.name, durationMs,
             result: { action: 'abort', explanation: cause.message },
             skipped: false, decisionPoint: false,
-            error: { code: cause instanceof ModuleError ? cause.code : 'GENERAL_INTERNAL_ERROR', message: cause.message } });
+            error: {
+              code: cause instanceof ModuleError ? cause.code : 'GENERAL_INTERNAL_ERROR',
+              message: cause.message,
+              ...(cause instanceof StandardValidationError ? { details: cause.details } : {}),
+            },
+          });
           for (const key of step.provides ?? []) failedProvides.add(key);
           idx += 1;
           continue;
@@ -1253,6 +1260,7 @@ export class PipelineEngine {
         // 3 b onStepError hooks: reverse registration order (onion model),
         //     first non-null recovery wins and short-circuits the rest (§2.2).
         const isGovernanceGate = governanceGateOf(step) !== null || isScopedAdmissionError(ctx, cause) ||
+          isDeclarationAdmissionError(ctx, cause) ||
           (policyInvocation !== undefined && !policyInvocation.dispatched);
         const observedCancellation = observeStep !== undefined &&
           cause instanceof ModuleError && cause.code === 'EXECUTION_CANCELLED';

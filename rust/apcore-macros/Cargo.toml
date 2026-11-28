@@ -1,0 +1,19 @@
+[package]
+name = "apcore-macros"
+version = "1.0.0-alpha.6"
+edition = "2021"
+rust-version = "1.86"
+description = "Typed module declarations for the APCore Rust SDK"
+license = "Apache-2.0"
+repository = "https://github.com/aiperceivable/apcore"
+
+[lib]
+proc-macro = true
+
+[dependencies]
+proc-macro2 = "1"
+quote = "1"
+syn = { version = "2", features = ["full", "visit-mut"] }
+
+[dev-dependencies]
+trybuild = "1"

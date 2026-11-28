@@ -1547,7 +1547,7 @@ class BuiltinExecute(BaseStep):
             invocation = ctx._policy_invocation
             if invocation is None or not invocation.authorized:
                 raise PolicyEvaluationError()
-            inputs = invocation.checked_arguments(ctx)
+            inputs = invocation.checked_arguments(ctx, dispatch=True)
         else:
             inputs = ctx.validated_inputs if ctx.validated_inputs is not None else ctx.inputs
 

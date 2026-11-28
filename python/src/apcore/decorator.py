@@ -8,6 +8,7 @@ import inspect
 import logging
 import re
 import typing
+from collections.abc import Awaitable
 from typing import Annotated, Any, Callable, get_args, get_origin
 
 from pydantic import BaseModel, ConfigDict, Field, create_model
@@ -16,7 +17,7 @@ from pydantic.fields import FieldInfo
 from apcore._docstrings import parse_docstring
 from apcore.context import Context
 from apcore.errors import ErrorCodes, FuncMissingReturnTypeError, FuncMissingTypeHintError, InvalidInputError
-from apcore.module import ModuleAnnotations, ModuleExample
+from apcore.module import ModuleAnnotations, ModuleExample, PreviewResult
 from apcore.utils.module_output import normalize_module_output
 
 _logger = logging.getLogger(__name__)
@@ -80,7 +81,7 @@ def generate_input_model(
         annotation = hints[param_name]
 
         # Skip Context-typed parameters
-        if annotation is Context:
+        if annotation is Context or get_origin(annotation) is Context:
             continue
 
         # Inject docstring description if no explicit Field(description=...) exists
@@ -148,7 +149,7 @@ def _context_param_name(func: Any) -> str | None:
     for param_name, hint in hints.items():
         if param_name == "return":
             continue
-        if hint is Context:
+        if hint is Context or get_origin(hint) is Context:
             return param_name
 
     return None
@@ -180,13 +181,15 @@ class FunctionModule:
         documentation: str | None = None,
         tags: list[str] | None = None,
         version: str = "1.0.0",
-        annotations: dict[str, Any] | None = None,
+        annotations: ModuleAnnotations | dict[str, Any] | None = None,
         metadata: dict[str, Any] | None = None,
         display: dict[str, Any] | None = None,
         examples: list[ModuleExample] | None = None,
         input_schema: type[BaseModel] | None = None,
         output_schema: type[BaseModel] | None = None,
         resources: dict[str, Any] | None = None,
+        *,
+        preview: Callable[[dict[str, Any], Context[Any]], PreviewResult | Awaitable[PreviewResult]] | None = None,
     ) -> None:
         self._func = func
         self.module_id = module_id
@@ -230,6 +233,8 @@ class FunctionModule:
         # reads ``resources["timeout"]`` in milliseconds and uses it instead of
         # ``executor.default_timeout`` for this module.
         self.resources = resources
+        if preview is not None:
+            self.preview = preview
 
         def call_arguments(inputs: dict[str, Any], context: Context) -> tuple[list[Any], dict[str, Any]]:
             kwargs = dict(inputs)
@@ -284,6 +289,11 @@ def _attribute_host(func: Callable) -> Callable:
     """
     if not inspect.ismethod(func):
         return func
+    return _forward_function(func)
+
+
+def _forward_function(func: Callable[..., Any]) -> Callable[..., Any]:
+    """Create a separate callable while preserving metadata and async behavior."""
     if inspect.iscoroutinefunction(func):
 
         @functools.wraps(func)

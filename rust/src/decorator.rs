@@ -13,6 +13,9 @@ use crate::context::Context;
 use crate::errors::ModuleError;
 use crate::module::{Module, ModuleAnnotations, ModuleExample};
 
+#[cfg(feature = "macros")]
+type InputNormalizer = fn(&serde_json::Value) -> Result<serde_json::Value, ModuleError>;
+
 /// Boxed async handler type for `FunctionModule`.
 type HandlerFn = Box<
     dyn for<'a> Fn(
@@ -40,6 +43,8 @@ pub struct FunctionModule {
     pub metadata: HashMap<String, serde_json::Value>,
     pub examples: Vec<ModuleExample>,
     handler: HandlerFn,
+    #[cfg(feature = "macros")]
+    input_normalizer: Option<InputNormalizer>,
 }
 
 impl std::fmt::Debug for FunctionModule {
@@ -83,6 +88,8 @@ impl FunctionModule {
             metadata: HashMap::new(),
             examples: vec![],
             handler: Box::new(handler),
+            #[cfg(feature = "macros")]
+            input_normalizer: None,
         }
     }
 
@@ -128,7 +135,14 @@ impl FunctionModule {
             metadata,
             examples,
             handler: Box::new(handler),
+            #[cfg(feature = "macros")]
+            input_normalizer: None,
         }
+    }
+
+    #[cfg(feature = "macros")]
+    pub(crate) fn set_input_normalizer(&mut self, normalizer: InputNormalizer) {
+        self.input_normalizer = Some(normalizer);
     }
 }
 
@@ -140,6 +154,16 @@ impl Module for FunctionModule {
 
     fn output_schema(&self) -> serde_json::Value {
         self.output_schema.clone()
+    }
+
+    #[cfg(feature = "macros")]
+    fn normalize_declared_inputs(
+        &self,
+        inputs: &serde_json::Value,
+    ) -> Result<Option<serde_json::Value>, ModuleError> {
+        self.input_normalizer
+            .map(|normalize| normalize(inputs))
+            .transpose()
     }
 
     fn description(&self) -> &str {

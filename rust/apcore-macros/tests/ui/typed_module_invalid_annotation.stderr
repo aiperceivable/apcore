@@ -1,0 +1,5 @@
+error: unsupported APCore module option
+ --> tests/ui/typed_module_invalid_annotation.rs:1:46
+  |
+1 | #[apcore_macros::module(id = "demo.invalid", read_only = true)]
+  |                                              ^^^^^^^^^

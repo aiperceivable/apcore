@@ -13,6 +13,7 @@ Record lasting specifications, changes, and decisions in the spec, CHANGELOG, an
 | [Module lifecycle](module-lifecycle/overview.md) | Owned shutdown, detailed removal, and managed reload in Python, TypeScript, and Rust | [Phases A and B complete](module-lifecycle/state.json) |
 | [APCore project review remediation](apcore-project-review-2026-11-26/overview.md) | Findings 1–8 and 26 across the runtime, wire contracts, observability, and conformance | [9 of 9 complete](apcore-project-review-2026-11-26/state.json) |
 | [Post-validation policy](post-validation-policy/overview.md) | Argument-value policy and approval binding across Core SDKs and MCP | [Local implementation and verification complete](post-validation-policy/state.json) |
+| [Typed module declarations](typed-module-declarations/overview.md) | Governed typed handles, Standard Schema support, compiled Rust packs, and MCP Golden Paths | [Local implementation and verification complete](typed-module-declarations/state.json) |
 
 The review remediation restored the fixture inventory before the eight runtime changes. Its verification record covers the combined SDK, fixture, and documentation checks.
 

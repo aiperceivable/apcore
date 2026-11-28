@@ -7,17 +7,22 @@ from contextlib import AsyncExitStack, asynccontextmanager
 from socket import socket
 
 import uvicorn
-from apcore import APCore
+from apcore import APCore, BoundModule
 from apcore.acl import AuditEntry
 from apcore.errors import ACLDeniedError, ApprovalPendingError, SchemaValidationError
 from apcore_mcp import APCoreMCP, InMemoryApprovalStore, StorageBackedApprovalHandler
-from app import ARCHIVE, LOOKUP, RESTRICTED, Notebook, build_app, build_mcp
+from app import ARCHIVE, LOOKUP, RESTRICTED, ArchiveResult, Notebook, build_app, build_mcp
 from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 from mcp.types import CallToolResult, TextContent
 
 
-async def verify_direct(client: APCore, notebook: Notebook, reviews: InMemoryApprovalStore) -> None:
+async def verify_direct(
+    client: APCore,
+    archive: BoundModule[[str], ArchiveResult],
+    notebook: Notebook,
+    reviews: InMemoryApprovalStore,
+) -> None:
     assert await client.call_async(LOOKUP, {"note_id": "from-code"}) == {"archived": False}
 
     try:
@@ -34,9 +39,8 @@ async def verify_direct(client: APCore, notebook: Notebook, reviews: InMemoryApp
     else:
         raise AssertionError("Expected input validation to fail")
 
-    arguments = {"note_id": "from-code"}
     try:
-        await client.call_async(ARCHIVE, arguments)
+        await archive.invoke_async("from-code")
     except ApprovalPendingError as pending:
         approval_id = pending.result.audit_id
         resume_token = pending.approval_id
@@ -45,8 +49,8 @@ async def verify_direct(client: APCore, notebook: Notebook, reviews: InMemoryApp
         raise AssertionError("Expected approval to be pending")
     assert notebook.archived == []
     assert await reviews.resolve(approval_id, approved=True)
-    resumed = await client.call_async(ARCHIVE, {**arguments, "_approval_token": resume_token})
-    assert resumed == {"archived": "from-code"}
+    resumed = await archive.with_approval_token(resume_token).invoke_async("from-code")
+    assert isinstance(resumed, ArchiveResult) and resumed.archived == "from-code"
     assert notebook.archived == ["from-code"]
 
 
@@ -125,13 +129,13 @@ async def main() -> None:
     notebook = Notebook()
     audit: list[AuditEntry] = []
     async with AsyncExitStack() as cleanup:
-        direct = build_app(notebook, audit)
+        direct, archive = build_app(notebook, audit)
         cleanup.push_async_callback(direct.shutdown)
         direct_reviews = InMemoryApprovalStore()
         direct.executor.set_approval_handler(StorageBackedApprovalHandler(direct_reviews))
-        await verify_direct(direct, notebook, direct_reviews)
+        await verify_direct(direct, archive, notebook, direct_reviews)
 
-        mcp_client = build_app(notebook, audit)
+        mcp_client, _ = build_app(notebook, audit)
         cleanup.push_async_callback(mcp_client.shutdown)
         mcp_reviews = InMemoryApprovalStore()
         await verify_mcp(build_mcp(mcp_client, mcp_reviews), notebook, mcp_reviews)

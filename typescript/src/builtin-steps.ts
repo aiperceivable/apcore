@@ -18,6 +18,7 @@ import type { Config } from './config.js';
 import { getDefault } from './config-defaults.js';
 import { CancelToken, awaitExecution } from './cancel.js';
 import { Context } from './context.js';
+import { assertDeclarationInvocation, recordDeclarationDispatch } from './declaration-invocation.js';
 import { authorityKeyOf, hasScopeCeiling } from './identity.js';
 import { assertScopedInvocation, isStockScopeAcl, recordScopedGrant, recordScopedLookup } from './scoped-invocation.js';
 import {
@@ -52,6 +53,7 @@ import { ConfigurationError, ExecutionStrategy, GOVERNANCE_GATE } from './pipeli
 import { isStreamingModule } from './streaming.js';
 import type { Registry } from './registry/registry.js';
 import { jsonSchemaToTypeBox } from './schema/loader-pure.js';
+import { declarationJsonObject, declarationOf, takeDeclarationInputs, validateDeclarationInputs } from './schema/standard.js';
 import { SchemaValidator } from './schema/validator.js';
 import { guardCallChain } from './utils/call-chain.js';
 import { normalizeModuleObject } from './utils/module-output.js';
@@ -61,6 +63,8 @@ import { normalizeModuleObject } from './utils/module-output.js';
 // ---------------------------------------------------------------------------
 
 function resolveSchema(mod: Record<string, unknown>, key: string): TSchema | null {
+  const declaration = declarationOf(mod);
+  if (declaration) return key === 'inputSchema' ? declaration.inputSchema : declaration.outputSchema;
   const schema = mod[key] as TSchema | undefined;
   if (schema == null) return null;
   if (Kind in schema) return schema;
@@ -257,6 +261,7 @@ export class BuiltinModuleLookup implements Step {
     if (mod === null || (!(invocation?.preflight ?? ctx.dryRun) && this._registry.isDraining(ctx.moduleId))) {
       throw new ModuleNotFoundError(ctx.moduleId);
     }
+    assertDeclarationInvocation(ctx, mod);
 
     // Inline toggle check — matches apcore-python builtin_steps.py:231 and
     // apcore-rust builtin_steps.rs:219 (sync finding A-D-011).
@@ -827,22 +832,30 @@ export class BuiltinInputValidation implements Step {
   readonly provides = ['validated_inputs'] as const;
 
   async execute(ctx: PipelineContext): Promise<StepResult> {
+    assertDeclarationInvocation(ctx);
     const invocation = policyInvocationOf(ctx);
     if (invocation) assertPolicyBinding(ctx, invocation);
     let snapshot = invocation ? copyPolicyInputs(ctx.moduleId, ctx.inputs) : null;
     const mod = ctx.module as Record<string, unknown>;
+    const declaration = declarationOf(mod);
     const inputSchema = resolveSchema(mod, 'inputSchema');
+    let effectiveInputs = snapshot?.arguments ?? ctx.inputs;
+    if (declaration && !snapshot) effectiveInputs = declarationJsonObject(effectiveInputs, 'input');
     if (inputSchema !== null) {
-      validateSchema(inputSchema, snapshot?.arguments ?? ctx.inputs, 'Input');
+      validateSchema(inputSchema, effectiveInputs, 'Input');
       // Native TypeBox validators can change the inputs and retain aliases.
       // Capture both the values and their encoding from the detached result.
-      if (snapshot) snapshot = copyPolicyInputs(ctx.moduleId, snapshot.arguments);
+      if (snapshot && !declaration) snapshot = copyPolicyInputs(ctx.moduleId, effectiveInputs);
+    }
+    if (declaration) {
+      effectiveInputs = await validateDeclarationInputs(ctx, declaration, effectiveInputs);
+      if (snapshot) snapshot = copyPolicyInputs(ctx.moduleId, effectiveInputs);
     }
 
     const effectiveSchema = inputSchema ?? {};
-    const effectiveInputs = snapshot?.arguments ?? ctx.inputs;
+    effectiveInputs = snapshot?.arguments ?? effectiveInputs;
     ctx.context.redactedInputs = redactSensitive(effectiveInputs, effectiveSchema, this._redaction);
-    ctx.validatedInputs = snapshot ? structuredClone(effectiveInputs) : effectiveInputs;
+    ctx.validatedInputs = snapshot || declaration ? structuredClone(effectiveInputs) : effectiveInputs;
     if (invocation && snapshot) {
       snapshot.sensitiveFields = sensitivePolicyFields(effectiveInputs, effectiveSchema);
       invocation.validated = snapshot;
@@ -958,8 +971,10 @@ export class BuiltinExecute implements Step {
 
   async execute(ctx: PipelineContext): Promise<StepResult> {
     assertScopedInvocation(ctx, true);
+    assertDeclarationInvocation(ctx);
     const invocation = policyInvocationOf(ctx);
-    let inputs = ctx.inputs;
+    const declaration = declarationOf(ctx.module);
+    let inputs = declaration ? takeDeclarationInputs(ctx) : ctx.inputs;
     if (invocation) {
       assertPolicyBinding(ctx, invocation);
       if (!invocation.approvedForDispatch || !invocation.validated) throw new PolicyEvaluationError(ctx.moduleId);
@@ -1035,6 +1050,7 @@ export class BuiltinExecute implements Step {
     const release = moduleExecutionLeases.get(ctx)?.();
     let executionPromise: Promise<Record<string, unknown>>;
     try {
+      recordDeclarationDispatch(ctx);
       if (invocation) invocation.dispatched = true;
       executionPromise = Promise.resolve(
         (

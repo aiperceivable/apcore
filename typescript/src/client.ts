@@ -27,11 +27,19 @@ import {
 import type { StepMiddleware } from './pipeline.js';
 import type { ExecutionPolicy } from './policy.js';
 import type { Middleware } from './middleware/index.js';
-import type { ModuleAnnotations, ModuleExample, PreflightResult, ResourceLimits } from './module.js';
+import { createAnnotations, type ModuleAnnotations, type ModuleExample, type PreflightResult, type ResourceLimits } from './module.js';
 import type { MetricsCollector } from './observability/metrics.js';
 import type { StreamExecution } from './stream-completion.js';
 import { Registry } from './registry/registry.js';
 import type { ModuleDescriptor } from './registry/types.js';
+import {
+  bindDeclaration,
+  prepareStandardSchema,
+  validateStandard,
+  type StandardSchemaInput,
+  type StandardSchemaOutput,
+  type StandardSchemaV1,
+} from './schema/standard.js';
 import type { RegisterSysModulesOptions, SysModulesContext } from './sys-modules/registration.js';
 import { ToggleState } from './sys-modules/toggle.js';
 
@@ -108,6 +116,30 @@ export interface ModuleOptions {
    */
   resources?: ResourceLimits | null;
   execute: (inputs: Record<string, unknown>, context: Context) => Promise<Record<string, unknown>> | Record<string, unknown>;
+}
+
+/** Typed module declaration. Explicit schemas take precedence over vendor conversion. */
+export interface DefineModuleOptions<Input extends StandardSchemaV1, Output extends StandardSchemaV1>
+  extends Omit<ModuleOptions, 'id' | 'description' | 'inputSchema' | 'outputSchema' | 'annotations' | 'execute'> {
+  id: string;
+  description: string;
+  input: Input;
+  output: Output;
+  /** Draft 2020-12 schema for the raw invocation arguments. */
+  inputSchema?: Record<string, unknown>;
+  /** Draft 2020-12 schema for the normalized result. */
+  outputSchema?: Record<string, unknown>;
+  readonly?: boolean;
+  annotations?: Partial<ModuleAnnotations>;
+  execute: (inputs: StandardSchemaOutput<Input>, context: Context) =>
+    StandardSchemaInput<Output> | Promise<StandardSchemaInput<Output>>;
+}
+
+/** A typed reference to a module registered with this client. */
+export interface BoundModule<Input, Output> {
+  readonly id: string;
+  invoke(inputs: Input, context?: Context | null, versionHint?: string | null): Promise<Output>;
+  validate(inputs: Input, context?: Context | null): Promise<PreflightResult>;
 }
 
 interface ClientShutdown {
@@ -268,6 +300,36 @@ export class APCore {
     return createModule({
       ...options,
       registry: this.registry,
+    });
+  }
+
+  /** Register a Standard Schema declaration and return a governed, typed handle. */
+  async define<Input extends StandardSchemaV1, Output extends StandardSchemaV1>(
+    options: DefineModuleOptions<Input, Output>,
+  ): Promise<BoundModule<StandardSchemaInput<Input>, StandardSchemaOutput<Output>>> {
+    const { id, input, output, inputSchema, outputSchema, execute, readonly, annotations, ...definition } = options;
+    if (typeof execute !== 'function') throw new InvalidInputError('Typed module requires an execute function');
+    const preparedInput = prepareStandardSchema(input, 'input', inputSchema);
+    const preparedOutput = prepareStandardSchema(output, 'output', outputSchema);
+    const module = {
+      ...definition,
+      inputSchema: preparedInput.document,
+      outputSchema: preparedOutput.document,
+      annotations: createAnnotations({ ...annotations, ...(readonly === undefined ? {} : { readonly }) }),
+      async execute(inputs: Record<string, unknown>, context: Context): Promise<Record<string, unknown>> {
+        return validateStandard(output, await execute(inputs as StandardSchemaOutput<Input>, context), 'output');
+      },
+    };
+    bindDeclaration(module, { input, inputSchema: preparedInput.compiled, outputSchema: preparedOutput.compiled });
+    await this.register(id, module);
+    const declaration = { module, isCurrent: this.registry.bindRegistration(id, module) };
+
+    return Object.freeze({
+      id,
+      invoke: async (inputs: StandardSchemaInput<Input>, context?: Context | null, versionHint?: string | null) =>
+        await this.executor.callDeclaration(id, declaration, inputs as Record<string, unknown>, context, versionHint) as StandardSchemaOutput<Output>,
+      validate: (inputs: StandardSchemaInput<Input>, context?: Context | null) =>
+        this.executor.validateDeclaration(id, declaration, inputs as Record<string, unknown>, context),
     });
   }
 

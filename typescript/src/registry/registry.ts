@@ -2287,11 +2287,18 @@ export class Registry {
     };
   }
 
+  /** @internal Check that a captured registration still refers to the same generation. */
+  bindRegistration(moduleId: string, expectedModule: unknown): () => boolean {
+    const expectedGeneration = this._executionGenerations.get(moduleId);
+    return () => expectedGeneration !== undefined && this._modules.get(moduleId) === expectedModule &&
+      this._executionGenerations.get(moduleId) === expectedGeneration;
+  }
+
   /** @internal Capture the registration now and acquire its execution reference later. */
   bindExecution(moduleId: string, expectedModule: unknown, token?: CancelToken | null): () => () => void {
-    const expectedGeneration = this._executionGenerations.get(moduleId);
+    const isCurrent = this.bindRegistration(moduleId, expectedModule);
     return () => {
-      if (this._executionGenerations.get(moduleId) !== expectedGeneration) {
+      if (!isCurrent()) {
         throw new ModuleNotFoundError(moduleId);
       }
       return this.acquireExecution(moduleId, expectedModule, token);

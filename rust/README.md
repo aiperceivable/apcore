@@ -141,7 +141,8 @@ watching, YAML loading, and network delivery are opt-in.
 | `sys-modules` | Configured system modules and event setup |
 | `events` | HTTP webhook delivery and OTLP transport |
 | `events-file` | JSONL event subscribers |
-| `full` | All of the above |
+| `full` | All runtime integrations above |
+| `macros` | Typed module declarations and governed handles |
 
 Use `APCore::with_config` or `APCore::try_start` with the required features for
 configured startup. Calls requiring approval are denied when a handler is
@@ -160,6 +161,13 @@ cargo add serde_json async-trait
 For a prerelease, select its exact version on [crates.io](https://crates.io/crates/apcore).
 Enable `full` on the `apcore` dependency when the application uses all of the
 optional integrations.
+
+Enable `macros` when declaring modules with `#[apcore::module]`. Use
+`schemars` 0.8 to derive schemas for the input and output types and Serde to
+serialize both types. The input type's serialized representation must include
+the values the handler relies on. The registered module uses the normal
+executor, including ACL and approval. See the
+[typed module declarations](https://apcore.aiperceivable.com/features/module-interface/#typed-module-declarations).
 
 Configured health summaries expose `project.version` when supplied. Explicit
 `sys_modules.usage.retention_hours` sets the cutoff for hourly usage buckets

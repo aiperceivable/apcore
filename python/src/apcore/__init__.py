@@ -52,6 +52,7 @@ from apcore.registry.conflicts import (
 )
 from apcore.registry.registry import Discoverer, ModuleValidator
 from apcore.client import APCore
+from apcore.bound_module import AsyncBoundModule, BoundModule
 from apcore.lifecycle import (
     DrainAbortedContext,
     DrainContext,
@@ -481,23 +482,9 @@ def module(
     APCore.module() — it is an intentional escape hatch that lets global-decorator
     usage target a specific Registry instance rather than the default one.
     """
-    if registry is not None:
-        from apcore.decorator import module as original_module
+    from apcore.decorator import module as original_module
 
-        return original_module(
-            id=id,
-            description=description,
-            documentation=documentation,
-            annotations=annotations,
-            tags=tags,
-            version=version,
-            metadata=metadata,
-            display=display,
-            examples=examples,
-            registry=registry,
-            resources=resources,
-        )
-    return _get_default_client().module(
+    return original_module(
         id=id,
         description=description,
         documentation=documentation,
@@ -507,6 +494,7 @@ def module(
         metadata=metadata,
         display=display,
         examples=examples,
+        registry=_get_default_client().registry if registry is None else registry,
         resources=resources,
     )
 
@@ -597,12 +585,14 @@ __all__ = [
     "ACL",
     "ACLRule",
     "APCore",
+    "AsyncBoundModule",
     "ApprovalDeniedError",
     "ApprovalHandler",
     "ApprovalPendingError",
     "ApprovalRequest",
     "ApprovalResult",
     "AutoApproveHandler",
+    "BoundModule",
     "CancelToken",
     "AccessHint",
     "CallableDefinition",
