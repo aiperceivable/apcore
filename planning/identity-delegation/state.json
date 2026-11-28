@@ -2,13 +2,13 @@
   "feature": "identity-delegation",
   "created": "2026-11-28",
   "updated": "2026-11-28",
-  "status": "in_progress",
+  "status": "completed",
   "execution_order": ["shared-contract", "core-sdks", "surfaces", "verification"],
   "progress": {
     "total_tasks": 4,
-    "completed": 2,
-    "in_progress": 1,
-    "pending": 1,
+    "completed": 4,
+    "in_progress": 0,
+    "pending": 0,
     "skipped": 0,
     "blocked": 0
   },
@@ -30,14 +30,14 @@
       "id": "surfaces",
       "file": "tasks/surfaces.md",
       "title": "MCP and A2A verified claim mapping",
-      "status": "in_progress",
+      "status": "completed",
       "dependencies": ["core-sdks"]
     },
     {
       "id": "verification",
       "file": "tasks/verification.md",
       "title": "Dual-repository verification",
-      "status": "pending",
+      "status": "completed",
       "dependencies": ["core-sdks", "surfaces"]
     }
   ]
