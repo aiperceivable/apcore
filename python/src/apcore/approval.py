@@ -57,6 +57,7 @@ class ApprovalRequest:
             ``caller_id``; ``BuiltinApprovalGate`` always supplies it explicitly.
         module_version: Selected module version for a final approval.
         canonical_args_digest: SHA-256 binding for a final approval's arguments.
+        authority_key: Native binding for the current scoped identity.
     """
 
     module_id: str
@@ -69,6 +70,7 @@ class ApprovalRequest:
     action: str = ""
     module_version: str | None = None
     canonical_args_digest: str | None = field(default=None, repr=False)
+    authority_key: str | None = field(default=None, repr=False)
 
 
 @dataclass(frozen=True)
@@ -118,6 +120,8 @@ class ScopedApprovalHandler(ApprovalHandler, Protocol):
 
     Set ``supports_final_scope = True`` when issuance and resumption verify
     the version and canonical argument digest as well as the existing scope.
+    Set ``supports_authority_scope = True`` when issuance and resumption
+    also bind the authority key before consuming the approval.
     """
 
     async def check_approval_for_call(self, approval_id: str, request: ApprovalRequest) -> ApprovalResult:

@@ -24,6 +24,9 @@ import {
   describeArgumentsFaults,
   isOutcomeHandler,
 } from './acl-handlers.js';
+import {
+  delegationDepthOf, hasScopeCeiling, isScopeLiteral, isTrustedIdentity, MAX_DELEGATION_DEPTH, rootSubjectOf,
+} from './identity.js';
 
 /**
  * Minimal structural view of a `Config` used by `ACL.discover()`.
@@ -113,10 +116,48 @@ const HIDDEN_VISIBILITY: VisibilityDecision = Object.freeze({
   visible: false, approvalRequired: false, approvalConditional: false,
 });
 
-const visibilityHandlers = new Map([
+function isDelegationDepth(value: unknown): value is number {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 0 && value <= MAX_DELEGATION_DEPTH;
+}
+
+function identityConditionFault(key: string, value: unknown): string | null {
+  if (key === 'max_delegation_depth' && !isDelegationDepth(value)) return 'must be an integer from 0 through 8';
+  if (key === 'scopes' && (!Array.isArray(value) || value.length === 0 || ![...value].every(isScopeLiteral))) {
+    return 'must be a nonempty list of scope literals';
+  }
+  if ((key === 'subject_types' || key === 'subject_roles') &&
+      (!Array.isArray(value) || value.length === 0 || ![...value].every(item => typeof item === 'string' && item.length > 0))) {
+    return 'must be a nonempty list of nonempty strings';
+  }
+  return null;
+}
+
+const scopesHandler = {
+  evaluate(value: unknown, context: Context): boolean {
+    const scopes = isTrustedIdentity(context.identity) ? context.identity.scopes : undefined;
+    return scopes !== undefined && Array.isArray(value) && value.length > 0 &&
+      [...value].every(scope => isScopeLiteral(scope) && scopes.includes(scope));
+  },
+};
+
+const visibilityHandlers = new Map<string, { evaluate(value: unknown, context: Context): boolean }>([
   ['identity_types', new IdentityTypesHandler()],
   ['roles', new RolesHandler()],
   ['max_call_depth', new MaxCallDepthHandler()],
+  ['scopes', scopesHandler],
+  ['subject_types', {
+    evaluate: (value, context) => isTrustedIdentity(context.identity) && Array.isArray(value) &&
+      value.includes(rootSubjectOf(context.identity).type),
+  }],
+  ['subject_roles', {
+    evaluate: (value, context) => isTrustedIdentity(context.identity) && Array.isArray(value) &&
+      rootSubjectOf(context.identity).roles.some(role => value.includes(role)),
+  }],
+  ['max_delegation_depth', {
+    evaluate: (value, context) => isTrustedIdentity(context.identity) &&
+      isDelegationDepth(value) &&
+      delegationDepthOf(context.identity) <= value,
+  }],
 ]);
 
 type VisibilityCondition = boolean | 'unknown';
@@ -147,6 +188,9 @@ export interface AuditEntry {
   readonly matchedRule: string | null; // Rule description
   readonly matchedRuleIndex: number | null;
   readonly identityType: string | null;
+  readonly actorId?: string;
+  readonly subjectId?: string;
+  readonly delegationDepth?: number;
   readonly roles: readonly string[];
   readonly callDepth: number | null;
   readonly traceId: string | null;
@@ -660,6 +704,12 @@ function precheckConditions(
       continue;
     }
 
+    const fault = identityConditionFault(key, value);
+    if (fault !== null) {
+      out.push({ path, key, message: `ACL condition '${path}' ${fault}`, syncResolvable: false, asyncResolvable: false });
+      continue;
+    }
+
     // §6.1.1 case 1 / §6.1.3 — resolvable on the evaluation path in use.
     const { syncResolvable, asyncResolvable } = conditionResolvability(key);
     const resolvable = mode === 'sync' ? syncResolvable : asyncResolvable;
@@ -1022,6 +1072,9 @@ export function auditEntryToWire(entry: AuditEntry): Record<string, unknown> {
     matched_rule: entry.matchedRule,
     matched_rule_index: entry.matchedRuleIndex,
     identity_type: entry.identityType,
+    ...(entry.actorId === undefined ? {} : {
+      actor_id: entry.actorId, subject_id: entry.subjectId, delegation_depth: entry.delegationDepth,
+    }),
     roles: entry.roles,
     call_depth: entry.callDepth,
     trace_id: entry.traceId,
@@ -1725,10 +1778,11 @@ export class ACL {
         pendingApproval ||= ACL._raisesPendingApproval(rule);
         continue;
       }
+      if (!ACL._grantsScope(rule, context, 'async')) return HIDDEN_VISIBILITY;
       possibleApprovals.add(pendingApproval || rule.approval === 'required');
       if (outcome === true) return ACL._visibleApproval(possibleApprovals);
     }
-    if (this._defaultEffect !== 'allow') return HIDDEN_VISIBILITY;
+    if (this._defaultEffect !== 'allow' || hasScopeCeiling(context?.identity)) return HIDDEN_VISIBILITY;
     possibleApprovals.add(pendingApproval);
     return ACL._visibleApproval(possibleApprovals);
   }
@@ -1739,6 +1793,14 @@ export class ACL {
       approvalRequired: !possibleApprovals.has(false),
       approvalConditional: possibleApprovals.size > 1,
     };
+  }
+
+  private static _grantsScope(rule: ACLRule, context: Context | null, mode: EvaluationPath): boolean {
+    if (context === null || !hasScopeCeiling(context.identity)) return true;
+    const handler = (mode === 'async' ? ACL.asyncConditionHandlers.get('scopes') : undefined)
+      ?? ACL.conditionHandlers.get('scopes');
+    return handler === scopesHandler && rule.conditions != null &&
+      Object.hasOwn(rule.conditions, 'scopes') && scopesHandler.evaluate(rule.conditions.scopes, context) === true;
   }
 
   private _visibilityRule(
@@ -1828,7 +1890,7 @@ export class ACL {
           continue;
         }
         return this._decideByRule(
-          effectiveCaller, targetId, rule, idx, ctx, auditSink, frame, pendingApproval,
+          effectiveCaller, targetId, rule, idx, ctx, auditSink, frame, pendingApproval, 'sync',
         );
       }
 
@@ -1886,7 +1948,7 @@ export class ACL {
         continue;
       }
       return this._decideByRule(
-        effectiveCaller, targetId, rule, idx, ctx, auditSink, frame, pendingApproval,
+        effectiveCaller, targetId, rule, idx, ctx, auditSink, frame, pendingApproval, 'async',
       );
     }
 
@@ -1914,6 +1976,7 @@ export class ACL {
     auditSink: AuditSink,
     frame: EvaluationFrame,
     pendingApproval: boolean,
+    mode: EvaluationPath,
   ): AccessDecision {
     // §6.1.5 (v1.30.0): this ternary is TOTAL over the closed value set, not a
     // fallback — as of #111 an `effect` outside {allow, deny} cannot reach here
@@ -1922,7 +1985,7 @@ export class ACL {
     // It stays a ternary rather than becoming a throw because §6.1.1 makes
     // `check()` a call that MUST NOT raise; closing the doors is the mechanism,
     // and a rule object mutated in place after validation is the only residue.
-    const access = rule.effect === 'allow' ? 'allow' : 'deny';
+    const access = rule.effect === 'allow' && ACL._grantsScope(rule, ctx, mode) ? 'allow' : 'deny';
     // §6.1.6: the two results are orthogonal, and `approval: required` on a
     // `deny` rule is rejected at every entry point — the `access` guard is
     // belt-and-braces against a rule object mutated in place after load.
@@ -1969,7 +2032,7 @@ export class ACL {
     // Total over the closed set for the same reason as in `_decideByRule`:
     // §6.1.5 closes `default_effect` on the same terms, and the constructor —
     // which `ACL.load()` also reaches — has always rejected anything else.
-    const access = defaultEffect === 'allow' ? 'allow' : 'deny';
+    const access = defaultEffect === 'allow' && !hasScopeCeiling(ctx?.identity) ? 'allow' : 'deny';
     const reason = ruleCount === 0 ? 'no_rules' : 'default_effect';
     // A `deny` default clears the pending requirement exactly as a matched
     // `deny` rule does (§6.1.1 rule 5, third bullet).
@@ -2091,6 +2154,11 @@ export class ACL {
       matchedRule: matchedRule?.description ?? null,
       matchedRuleIndex,
       identityType,
+      ...(context?.identity == null || !isTrustedIdentity(context.identity) || !hasScopeCeiling(context.identity) ? {} : {
+        actorId: context.identity.id,
+        subjectId: rootSubjectOf(context.identity).id,
+        delegationDepth: delegationDepthOf(context.identity),
+      }),
       roles,
       callDepth,
       traceId,

@@ -5,7 +5,7 @@ description: "Immutable Identity (id, type, roles, attrs) for the caller, attach
 # Identity System
 
 <!-- preamble-tier-doc -->
-> **Type:** Implementation guide. **Normative spec:** [PROTOCOL_SPEC](../spec/protocol-spec.md) §5.7 Context Parameter Specification (`identity` sub-schema).
+> **Type:** Implementation guide. **Normative spec:** [Context Parameter Specification](../spec/protocol-spec.md#57-context-parameter-specification) and [Trusted Identity Delegation](../spec/protocol-spec.md#trusted-identity-delegation).
 
 
 ## Overview
@@ -42,8 +42,8 @@ The Identity System gives the caller a structured representation that flows thro
     `roles` passed as a list is converted to a tuple, and `attrs` is copied, so mutating the caller's objects afterwards does not change the identity.
 === "TypeScript"
     ```typescript
-    // Shape of the frozen Identity class. The package root exports it as a
-    // type; construct instances with createIdentity().
+    // Public fields of the frozen Identity class. Use createIdentity() to
+    // construct an instance.
     interface Identity {
         readonly id: string;
         readonly type: string;                              // Default: "user"
@@ -96,7 +96,7 @@ The `type` field is a free-form string; the values above are the conventions lis
 
 ### Equality and Hashability
 
-`Identity` is a value type. Equality is **structural** — two identities are equal when `id`, `type`, `roles` and `attrs` are equal. Hashability differs per language (D-26):
+An `Identity` includes its ID, type, roles, attributes, and any explicit authority fields. Native equality and hashability differ per language (D-26):
 
 - **Rust**: derives `PartialEq`/`Eq` and implements `Hash` (attributes are hashed in key order), so it can be used as a `HashMap` key.
 - **Python**: a frozen dataclass whose `attrs` field is a `dict`, so `hash(identity)` raises `TypeError`; cross-language code SHOULD NOT rely on hashing identities.
@@ -201,6 +201,55 @@ rules:
 
 See [ACL System](./acl-system.md) for the full condition syntax.
 
+### Trusted Delegation
+
+A trusted host can assign an explicit scope ceiling to an authenticated identity and delegate a subset to another trusted actor. The resulting identity uses the delegate's ID, type, and roles. Its root subject remains the identity that supplied the original authority. Every link requires an explicit scope set, and a chain can contain up to eight links. An omitted scope collection keeps a direct identity under the ordinary ACL contract. An empty collection grants zero scopes.
+
+=== "Python"
+    ```python
+    from apcore import Context, Identity
+
+    subject = Identity("user-123", scopes=("reports:read", "reports:write"))
+    actor = Identity("reports-worker", type="service")
+    delegated = subject.delegate(actor, ("reports:read",))
+    context = Context.create(identity=delegated)
+    assert context.identity is not None
+    assert context.identity.root_subject.id == "user-123"
+    ```
+=== "TypeScript"
+    ```typescript
+    import { Context, createIdentity } from "apcore-js";
+
+    const subject = createIdentity("user-123", "user", [], {}, {
+        scopes: ["reports:read", "reports:write"],
+    });
+    const actor = createIdentity("reports-worker", "service");
+    const delegated = subject.delegate(actor, ["reports:read"]);
+    const context = Context.create(delegated);
+    if (context.identity?.rootSubject.id !== "user-123") {
+        throw new Error("Unexpected root subject");
+    }
+    ```
+=== "Rust"
+    ```rust
+    use apcore::{Context, Identity};
+    use apcore::errors::ModuleError;
+    use serde_json::Value;
+    use std::collections::HashMap;
+
+    fn main() -> Result<(), ModuleError> {
+        let subject = Identity::new("user-123".into(), "user".into(), vec![], HashMap::new())
+            .with_authority(Some(vec!["reports:read".into(), "reports:write".into()]), None)?;
+        let actor = Identity::new("reports-worker".into(), "service".into(), vec![], HashMap::new());
+        let delegated = subject.delegate(actor, vec!["reports:read".into()])?;
+        let context = Context::create(Some(delegated), None, None, None, Value::Null, None);
+        assert_eq!(context.identity.as_ref().map(|i| i.root_subject().id()), Some("user-123"));
+        Ok(())
+    }
+    ```
+
+Authorize scoped identities with a nonempty top-level `scopes` condition on the matching ACL allow rule. The actor must hold every listed scope. `identity_types` and `roles` inspect the actor. `subject_types` and `subject_roles` inspect the root subject, and `max_delegation_depth` limits active links. Capability discovery applies the same scope rules as execution.
+
 ### ContextFactory
 
 A `ContextFactory` turns a runtime-specific request (a Django `HttpRequest`, an Express `Request`, an Axum extractor) into a `Context`, extracting the identity on the way.
@@ -301,7 +350,7 @@ The identity is included when a Context is serialized for cross-process transfer
 }
 ```
 
-Deserialization rebuilds the `Identity` from this object. See [Context Object §Serialization](./context-object.md#serialization).
+Serialization adds `scopes`, `on_behalf_of`, and `issuer` when present. A parent identity uses the same wire fields as the actor. Deserialization verifies bounded depth and scope attenuation. Accept identity data as authority only after authenticating it at the host boundary. See [Context Object §Serialization](./context-object.md#serialization).
 
 ## Dependencies
 

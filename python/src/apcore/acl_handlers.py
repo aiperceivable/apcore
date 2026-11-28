@@ -18,7 +18,7 @@ import contextvars
 from enum import Enum
 from typing import Any, Awaitable, Callable, ClassVar, Mapping, Protocol, Union, runtime_checkable
 
-from apcore.context import Context
+from apcore.context import Context, _MAX_DELEGATION_DEPTH, _valid_scope_literal
 
 __all__ = [
     "ConditionOutcome",
@@ -174,6 +174,55 @@ class _RolesHandler:
         if not isinstance(value, list):
             return False
         return bool(set(context.identity.roles) & set(value))
+
+
+class _ScopesHandler:
+    """Require every literal scope in an explicit, nonempty list."""
+
+    def evaluate(self, value: Any, context: Context) -> bool:
+        identity = context.identity
+        return (
+            identity is not None
+            and identity.scopes is not None
+            and _is_nonempty_string_list(value)
+            and set(value).issubset(identity.scopes)
+        )
+
+
+def _is_nonempty_string_list(value: Any) -> bool:
+    return isinstance(value, list) and bool(value) and all(isinstance(item, str) and item for item in value)
+
+
+class _SubjectTypesHandler:
+    def evaluate(self, value: Any, context: Context) -> bool:
+        return context.identity is not None and context.identity.root_subject.type in value
+
+
+class _SubjectRolesHandler:
+    def evaluate(self, value: Any, context: Context) -> bool:
+        return context.identity is not None and any(role in value for role in context.identity.root_subject.roles)
+
+
+class _MaxDelegationDepthHandler:
+    def evaluate(self, value: Any, context: Context) -> bool:
+        threshold = _delegation_depth_threshold(value)
+        return context.identity is not None and threshold is not None and context.identity.delegation_depth <= threshold
+
+
+def _delegation_depth_threshold(value: Any) -> int | None:
+    if isinstance(value, float) and value.is_integer():
+        value = int(value)
+    return value if type(value) is int and 0 <= value <= _MAX_DELEGATION_DEPTH else None
+
+
+def validate_identity_condition(key: str, value: Any) -> str | None:
+    if key in ("scopes", "subject_roles", "subject_types") and not _is_nonempty_string_list(value):
+        return "value must be a nonempty list of nonempty strings"
+    if key == "scopes" and not all(_valid_scope_literal(scope) for scope in value):
+        return "scope strings must not contain whitespace"
+    if key == "max_delegation_depth" and _delegation_depth_threshold(value) is None:
+        return "value must be an integer from 0 through 8"
+    return None
 
 
 class _MaxCallDepthHandler:

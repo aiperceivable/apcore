@@ -63,6 +63,14 @@ pub struct ApprovalRequest {
     pub tags: Vec<String>,
 }
 
+impl ApprovalRequest {
+    /// Authority to bind when issuing or consuming a durable approval.
+    #[must_use]
+    pub fn authority_key(&self) -> Option<String> {
+        self.context.as_ref()?.identity.as_ref()?.authority_key()
+    }
+}
+
 /// Outcome of an approval request.
 ///
 /// Marked `#[non_exhaustive]` (issue #24) so a future spec revision can add a
@@ -160,6 +168,12 @@ pub trait ApprovalHandler: Send + Sync + std::fmt::Debug {
     /// Whether this handler binds and atomically consumes final-scope credentials.
     /// Immediate approval decisions do not require this capability.
     fn supports_final_scope(&self) -> bool {
+        false
+    }
+
+    /// Whether durable approvals are atomically bound to the current authority.
+    /// An immediate decision does not require this capability.
+    fn supports_authority_scope(&self) -> bool {
         false
     }
 

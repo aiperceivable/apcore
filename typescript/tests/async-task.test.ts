@@ -68,6 +68,21 @@ describe('TaskStatus', () => {
 
 describe('AsyncTaskManager', () => {
   describe('submit and status transitions', () => {
+    it('allocates the task ID before the initial store write', async () => {
+      const allocated: string[] = [];
+      class RejectingStore extends InMemoryTaskStore {
+        override async save(task: TaskInfo): Promise<void> {
+          expect(allocated).toEqual([task.taskId]);
+          throw new Error('initial store write failed');
+        }
+      }
+      const manager = new AsyncTaskManager({ executor: new Executor({ registry: createRegistry() }), store: new RejectingStore() });
+      await expect(manager.submit('test.simple', {}, { onTaskAllocated: id => { allocated.push(id); } }))
+        .rejects.toThrow('initial store write failed');
+      expect(allocated).toHaveLength(1);
+      expect(await manager.listTasks()).toEqual([]);
+    });
+
     it('reconciles a completed result after the runner exhausts its store writes', async () => {
       let notifyFailed!: () => void;
       const writesFailed = new Promise<void>((resolve) => { notifyFailed = resolve; });

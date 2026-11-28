@@ -23,17 +23,22 @@ from apcore.acl_handlers import (
     _ArgumentsHandler,
     _IdentityTypesHandler,
     _MaxCallDepthHandler,
+    _MaxDelegationDepthHandler,
     _NotHandler,
     _NotHandlerAsync,
     _OrHandler,
     _OrHandlerAsync,
     _projection_var,
     _RolesHandler,
+    _ScopesHandler,
+    _SubjectRolesHandler,
+    _SubjectTypesHandler,
     join_condition_path,
     validate_arguments_condition,
+    validate_identity_condition,
 )
 from apcore.config import Config
-from apcore.context import Context
+from apcore.context import Context, _identity_audit_fields
 from apcore.errors import ACLRuleError
 from apcore.utils.pattern import match_pattern
 
@@ -272,8 +277,7 @@ def _pattern_array_fault(patterns: Any) -> str | None:
     if patterns[0] == "$not" and operands != 1:
         if operands == 0:
             return (
-                "'$not' at index 0 MUST be followed by exactly one pattern, and none was given. "
-                f"{_EMPTY_ARITY_REMEDY}"
+                f"'$not' at index 0 MUST be followed by exactly one pattern, and none was given. {_EMPTY_ARITY_REMEDY}"
             )
         return (
             f"'$not' at index 0 MUST be followed by exactly one pattern, got {operands}. Through spec "
@@ -334,7 +338,7 @@ def _validate_approval(approval: Any, effect: Any, *, where: str) -> None:
     """
     if approval not in _APPROVAL_VALUES:
         raise ACLRuleError(
-            f"{where} has invalid approval {approval!r}, must be " f"{APPROVAL_REQUIRED!r} or {APPROVAL_NOT_REQUIRED!r}"
+            f"{where} has invalid approval {approval!r}, must be {APPROVAL_REQUIRED!r} or {APPROVAL_NOT_REQUIRED!r}"
         )
     if approval == APPROVAL_REQUIRED and effect == "deny":
         raise ACLRuleError(
@@ -485,6 +489,9 @@ class AuditEntry:
     # ``decision`` is a string downstream consumers parse, and a third value
     # would break every existing parser.
     approval_required: bool = False
+    actor_id: str | None = None
+    subject_id: str | None = None
+    delegation_depth: int | None = None
 
 
 @dataclass(frozen=True)
@@ -530,10 +537,15 @@ class VisibilityDecision:
     approval_conditional: bool = False
 
 
+_BUILTIN_SCOPES = _ScopesHandler()
 _VISIBILITY_HANDLERS = {
     "identity_types": _IdentityTypesHandler(),
     "roles": _RolesHandler(),
     "max_call_depth": _MaxCallDepthHandler(),
+    "scopes": _BUILTIN_SCOPES,
+    "subject_types": _SubjectTypesHandler(),
+    "subject_roles": _SubjectRolesHandler(),
+    "max_delegation_depth": _MaxDelegationDepthHandler(),
 }
 _MATCH = ConditionOutcome.SATISFIED
 _NO_MATCH = ConditionOutcome.UNSATISFIED
@@ -715,7 +727,11 @@ class _AuditSink:
         config = self._config or {}
         level = _AUDIT_LEVELS.get(str(config.get("log_level", "info")), logging.INFO)
         try:
-            _audit_logger_default.log(level, AUDIT_EVENT_NAME, extra={"apcore_audit": asdict(entry)})
+            fields = asdict(entry)
+            if entry.actor_id is None:
+                for key in ("actor_id", "subject_id", "delegation_depth"):
+                    del fields[key]
+            _audit_logger_default.log(level, AUDIT_EVENT_NAME, extra={"apcore_audit": fields})
         except Exception as exc:  # noqa: BLE001 — a logging handler can fail too
             self._report_failure(exc)
 
@@ -1286,6 +1302,10 @@ class ACL:
                 for suffix, reason in validate_arguments_condition(value):
                     faults.append(_Fault(path=f"{path}{suffix}", key=key, reason=reason))
             else:
+                fault = validate_identity_condition(key, value)
+                if fault is not None:
+                    faults.append(_Fault(path=path, key=key, reason=fault))
+                    continue
                 sync_resolvable = key in cls._condition_handlers
                 async_resolvable = sync_resolvable or key in cls._async_condition_handlers
                 resolvable = async_resolvable if async_path else sync_resolvable
@@ -1720,6 +1740,7 @@ class ACL:
                 pending_approval=pending_approval,
                 audit_sink=audit_sink,
                 context=context,
+                async_path=False,
             )
         finally:
             _projection_var.reset(projection_token)
@@ -1823,6 +1844,7 @@ class ACL:
                 pending_approval=pending_approval,
                 audit_sink=audit_sink,
                 context=context,
+                async_path=True,
             )
         finally:
             _projection_var.reset(projection_token)
@@ -1840,6 +1862,8 @@ class ACL:
             if rule.effect != "allow" and outcomes != {_NO_MATCH}:
                 return VisibilityDecision(False)
             if _MATCH in outcomes:
+                if not self._scope_grant(rule, context, async_path=True):
+                    return VisibilityDecision(False)
                 possible_approvals.update(
                     pending or rule.approval == APPROVAL_REQUIRED for pending in pending_approvals
                 )
@@ -1848,7 +1872,7 @@ class ACL:
             if _FAULT in outcomes and self._raises_pending_approval(rule):
                 pending_approvals = (pending_approvals | {True}) if _NO_MATCH in outcomes else {True}
         else:
-            if default_effect != "allow":
+            if default_effect != "allow" or not self._scope_grant(None, context, async_path=True):
                 return VisibilityDecision(False)
             possible_approvals.update(pending_approvals)
 
@@ -1915,6 +1939,16 @@ class ACL:
         with self._lock:
             return effective_caller, list(self._rules), self._default_effect, self._audit_sink
 
+    @classmethod
+    def _scope_grant(cls, rule: ACLRule | None, context: Context | None, *, async_path: bool) -> bool:
+        if context is None or context.identity is None or context.identity.scopes is None:
+            return True
+        if rule is None or not isinstance(rule.conditions, dict):
+            return False
+        stock_handler = cls._condition_handlers.get("scopes")
+        handler = cls._async_condition_handlers.get("scopes", stock_handler) if async_path else stock_handler
+        return handler is _BUILTIN_SCOPES and _BUILTIN_SCOPES.evaluate(rule.conditions.get("scopes"), context)
+
     def _finalize_check(
         self,
         *,
@@ -1928,6 +1962,7 @@ class ACL:
         pending_approval: bool,
         audit_sink: "_AuditSink",
         context: Context | None,
+        async_path: bool,
     ) -> AccessDecision:
         """Log the decision, emit an audit entry, and return the structured result.
 
@@ -1982,6 +2017,8 @@ class ACL:
         # clears it — "denied *and* put it to a human" is the same meaningless
         # state §6.1.6 rejects on a rule — while ``matched_rule_index`` keeps
         # naming the rule that actually decided, not the unevaluable one.
+        if access == "allow" and not self._scope_grant(matched_rule, context, async_path=async_path):
+            access = "deny"
         approval_required = access == "allow" and (approval_required or pending_approval)
 
         self._logger.debug(
@@ -2062,13 +2099,14 @@ class ACL:
         roles: tuple[str, ...] = ()
         call_depth: int | None = None
         trace_id: str | None = None
+        identity = context.identity if context is not None else None
 
         if context is not None:
             trace_id = context.trace_id
             call_depth = len(context.call_chain)
-            if context.identity is not None:
-                identity_type = context.identity.type
-                roles = tuple(context.identity.roles)
+            if identity is not None:
+                identity_type = identity.type
+                roles = tuple(identity.roles)
 
         return AuditEntry(
             timestamp=datetime.now(timezone.utc).isoformat(),
@@ -2084,6 +2122,7 @@ class ACL:
             trace_id=trace_id,
             handler_error=_handler_error_message(),
             approval_required=approval_required,
+            **(_identity_audit_fields(context) if context is not None else {}),
         )
 
     def _match_pattern(self, pattern: str, value: str, context: Context | None = None) -> bool:

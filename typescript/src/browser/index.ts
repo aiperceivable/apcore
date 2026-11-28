@@ -27,7 +27,7 @@ export type { Discoverer, ModuleValidator } from '../registry/registry.js';
 
 // ---- Context / identity / cancel -----------------------------------------
 export { CancelToken, ExecutionCancelledError } from '../cancel.js';
-export { Context, createIdentity } from '../context.js';
+export { Context, Identity, createIdentity } from '../context.js';
 export { ContextKey } from '../context-key.js';
 export {
   TRACING_SPANS,
@@ -37,7 +37,7 @@ export {
   REDACTED_OUTPUT,
   RETRY_COUNT_BASE,
 } from '../context-keys.js';
-export type { Identity, ContextFactory } from '../context.js';
+export type { IdentityOptions, ContextFactory } from '../context.js';
 export { TraceContext } from '../trace-context.js';
 export type { TraceParent } from '../trace-context.js';
 

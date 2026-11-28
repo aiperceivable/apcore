@@ -64,7 +64,9 @@ class _PolicyInvocation:
         self.version = version
         self.caller_id = ctx.context.caller_id
         try:
-            self.identity = deepcopy(ctx.context.identity)
+            identity = ctx.context.identity
+            self.authority_key = identity.authority_key() if identity is not None else None
+            self.identity = deepcopy(identity)
         except Exception:
             raise PolicyEvaluationError() from None
         self.arguments: dict[str, Any] | None = None
@@ -79,11 +81,13 @@ class _PolicyInvocation:
         self.arguments = deepcopy(arguments)
 
     def _check_binding(self, ctx: PipelineContext) -> None:
+        identity = ctx.context.identity
         if (
             ctx.module_id != self.module_id
             or ctx.module is not self.module
             or ctx.context.caller_id != self.caller_id
-            or ctx.context.identity != self.identity
+            or identity != self.identity
+            or (self.authority_key is not None and (identity is None or identity.authority_key() != self.authority_key))
         ):
             raise PolicyEvaluationError()
 

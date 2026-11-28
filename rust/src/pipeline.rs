@@ -317,6 +317,7 @@ pub struct PipelineContext {
     /// from the strategy — absence of the gate is not a requirement.
     pub acl_approval_required: bool,
     pub(crate) acl_decision: Option<crate::acl::AccessDecision>,
+    initial_scope: Option<ScopeInvocation>,
     pub(crate) policy_evaluator: Option<Arc<dyn crate::policy::PolicyEvaluator>>,
     pub(crate) policy_approval_annotations: Option<crate::module::ModuleAnnotations>,
     pub(crate) policy_effect: Option<crate::policy::PolicyEffect>,
@@ -386,6 +387,50 @@ pub struct PipelineContext {
     pub trace: PipelineTrace,
 }
 
+struct ScopeInvocation {
+    authority: String,
+    module_id: String,
+    caller_id: String,
+    call_chain: Vec<String>,
+    resolved_module: Option<Arc<dyn Module>>,
+    /// Set only by the stock ACL gate after a scope-constrained grant.
+    granted: bool,
+}
+
+impl ScopeInvocation {
+    fn from_parent(context: &Context<serde_json::Value>, module_id: &str) -> Option<Self> {
+        let authority = context.identity.as_ref()?.authority_key()?;
+        let prospective = context.child(module_id);
+        Some(Self {
+            authority,
+            module_id: module_id.to_owned(),
+            caller_id: prospective
+                .caller_id
+                .unwrap_or_else(|| crate::acl::EXTERNAL_CALLER.into()),
+            call_chain: prospective.call_chain,
+            resolved_module: None,
+            granted: false,
+        })
+    }
+
+    fn matches(&self, ctx: &PipelineContext, authority: &str) -> bool {
+        self.authority == authority
+            && self.module_id == ctx.module_id
+            && self.caller_id
+                == ctx
+                    .context
+                    .caller_id
+                    .as_deref()
+                    .unwrap_or(crate::acl::EXTERNAL_CALLER)
+            && self.call_chain == ctx.context.call_chain
+            && self
+                .resolved_module
+                .as_ref()
+                .zip(ctx.module.as_ref())
+                .is_some_and(|(expected, actual)| Arc::ptr_eq(expected, actual))
+    }
+}
+
 impl PipelineContext {
     /// Create a new `PipelineContext` for a module invocation.
     pub fn new(
@@ -399,6 +444,7 @@ impl PipelineContext {
         let approval_credential = inputs
             .as_object_mut()
             .and_then(|object| object.remove(crate::policy::APPROVAL_TOKEN_KEY));
+        let initial_scope = ScopeInvocation::from_parent(&context, &module_id);
         Self {
             trace: PipelineTrace::new(module_id.clone(), strategy_name.clone()),
             module_id,
@@ -410,6 +456,7 @@ impl PipelineContext {
             governance_projection: None,
             acl_approval_required: false,
             acl_decision: None,
+            initial_scope,
             policy_evaluator: None,
             policy_approval_annotations: None,
             policy_effect: None,
@@ -468,12 +515,64 @@ impl PipelineContext {
         self.approval_credential.is_some()
     }
 
+    pub(crate) fn reject_unconsumed_scoped_approval(&self) -> Result<(), ModuleError> {
+        if self.initial_scope.is_some() && self.has_approval_credential() {
+            return Err(ModuleError::new(
+                ErrorCode::ApprovalDenied,
+                "The supplied approval credential was not authorized for this scoped invocation",
+            ));
+        }
+        Ok(())
+    }
+
     fn policy_admission_pending(&self) -> bool {
         self.policy_evaluator.is_some() && self.policy_effect.is_none()
     }
 
     pub(crate) fn blocks_error_recovery(&self) -> bool {
-        self.terminal_gate_failure || self.policy_admission_pending()
+        self.terminal_gate_failure
+            || self.policy_admission_pending()
+            || self.require_scope_grant().is_err()
+            || self.reject_unconsumed_scoped_approval().is_err()
+    }
+
+    pub(crate) fn record_scope_lookup(&mut self, module: &Arc<dyn Module>) {
+        if let Some(initial) = &mut self.initial_scope {
+            initial.resolved_module = Some(Arc::clone(module));
+        }
+    }
+
+    pub(crate) fn record_scope_grant(&mut self) {
+        if let Some(initial) = &mut self.initial_scope {
+            initial.granted = true;
+        }
+    }
+
+    pub(crate) fn require_scope_grant(&self) -> Result<(), ModuleError> {
+        self.require_scope_binding(true)
+    }
+
+    pub(crate) fn require_scope_binding(&self, grant_required: bool) -> Result<(), ModuleError> {
+        let current = self
+            .context
+            .identity
+            .as_ref()
+            .and_then(crate::Identity::authority_key);
+        let admitted = match (&self.initial_scope, &current) {
+            (None, None) => true,
+            (Some(initial), Some(current)) => {
+                (!grant_required || initial.granted) && initial.matches(self, current)
+            }
+            _ => false,
+        };
+        if admitted {
+            Ok(())
+        } else {
+            Err(ModuleError::acl_denied(
+                self.context.caller_id.as_deref(),
+                &self.module_id,
+            ))
+        }
     }
 
     pub(crate) fn bind_policy_inputs(&mut self) -> Result<(), ModuleError> {

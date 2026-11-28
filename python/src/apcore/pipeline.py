@@ -13,8 +13,8 @@ from enum import Enum
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any, Callable, Protocol, runtime_checkable
 
-from apcore.context import _APPROVAL_TOKEN_KEY
-from apcore.errors import InvalidInputError, ModuleError, ModuleTimeoutError, PolicyEvaluationError
+from apcore.context import Identity, _APPROVAL_TOKEN_KEY
+from apcore.errors import ACLDeniedError, InvalidInputError, ModuleError, ModuleTimeoutError, PolicyEvaluationError
 from apcore.middleware.manager import MiddlewareChainError
 from apcore.utils.pattern import match_pattern
 
@@ -674,6 +674,75 @@ async def _invoke_step_cleanup_hooks(
             continue
 
 
+@dataclass(frozen=True)
+class _ScopedSteps:
+    lookup: int
+    gate: int
+    dispatch: int
+
+
+@dataclass(frozen=True)
+class _ScopedFrame:
+    identity: Identity
+    module_id: str
+    caller_id: str | None
+    call_chain: tuple[str, ...]
+    steps: _ScopedSteps
+
+    @classmethod
+    def capture(cls, ctx: PipelineContext, identity: Identity, steps: _ScopedSteps) -> _ScopedFrame:
+        chain = tuple(ctx.context.call_chain)
+        return cls(identity, ctx.module_id, chain[-1] if chain else None, (*chain, ctx.module_id), steps)
+
+    def require_match(self, ctx: PipelineContext) -> None:
+        context = ctx.context
+        if (
+            context.identity is not self.identity
+            or ctx.module_id != self.module_id
+            or context.caller_id != self.caller_id
+            or tuple(context.call_chain) != self.call_chain
+        ):
+            raise ACLDeniedError(self.caller_id, self.module_id)
+
+    def require_module(self, ctx: PipelineContext, module: Any) -> None:
+        self.require_match(ctx)
+        if module is None or ctx.module is not module:
+            raise ACLDeniedError(self.caller_id, self.module_id)
+
+    def require_grant(self, ctx: PipelineContext, module: Any) -> None:
+        self.require_module(ctx, module)
+        if not ctx._acl_allowed:
+            raise ACLDeniedError(self.caller_id, self.module_id)
+
+
+def _scoped_steps(steps: Sequence[Step], module_id: str) -> _ScopedSteps | None:
+    """Find the ordered stock scope steps for execution and discovery."""
+    from apcore.acl import ACL
+    from apcore.builtin_steps import BuiltinACLCheck, BuiltinContextCreation, BuiltinExecute, BuiltinModuleLookup
+
+    context_ready = False
+    lookup_index = gate_index = None
+    for index, step in enumerate(steps):
+        patterns = getattr(step, "match_modules", None)
+        if patterns is not None and not _any_match(patterns, module_id):
+            continue
+        if step.name == "execute" or isinstance(step, BuiltinExecute):
+            if type(step) is BuiltinExecute and lookup_index is not None and gate_index is not None:
+                return _ScopedSteps(lookup_index, gate_index, index)
+            break
+        if gate_index is not None:
+            continue
+        if type(step) is BuiltinContextCreation:
+            context_ready = True
+        elif type(step) is BuiltinModuleLookup:
+            lookup_index = index if context_ready else None
+        elif isinstance(step, BuiltinACLCheck):
+            if type(step) is not BuiltinACLCheck or type(step.acl) is not ACL or lookup_index is None or not step.pure:
+                break
+            gate_index = index
+    return None
+
+
 class PipelineEngine:
     """Executes a pipeline strategy step by step."""
 
@@ -713,18 +782,30 @@ class PipelineEngine:
         # and apcore-rust ``pipeline_ctx.trace``.
         ctx.trace = trace
         start = time.monotonic()
-        steps = strategy.steps
+        steps: Sequence[Step] = strategy.steps
         step_mws = [] if ctx.dry_run else strategy.step_middlewares
         name_to_idx = strategy._name_to_idx  # O(1) step lookup
         step_outputs: dict[str, Any] = {}
         unavailable: set[str] = set()
         effective_run_until = run_until or ctx.run_until
         observation = ctx._stream_observation
+        identity = getattr(ctx.context, "identity", None)
+        scoped_frame = None
+        if isinstance(identity, Identity) and identity.scopes is not None and not ctx._acl_allowed:
+            steps = tuple(steps)
+            scoped_steps = _scoped_steps(steps, ctx.module_id)
+            if scoped_steps is None:
+                raise ACLDeniedError(ctx.context.caller_id, ctx.module_id)
+            scoped_frame = _ScopedFrame.capture(ctx, identity, scoped_steps)
+        scoped_module = None
+        scoped_dispatched = False
         i = 0
 
         # Index-based loop (not for-each) to support skip_to.
         while i < len(steps):
             step = steps[i]
+            if scoped_frame is not None and i > scoped_frame.steps.gate and not ctx._acl_allowed and not ctx.dry_run:
+                raise ACLDeniedError(scoped_frame.caller_id, scoped_frame.module_id)
             if observation is not None and observation.defer_step(step.name, ctx):
                 i += 1
                 continue
@@ -841,6 +922,15 @@ class PipelineEngine:
                 observation.before_step(step.name, ctx)
             recovered = False
             try:
+                if scoped_frame is not None:
+                    if i == scoped_frame.steps.lookup:
+                        scoped_frame.require_match(ctx)
+                    elif i == scoped_frame.steps.gate:
+                        scoped_frame.require_module(ctx, scoped_module)
+                    elif i > scoped_frame.steps.gate:
+                        scoped_frame.require_grant(ctx, scoped_module)
+                        if i == scoped_frame.steps.dispatch:
+                            scoped_dispatched = True
                 if timeout_ms > 0:
                     result = await asyncio.wait_for(
                         step.execute(ctx),
@@ -848,6 +938,8 @@ class PipelineEngine:
                     )
                 else:
                     result = await step.execute(ctx)
+                if scoped_frame is not None and i == scoped_frame.steps.lookup:
+                    scoped_module = ctx.module
             except Exception as exc:
                 duration = (time.monotonic() - step_start) * 1000
 
@@ -912,6 +1004,7 @@ class PipelineEngine:
                     getattr(step, "_fail_closed_on_error", False)
                     or ctx._policy_pending
                     or isinstance(exc, PolicyEvaluationError)
+                    or (scoped_frame is not None and isinstance(exc, ACLDeniedError))
                 )
                 recovery: Any = None
                 if error_mws:
@@ -1076,12 +1169,20 @@ class PipelineEngine:
                     context=ctx,
                 )
                 if effective_run_until(state):
+                    if scoped_frame is not None:
+                        scoped_frame.require_grant(ctx, scoped_module)
+                        if not ctx.dry_run and not scoped_dispatched:
+                            raise ACLDeniedError(scoped_frame.caller_id, scoped_frame.module_id)
                     trace.success = True
                     trace.total_duration_ms = (time.monotonic() - start) * 1000
                     return ctx.output, trace
 
             i += 1
 
+        if scoped_frame is not None and not ctx.dry_run:
+            scoped_frame.require_grant(ctx, scoped_module)
+            if not scoped_dispatched:
+                raise ACLDeniedError(scoped_frame.caller_id, scoped_frame.module_id)
         trace.success = not any(item.result.action == "abort" for item in trace.steps if not item.skipped)
         trace.total_duration_ms = (time.monotonic() - start) * 1000
         # Use ctx.output — it's the most up-to-date (middleware_after may modify it)

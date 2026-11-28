@@ -3,13 +3,18 @@
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 
 use parking_lot::RwLock;
 use std::sync::Arc;
 
 use crate::cancel::CancelToken;
+use crate::errors::ModuleError;
 use crate::trace_context::TraceParent;
+
+/// Maximum number of active delegation edges an identity may carry.
+pub const MAX_DELEGATION_DEPTH: usize = 8;
 
 const TRACE_ID_ZEROS: &str = "00000000000000000000000000000000";
 const TRACE_ID_FFFF: &str = "ffffffffffffffffffffffffffffffff";
@@ -53,23 +58,62 @@ struct IdentityRaw {
     roles: Vec<String>,
     #[serde(default)]
     attrs: HashMap<String, serde_json::Value>,
+    #[serde(default, deserialize_with = "present_identity_field")]
+    scopes: Option<Vec<String>>,
+    #[serde(default, deserialize_with = "present_identity_field")]
+    on_behalf_of: Option<Box<IdentityRaw>>,
+    #[serde(default, deserialize_with = "present_identity_field")]
+    issuer: Option<String>,
 }
 
-impl From<IdentityRaw> for Identity {
-    fn from(raw: IdentityRaw) -> Self {
-        Identity {
-            id: raw.id,
-            identity_type: raw.identity_type,
-            roles: raw.roles,
-            attrs: raw.attrs,
+fn present_identity_field<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    T::deserialize(deserializer).map(Some)
+}
+
+impl IdentityRaw {
+    fn into_identity(self, depth: usize) -> Result<Identity, ModuleError> {
+        if depth > MAX_DELEGATION_DEPTH {
+            return Err(ModuleError::invalid_input(
+                "Delegation depth exceeds the maximum",
+            ));
         }
+        let parent = self
+            .on_behalf_of
+            .map(|parent| parent.into_identity(depth + 1).map(Box::new))
+            .transpose()?;
+        let mut identity = Identity {
+            id: self.id,
+            identity_type: self.identity_type,
+            roles: self.roles,
+            attrs: self.attrs,
+            scopes: self.scopes,
+            issuer: self.issuer,
+            on_behalf_of: parent,
+        };
+        identity.normalize_authority()?;
+        if let Some(parent) = identity.on_behalf_of() {
+            parent.check_ceiling(identity.scopes())?;
+        }
+        Ok(identity)
+    }
+}
+
+impl TryFrom<IdentityRaw> for Identity {
+    type Error = ModuleError;
+
+    fn try_from(raw: IdentityRaw) -> Result<Self, Self::Error> {
+        raw.into_identity(0)
     }
 }
 
 /// Frozen/immutable identity representing the caller.
 /// Fields are private to enforce immutability after construction.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(from = "IdentityRaw")]
+#[serde(try_from = "IdentityRaw")]
 #[allow(clippy::struct_field_names)] // `identity_type` intentionally prefixed for clarity with renamed JSON field
 pub struct Identity {
     id: String,
@@ -77,6 +121,12 @@ pub struct Identity {
     identity_type: String,
     roles: Vec<String>,
     attrs: HashMap<String, serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    scopes: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    on_behalf_of: Option<Box<Identity>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    issuer: Option<String>,
 }
 
 impl Identity {
@@ -93,7 +143,172 @@ impl Identity {
             identity_type,
             roles,
             attrs,
+            scopes: None,
+            on_behalf_of: None,
+            issuer: None,
         }
+    }
+
+    /// Attach authority to a direct identity established by a trusted host.
+    ///
+    /// An absent scope set preserves the scope-free path. An empty set carries
+    /// no scoped authority. A delegated identity cannot be reissued this way.
+    pub fn with_authority(
+        mut self,
+        scopes: Option<Vec<String>>,
+        issuer: Option<String>,
+    ) -> Result<Self, ModuleError> {
+        if self.on_behalf_of.is_some() {
+            return Err(ModuleError::invalid_input(
+                "Only a direct identity can receive initial authority",
+            ));
+        }
+        self.scopes = scopes;
+        self.issuer = issuer;
+        self.normalize_authority()?;
+        Ok(self)
+    }
+
+    /// Narrow this identity's authority to a trusted direct actor.
+    pub fn delegate(&self, mut actor: Self, scopes: Vec<String>) -> Result<Self, ModuleError> {
+        if actor.on_behalf_of.is_some() || self.delegation_depth() >= MAX_DELEGATION_DEPTH {
+            return Err(ModuleError::invalid_input(
+                "Invalid actor or delegation depth",
+            ));
+        }
+        self.check_ceiling(Some(&scopes))?;
+        if actor.scopes.is_some() {
+            actor.check_ceiling(Some(&scopes))?;
+        }
+        actor.scopes = Some(scopes);
+        actor.normalize_authority()?;
+        actor.on_behalf_of = Some(Box::new(self.clone()));
+        Ok(actor)
+    }
+
+    fn normalize_authority(&mut self) -> Result<(), ModuleError> {
+        if (self.scopes.is_some() || self.issuer.is_some() || self.on_behalf_of.is_some())
+            && (self.id.is_empty() || self.identity_type.is_empty())
+        {
+            return Err(ModuleError::invalid_input(
+                "Scoped principals require a nonempty id and type",
+            ));
+        }
+        if self.issuer.as_ref().is_some_and(String::is_empty) {
+            return Err(ModuleError::invalid_input("Issuer must be nonempty"));
+        }
+        if let Some(scopes) = &mut self.scopes {
+            if scopes.iter().any(|scope| !valid_scope_literal(scope)) {
+                return Err(ModuleError::invalid_input(
+                    "Scope literals must be nonempty and contain no whitespace",
+                ));
+            }
+            scopes.sort_unstable();
+            scopes.dedup();
+        }
+        Ok(())
+    }
+
+    fn check_ceiling(&self, requested: Option<&[String]>) -> Result<(), ModuleError> {
+        match self.scopes().zip(requested) {
+            Some((ceiling, requested))
+                if requested
+                    .iter()
+                    .all(|scope| ceiling.binary_search(scope).is_ok()) =>
+            {
+                Ok(())
+            }
+            _ => Err(ModuleError::invalid_input(
+                "Delegated scopes exceed the explicit ceiling",
+            )),
+        }
+    }
+
+    /// Effective scope ceiling, if scope enforcement is enabled.
+    #[must_use]
+    pub fn scopes(&self) -> Option<&[String]> {
+        self.scopes.as_deref()
+    }
+
+    /// Immediate parent authority, if this identity is acting on behalf of one.
+    #[must_use]
+    pub fn on_behalf_of(&self) -> Option<&Self> {
+        self.on_behalf_of.as_deref()
+    }
+
+    /// Issuer supplied by the trusted identity source.
+    #[must_use]
+    pub fn issuer(&self) -> Option<&str> {
+        self.issuer.as_deref()
+    }
+
+    fn lineage(&self) -> impl Iterator<Item = &Self> {
+        std::iter::successors(Some(self), |identity| identity.on_behalf_of())
+    }
+
+    /// Original subject whose authority is being exercised.
+    #[must_use]
+    pub fn root_subject(&self) -> &Self {
+        self.lineage().last().unwrap_or(self)
+    }
+
+    /// Number of active delegation edges.
+    #[must_use]
+    pub fn delegation_depth(&self) -> usize {
+        self.lineage().count() - 1
+    }
+
+    /// Opaque key binding discovery and approval to current authority.
+    #[must_use]
+    pub fn authority_key(&self) -> Option<String> {
+        self.scopes()?;
+        let lineage: Vec<_> = self
+            .lineage()
+            .map(|identity| {
+                let mut roles: Vec<&str> = identity.roles().iter().map(String::as_str).collect();
+                roles.sort_unstable();
+                roles.dedup();
+                serde_json::json!([
+                    identity.issuer(),
+                    identity.id(),
+                    identity.identity_type(),
+                    roles,
+                    identity.scopes(),
+                ])
+            })
+            .collect();
+        Some(Self::projection_key(
+            "authority",
+            &serde_json::Value::Array(lineage),
+        ))
+    }
+
+    /// Opaque principal ownership key that survives scope refresh.
+    #[must_use]
+    pub fn owner_key(&self) -> Option<String> {
+        self.scopes()?;
+        let subject = self.root_subject();
+        let principals = serde_json::json!([
+            [self.issuer(), self.id(), self.identity_type()],
+            [subject.issuer(), subject.id(), subject.identity_type()],
+        ]);
+        Some(Self::projection_key("owner", &principals))
+    }
+
+    pub(crate) fn enrich_principal_audit(&self, event: &mut serde_json::Value) {
+        if self.scopes().is_some() {
+            event["actor_id"] = serde_json::json!(self.id());
+            event["subject_id"] = serde_json::json!(self.root_subject().id());
+            event["delegation_depth"] = serde_json::json!(self.delegation_depth());
+        }
+    }
+
+    fn projection_key(domain: &str, projection: &serde_json::Value) -> String {
+        let mut hash = Sha256::new();
+        hash.update(domain.as_bytes());
+        hash.update([0]);
+        hash.update(projection.to_string());
+        format!("{:x}", hash.finalize())
     }
 
     /// The unique identifier of the caller.
@@ -130,6 +345,10 @@ impl Identity {
     }
 }
 
+pub(crate) fn valid_scope_literal(scope: &str) -> bool {
+    !scope.is_empty() && !scope.chars().any(char::is_whitespace)
+}
+
 // Manual Hash impl: serde_json::Value doesn't implement Hash, so we sort
 // attrs by key and hash each value's canonical JSON string representation.
 // This is consistent with the derived PartialEq/Eq (order-independent HashMap
@@ -140,6 +359,9 @@ impl std::hash::Hash for Identity {
         self.id.hash(state);
         self.identity_type.hash(state);
         self.roles.hash(state);
+        self.scopes.hash(state);
+        self.issuer.hash(state);
+        self.on_behalf_of.hash(state);
         let mut pairs: Vec<_> = self.attrs.iter().collect();
         pairs.sort_by_key(|(k, _)| k.as_str());
         for (k, v) in pairs {
@@ -329,12 +551,7 @@ impl<T: Default> Context<T> {
         });
 
         if let Some(ref identity) = self.identity {
-            result["identity"] = serde_json::json!({
-                "id": identity.id(),
-                "type": identity.identity_type(),
-                "roles": identity.roles(),
-                "attrs": identity.attrs(),
-            });
+            result["identity"] = serde_json::json!(identity);
         } else {
             result["identity"] = serde_json::Value::Null;
         }
@@ -386,13 +603,12 @@ impl<T: Default> Context<T> {
     /// `global_deadline`) are set to `None`/default after deserialization.
     /// If `_context_version` is greater than 1, a warning is logged
     /// but deserialization proceeds (forward compatibility).
-    #[allow(clippy::needless_pass_by_value)] // public API: callers pass owned Value; changing to &Value would be breaking
-    pub fn deserialize(value: serde_json::Value) -> Result<Self, serde_json::Error>
+    pub fn deserialize(mut value: serde_json::Value) -> Result<Self, serde_json::Error>
     where
         T: Default,
     {
         let obj = value
-            .as_object()
+            .as_object_mut()
             .ok_or_else(|| serde::de::Error::custom("expected JSON object"))?;
 
         let version = obj
@@ -408,13 +624,19 @@ impl<T: Default> Context<T> {
             );
         }
 
-        let identity: Option<Identity> = obj.get("identity").and_then(|v| {
-            if v.is_null() {
-                None
-            } else {
-                serde_json::from_value(v.clone()).ok()
+        let identity = match obj.remove("identity") {
+            Some(value)
+                if value.as_object().is_some_and(|identity| {
+                    ["scopes", "issuer", "on_behalf_of"]
+                        .iter()
+                        .any(|key| identity.contains_key(*key))
+                }) =>
+            {
+                Some(serde_json::from_value(value)?)
             }
-        });
+            Some(value) => serde_json::from_value(value).ok(),
+            None => None,
+        };
 
         let data_map: HashMap<String, serde_json::Value> = obj
             .get("data")

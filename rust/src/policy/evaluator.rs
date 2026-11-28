@@ -40,6 +40,14 @@ pub struct PolicyEvaluationRequest {
     pub sensitive_fields: Vec<String>,
 }
 
+impl PolicyEvaluationRequest {
+    /// Opaque key for the detached current authority, when scope is enabled.
+    #[must_use]
+    pub fn authority_key(&self) -> Option<String> {
+        self.identity.as_ref()?.authority_key()
+    }
+}
+
 /// An instance-scoped policy evaluated before execution and by preflight.
 /// Implementations must be safe to use for a dry run.
 #[async_trait]

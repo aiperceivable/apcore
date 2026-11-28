@@ -9,46 +9,10 @@ import { copyObservationState, inheritObservationParent, setRemoteSpanParent } f
 import { ContextLogger } from './observability/context-logger.js';
 import type { TraceParent } from './trace-context.js';
 
-export class Identity {
-  readonly id: string;
-  readonly type: string;
-  readonly roles: readonly string[];
-  readonly attrs: Readonly<Record<string, unknown>>;
+import { hasScopeCeiling, identityFromWire, identityToWire, type Identity } from './identity.js';
 
-  constructor(
-    id: string,
-    type: string = 'user',
-    roles: string[] = [],
-    attrs: Record<string, unknown> = {},
-  ) {
-    this.id = id;
-    this.type = type;
-    this.roles = Object.freeze([...roles]);
-    this.attrs = Object.freeze({ ...attrs });
-    Object.freeze(this);
-  }
-
-  /**
-   * Get an attribute value by key.
-   *
-   * Aligned with apcore D-03. May trigger a fetch if the identity
-   * is lazy-loaded (future extension).
-   */
-  getAttr<T = unknown>(key: string, defaultValue?: T): T | undefined {
-    // Presence check so a stored `null` is returned as null rather than
-    // coalesced to the default (Python/Rust parity: `attrs.get(key, default)`).
-    return key in this.attrs ? (this.attrs[key] as T) : defaultValue;
-  }
-}
-
-export function createIdentity(
-  id: string,
-  type: string = 'user',
-  roles: string[] = [],
-  attrs: Record<string, unknown> = {},
-): Identity {
-  return new Identity(id, type, roles, attrs);
-}
+export { Identity, createIdentity } from './identity.js';
+export type { IdentityOptions } from './identity.js';
 
 export class Context<T = null> {
   readonly traceId: string;
@@ -93,6 +57,9 @@ export class Context<T = null> {
     this.callChain = Object.freeze([...callChain]);
     this.executor = executor;
     this.identity = identity;
+    if (hasScopeCeiling(identity)) {
+      Object.defineProperty(this, 'identity', { writable: false, configurable: false });
+    }
     this.redactedInputs = redactedInputs;
     this.redactedOutput = redactedOutput;
     this.data = data;
@@ -325,18 +292,7 @@ export class Context<T = null> {
       data.identity != null && typeof data.identity === 'object' && !Array.isArray(data.identity)
         ? (data.identity as Record<string, unknown>)
         : null;
-    const identity = identityData
-      ? createIdentity(
-          typeof identityData.id === 'string' ? identityData.id : String(identityData.id ?? ''),
-          typeof identityData.type === 'string' ? identityData.type : 'user',
-          Array.isArray(identityData.roles)
-            ? identityData.roles.filter((r): r is string => typeof r === 'string')
-            : [],
-          identityData.attrs != null && typeof identityData.attrs === 'object' && !Array.isArray(identityData.attrs)
-            ? (identityData.attrs as Record<string, unknown>)
-            : {},
-        )
-      : null;
+    const identity = identityData === null ? null : identityFromWire(identityData);
 
     return new Context(
       typeof data.trace_id === 'string' ? data.trace_id : '',
@@ -382,14 +338,7 @@ export class Context<T = null> {
       trace_id: this.traceId,
       caller_id: this.callerId,
       call_chain: [...this.callChain],
-      identity: this.identity
-        ? {
-            id: this.identity.id,
-            type: this.identity.type,
-            roles: [...this.identity.roles],
-            attrs: { ...this.identity.attrs },
-          }
-        : null,
+      identity: this.identity === null ? null : identityToWire(this.identity),
       data: filteredData,
     };
     if (this.redactedInputs !== undefined && this.redactedInputs !== null) {

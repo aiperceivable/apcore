@@ -73,10 +73,14 @@ Pattern matching is handled at two levels:
 When a rule has a `conditions` dict, all specified conditions must be satisfied (AND logic):
 - `identity_types`: Context identity's type must be in the provided list.
 - `roles`: At least one of the context identity's roles must overlap with the condition's role list (set intersection).
+- `scopes`: The current actor must hold every listed effective scope. Use a nonempty list at the top level of a scoped allow rule.
+- `subject_types`: The root subject's type must be in the provided list.
+- `subject_roles`: At least one of the root subject's roles must overlap with the list.
+- `max_delegation_depth`: The active delegation chain must have at most this many links. A direct identity has depth zero.
 - `max_call_depth`: The length of `context.call_chain` must not exceed the threshold.
 - `arguments`: A structure-only test of the call's argument keys — `has_key` (any listed key present), `has_all_keys` (every listed key present), `has_none_of` (no listed key present); several predicates are AND-ed. It never reads argument values. It reads the call's governance projection (§6.1.8); when no projection is available the condition is unevaluable, never "no arguments" ([PROTOCOL_SPEC §6.1.7](../spec/protocol-spec.md)).
 
-These four are the built-ins, plus the compound operators `$or` and `$not`. The set is open: `register_condition()` adds a condition key at runtime, and a rule may reference any key a handler has been registered for. `arguments` itself has no registration point.
+The built-ins also include the compound operators `$or` and `$not`. The set is open: `register_condition()` adds a condition key at runtime, and a rule may reference any key a handler has been registered for. `arguments` itself has no registration point. A scope-enabled identity requires the first matching allow rule to enforce the stock `scopes` predicate at the top level. See [Trusted Identity Delegation](../spec/protocol-spec.md#trusted-identity-delegation).
 
 If no context is provided but conditions are present, the rule does not match — **provided the rule passes the precheck below**. A malformed rule is unevaluable first, context or no context. See the warning in [PROTOCOL_SPEC §6.5](../spec/protocol-spec.md#65-edge-case-handling) — a *well-formed* conditional `deny` rule is not a backstop for context-less callers.
 

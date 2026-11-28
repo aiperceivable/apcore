@@ -150,7 +150,13 @@ pub trait CapabilitySearchProvider: Send + Sync {
 struct CursorScope {
     caller_id: Option<String>,
     call_chain: Vec<String>,
-    identity: Option<Identity>,
+    principal: Option<CursorPrincipal>,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+enum CursorPrincipal {
+    Legacy(Identity),
+    Scoped(String),
 }
 
 impl From<&Context<Value>> for CursorScope {
@@ -158,7 +164,12 @@ impl From<&Context<Value>> for CursorScope {
         Self {
             caller_id: context.caller_id.clone(),
             call_chain: context.call_chain.clone(),
-            identity: context.identity.clone(),
+            principal: context.identity.as_ref().map(|identity| {
+                identity.authority_key().map_or_else(
+                    || CursorPrincipal::Legacy(identity.clone()),
+                    CursorPrincipal::Scoped,
+                )
+            }),
         }
     }
 }
@@ -437,14 +448,25 @@ impl Executor {
         if permits_lookup != Some(true) {
             return None;
         }
-        let steps = strategy.steps();
-        let acl_index = steps
-            .iter()
-            .position(|step| step.builtin_gate() == Some(BuiltinGate::Acl))?;
-        if !steps[..acl_index].iter().any(|step| {
-            crate::pipeline_config::builtin_context_creation_applies(step.as_ref(), module_id)
-        }) {
-            return None;
+        let scoped = parent
+            .identity
+            .as_ref()
+            .and_then(Identity::scopes)
+            .is_some();
+        if scoped {
+            if !crate::pipeline_config::builtin_scope_gate_applies(strategy, module_id) {
+                return None;
+            }
+        } else {
+            let steps = strategy.steps();
+            let acl_index = steps
+                .iter()
+                .position(|step| step.builtin_gate() == Some(BuiltinGate::Acl))?;
+            if !steps[..acl_index].iter().any(|step| {
+                crate::pipeline_config::builtin_context_creation_applies(step.as_ref(), module_id)
+            }) {
+                return None;
+            }
         }
         if let Some(acl) = &self.acl {
             let prospective = parent.child(module_id);
@@ -454,7 +476,7 @@ impl Executor {
                 Some(&prospective),
             );
         }
-        Some(AccessHint::Allowed)
+        (!scoped).then_some(AccessHint::Allowed)
     }
 
     fn has_discovery_gate(&self, gate: BuiltinGate) -> bool {

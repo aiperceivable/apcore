@@ -23,9 +23,10 @@ from typing import TYPE_CHECKING, Any, Literal, cast
 import pydantic
 
 from apcore._post_validation_policy import _evaluate_policy, _PolicyInvocation, _safe_rule_id
+from apcore.acl import ACL
 from apcore.approval import ApprovalRequest, ApprovalResult, ScopedApprovalHandler
 from apcore.cancel import CancelToken, ExecutionCancelledError
-from apcore.context import Context, GovernanceProjection
+from apcore.context import Context, GovernanceProjection, _identity_audit_fields
 from apcore.context_keys import _current_trace_span
 from apcore.decorator import FunctionModule
 from apcore.errors import (
@@ -620,6 +621,11 @@ class BuiltinACLCheck(_GovernanceGateFields):
         return self._acl
 
     async def execute(self, ctx: PipelineContext) -> StepResult:
+        identity = getattr(ctx.context, "identity", None)
+        if getattr(identity, "scopes", None) is not None and type(self._acl) is not ACL:
+            caller_id = ctx.context.caller_id
+            self._emit_denied(caller_id, ctx.module_id, ctx.context, ctx.dry_run)
+            raise ACLDeniedError(caller_id=caller_id, target_id=ctx.module_id)
         if self._acl is None:
             return StepResult(action="continue")
 
@@ -710,6 +716,7 @@ class BuiltinACLCheck(_GovernanceGateFields):
                     "caller_id": caller_id,
                     "reason": "ACL denied",
                     "trace_id": getattr(ctx, "trace_id", None),
+                    **_identity_audit_fields(ctx),
                 },
             )
         )
@@ -718,6 +725,12 @@ class BuiltinACLCheck(_GovernanceGateFields):
 # ---------------------------------------------------------------------------
 # Step 5: Approval Gate
 # ---------------------------------------------------------------------------
+
+
+def _supports_authority_scope(handler: Any, authority_key: str | None) -> bool:
+    return authority_key is None or (
+        isinstance(handler, ScopedApprovalHandler) and getattr(handler, "supports_authority_scope", False) is True
+    )
 
 
 class BuiltinApprovalGate(_GovernanceGateFields):
@@ -857,6 +870,11 @@ class BuiltinApprovalGate(_GovernanceGateFields):
             ctx._policy_annotations = self._effective_annotations(governance, decision, required)
             return StepResult(action="continue")
 
+        identity = getattr(ctx.context, "identity", None)
+        if approval_token is not None and not required and getattr(identity, "scopes", None) is not None:
+            result = ApprovalResult(status="rejected", reason="No approval applies to the current scoped invocation")
+            return self._finish_approval(ctx, result, approval_token)
+
         if not required:
             return StepResult(action="continue")
 
@@ -871,12 +889,15 @@ class BuiltinApprovalGate(_GovernanceGateFields):
             return StepResult(action="continue")
 
         request = self._request(ctx, self._effective_annotations(governance, decision, required), ctx.inputs)
+        supports_scope = _supports_authority_scope(self._handler, request.authority_key)
         if approval_token is None:
             result = await self._handler.request_approval(request)
-        elif isinstance(self._handler, ScopedApprovalHandler):
+        elif supports_scope and isinstance(self._handler, ScopedApprovalHandler):
             result = await self._handler.check_approval_for_call(approval_token, request)
         else:
             result = ApprovalResult(status="rejected", reason="The approval handler does not support scoped resumption")
+        if result.status == "pending" and not supports_scope:
+            result = ApprovalResult(status="rejected", reason="The approval handler does not bind scoped authority")
         return self._finish_approval(ctx, result, approval_token)
 
     @staticmethod
@@ -887,10 +908,12 @@ class BuiltinApprovalGate(_GovernanceGateFields):
         invocation: _PolicyInvocation | None = None,
     ) -> ApprovalRequest:
         context = ctx.context
-        if invocation is not None:
+        identity = context.identity if invocation is None else invocation.identity
+        authority_key = identity.authority_key() if invocation is None and identity is not None else None
+        if invocation is not None or authority_key is not None:
             context = copy(context)
             context.call_chain = list(context.call_chain)
-            context.identity = deepcopy(invocation.identity)
+            context.identity = deepcopy(identity)
         return ApprovalRequest(
             module_id=ctx.module_id,
             arguments=deepcopy(arguments),
@@ -902,6 +925,7 @@ class BuiltinApprovalGate(_GovernanceGateFields):
             action=ctx.module_id,
             module_version=invocation.version if invocation is not None else None,
             canonical_args_digest=invocation.digest if invocation is not None else None,
+            authority_key=invocation.authority_key if invocation is not None else authority_key,
         )
 
     async def _authorize_final(
@@ -912,7 +936,9 @@ class BuiltinApprovalGate(_GovernanceGateFields):
             return
         handler = self._handler
         supports_final_scope = (
-            isinstance(handler, ScopedApprovalHandler) and getattr(handler, "supports_final_scope", False) is True
+            isinstance(handler, ScopedApprovalHandler)
+            and getattr(handler, "supports_final_scope", False) is True
+            and _supports_authority_scope(handler, invocation.authority_key)
         )
         if handler is None or (approval_token is not None and not supports_final_scope):
             result = ApprovalResult("rejected", reason="Final approval requires a compatible handler")
@@ -1042,6 +1068,7 @@ class BuiltinApprovalGate(_GovernanceGateFields):
                         "needs_approval": decision.needs_approval,
                         "reason": (rule.reason if rule else None) or "",
                         "trace_id": getattr(ctx, "trace_id", None),
+                        **_identity_audit_fields(ctx),
                     },
                 )
             )
@@ -1074,6 +1101,7 @@ class BuiltinApprovalGate(_GovernanceGateFields):
                     "approved_by": result.approved_by or "",
                     "reason": result.reason or "",
                     "approval_id": audit_id or "",
+                    **_identity_audit_fields(ctx),
                 }
             )
         if self._event_emitter is not None:
@@ -1094,6 +1122,7 @@ class BuiltinApprovalGate(_GovernanceGateFields):
                         "reason": result.reason,
                         "approval_id": audit_id,
                         "trace_id": getattr(ctx, "trace_id", None),
+                        **_identity_audit_fields(ctx),
                     },
                 )
             )
@@ -1406,6 +1435,7 @@ class _BuiltinPostValidationPolicy(BaseStep):
             identity=deepcopy(invocation.identity),
             arguments=deepcopy(arguments),
             sensitive_fields=fields,
+            authority_key=invocation.authority_key,
         )
         ctx._policy_evaluation_active = True
         try:
@@ -1434,7 +1464,12 @@ class _BuiltinPostValidationPolicy(BaseStep):
         return StepResult(action="continue")
 
     def _emit_decision(self, ctx: PipelineContext, decision: str, rule_id: str | None, fields: tuple[str, ...]) -> None:
-        data = {"decision": decision, "rule_id": rule_id, "sensitive_fields": list(fields)}
+        data = {
+            "decision": decision,
+            "rule_id": rule_id,
+            "sensitive_fields": list(fields),
+            **_identity_audit_fields(ctx.context),
+        }
         span = _current_trace_span(ctx.context, include_parent=True)
         if span is not None:
             span.events.append({"name": "apcore.policy.decision", **data})

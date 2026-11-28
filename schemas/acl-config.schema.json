@@ -159,6 +159,45 @@
             ]
           ]
         },
+        "scopes": {
+          "type": "array",
+          "description": "Require every listed effective scope. A scoped allow rule must include this condition at the top level.",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "description": "A case-sensitive scope literal with no whitespace.",
+            "minLength": 1,
+            "not": {
+              "pattern": "[\\u0009-\\u000D\\u0020\\u0085\\u00A0\\u1680\\u2000-\\u200A\\u2028\\u2029\\u202F\\u205F\\u3000]"
+            }
+          }
+        },
+        "subject_types": {
+          "type": "array",
+          "description": "Require the root subject type to be one of the listed types.",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "description": "A root subject identity type.",
+            "minLength": 1
+          }
+        },
+        "subject_roles": {
+          "type": "array",
+          "description": "Require at least one of the listed roles on the root subject.",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "description": "A root subject role.",
+            "minLength": 1
+          }
+        },
+        "max_delegation_depth": {
+          "type": "integer",
+          "description": "Limit the number of active delegation links. Zero permits direct identities only.",
+          "minimum": 0,
+          "maximum": 8
+        },
         "max_call_depth": {
           "type": "integer",
           "description": "Only match when call chain depth does not exceed this value.",

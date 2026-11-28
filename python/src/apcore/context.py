@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import logging
 import uuid
-from dataclasses import dataclass, field
+from collections.abc import Sequence
+from copy import deepcopy
+from dataclasses import dataclass, field, replace
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Generic, Mapping, Protocol, TypeVar, runtime_checkable
 
 from apcore.cancel import CancelToken
 from apcore.context_keys import TRACING_SAMPLED, _current_trace_span, _middleware_data
+from apcore.errors import InvalidInputError
 from apcore.trace_context import _valid_inbound_parent_id
 
 if TYPE_CHECKING:
@@ -21,6 +24,34 @@ if TYPE_CHECKING:
 __all__ = ["Context", "Identity", "ContextFactory", "GovernanceProjection"]
 
 T = TypeVar("T")
+_MAX_DELEGATION_DEPTH = 8
+
+
+def _valid_scope_literal(scope: Any) -> bool:
+    return (
+        isinstance(scope, str)
+        and bool(scope)
+        and not any(char.isspace() and char not in "\x1c\x1d\x1e\x1f" for char in scope)
+    )
+
+
+def _normalize_scopes(scopes: Sequence[str]) -> tuple[str, ...]:
+    if isinstance(scopes, (str, bytes)) or not isinstance(scopes, (list, tuple)):
+        raise InvalidInputError("Identity.scopes must be an array of scope strings")
+    if not all(_valid_scope_literal(scope) for scope in scopes):
+        raise InvalidInputError("Identity.scopes must contain nonempty strings without whitespace")
+    return tuple(sorted(set(scopes)))
+
+
+def _identity_audit_fields(context: Context) -> dict[str, Any]:
+    identity = getattr(context, "identity", None)
+    if not isinstance(identity, Identity) or identity.scopes is None:
+        return {}
+    return {
+        "actor_id": identity.id,
+        "subject_id": identity.root_subject.id,
+        "delegation_depth": identity.delegation_depth,
+    }
 
 
 @dataclass(frozen=True)
@@ -31,8 +62,22 @@ class Identity:
     type: str = "user"
     roles: tuple[str, ...] = field(default_factory=tuple)
     attrs: dict[str, Any] = field(default_factory=dict)
+    scopes: Sequence[str] | None = field(default=None, kw_only=True)
+    on_behalf_of: Identity | None = field(default=None, kw_only=True)
+    issuer: str | None = field(default=None, kw_only=True)
 
     def __post_init__(self) -> None:
+        scoped = self.scopes is not None or self.on_behalf_of is not None
+        if scoped and (
+            not isinstance(self.id, str)
+            or not self.id
+            or not isinstance(self.type, str)
+            or not self.type
+            or not isinstance(self.roles, (list, tuple))
+            or any(not isinstance(role, str) or not role for role in self.roles)
+        ):
+            raise InvalidInputError("Scoped identities require a nonempty ID and type and valid roles")
+
         # Ensure attrs is a dict if None was passed, and protect against mutation
         # of the original dict passed to the constructor.
         if not isinstance(self.attrs, dict):
@@ -51,6 +96,133 @@ class Identity:
             object.__setattr__(self, "roles", ())
         elif not isinstance(self.roles, tuple):
             object.__setattr__(self, "roles", tuple(self.roles))
+
+        if self.scopes is not None:
+            object.__setattr__(self, "scopes", _normalize_scopes(self.scopes))
+        if self.issuer is not None and (not isinstance(self.issuer, str) or not self.issuer):
+            raise InvalidInputError("Identity.issuer must be a nonempty string")
+        self._lineage()
+
+    def _lineage(self) -> tuple[Identity, ...]:
+        chain: list[Identity] = [self]
+        seen = {id(self)}
+        current = self
+        while current.on_behalf_of is not None:
+            parent = current.on_behalf_of
+            if not isinstance(parent, Identity) or id(parent) in seen or len(chain) > _MAX_DELEGATION_DEPTH:
+                raise InvalidInputError("Identity delegation must be acyclic and at most eight edges deep")
+            if current.scopes is None or parent.scopes is None or not set(current.scopes).issubset(parent.scopes):
+                raise InvalidInputError("Identity delegation requires explicit scopes within the parent ceiling")
+            chain.append(parent)
+            seen.add(id(parent))
+            current = parent
+        return tuple(chain)
+
+    @property
+    def root_subject(self) -> Identity:
+        """Return the root subject of the active authority chain."""
+        return self._lineage()[-1]
+
+    @property
+    def delegation_depth(self) -> int:
+        """Return the number of active delegation edges."""
+        return len(self._lineage()) - 1
+
+    def delegate(self, actor: Identity, scopes: Sequence[str]) -> Identity:
+        """Create a new actor identity with attenuated local authority."""
+        if not isinstance(actor, Identity) or actor.on_behalf_of is not None:
+            raise InvalidInputError("Identity delegation requires a direct actor")
+        requested = _normalize_scopes(scopes)
+        if actor.scopes is not None and not set(requested).issubset(actor.scopes):
+            raise InvalidInputError("Requested scopes exceed the actor's own scope ceiling")
+        return replace(actor, scopes=requested, on_behalf_of=self)
+
+    def authority_key(self) -> str | None:
+        """Return the native authority binding for a scope-enabled identity."""
+        if self.scopes is None:
+            return None
+        from apcore._post_validation_policy import _argument_digest
+
+        return _argument_digest(self._authority_projection())
+
+    def owner_key(self) -> str | None:
+        """Return the actor and root-subject binding independently of scopes."""
+        if self.scopes is None:
+            return None
+        from apcore._post_validation_policy import _argument_digest
+
+        subject = self.root_subject
+        return _argument_digest(
+            {
+                "actor": [self.issuer, self.type, self.id],
+                "subject": [subject.issuer, subject.type, subject.id],
+            }
+        )
+
+    def _authority_projection(self) -> dict[str, Any]:
+        if self.scopes is None:
+            return self._to_wire(detach_attrs=True)
+        subject: dict[str, Any] | None = None
+        for identity in reversed(self._lineage()):
+            node: dict[str, Any] = {
+                "id": identity.id,
+                "type": identity.type,
+                "roles": sorted(set(identity.roles)),
+                "scopes": list(identity.scopes) if identity.scopes is not None else None,
+            }
+            if identity.issuer is not None:
+                node["issuer"] = identity.issuer
+            if subject is not None:
+                node["on_behalf_of"] = subject
+            subject = node
+        assert subject is not None
+        return subject
+
+    def _to_wire(self, *, detach_attrs: bool = False) -> dict[str, Any]:
+        self._lineage()
+        return self._encode_wire(detach_attrs)
+
+    def _encode_wire(self, detach_attrs: bool) -> dict[str, Any]:
+        result = {
+            "id": self.id,
+            "type": self.type,
+            "roles": list(self.roles),
+            "attrs": deepcopy(self.attrs) if detach_attrs else dict(self.attrs),
+        }
+        if self.scopes is not None:
+            result["scopes"] = list(self.scopes)
+        if self.on_behalf_of is not None:
+            result["on_behalf_of"] = self.on_behalf_of._encode_wire(detach_attrs)
+        if self.issuer is not None:
+            result["issuer"] = self.issuer
+        return result
+
+    @classmethod
+    def _from_wire(cls, value: Any, depth: int = 0) -> Identity:
+        prefix = "Context.deserialize"
+        if not isinstance(value, dict):
+            raise InvalidInputError(f"{prefix}: 'identity' must be an object, got {type(value).__name__}")
+        if depth > _MAX_DELEGATION_DEPTH:
+            raise InvalidInputError("Identity delegation must be acyclic and at most eight edges deep")
+        if not isinstance(value.get("id"), str) or not value["id"]:
+            raise InvalidInputError(f"{prefix}: 'identity.id' is required and must be a non-empty string")
+        roles = value.get("roles", ()) if "scopes" in value or "on_behalf_of" in value else value.get("roles") or ()
+        if not isinstance(roles, (list, tuple)):
+            raise InvalidInputError(f"{prefix}: 'identity.roles' must be a list of strings")
+        attrs = value.get("attrs") or {}
+        if not isinstance(attrs, dict):
+            raise InvalidInputError(f"{prefix}: 'identity.attrs' must be an object")
+        if "issuer" in value and value["issuer"] is None:
+            raise InvalidInputError("Identity.issuer must be a nonempty string")
+        return cls(
+            value["id"],
+            value.get("type", "user"),
+            tuple(roles),
+            attrs,
+            scopes=_normalize_scopes(value["scopes"]) if "scopes" in value else None,
+            on_behalf_of=cls._from_wire(value["on_behalf_of"], depth + 1) if "on_behalf_of" in value else None,
+            issuer=value.get("issuer"),
+        )
 
     def get_attr(self, key: str, default: Any = None) -> Any:
         """Get an attribute value by key.
@@ -289,15 +461,7 @@ class Context(Generic[T]):
             "caller_id": self.caller_id,
             "call_chain": list(self.call_chain),
         }
-        if self.identity is not None:
-            result["identity"] = {
-                "id": self.identity.id,
-                "type": self.identity.type,
-                "roles": list(self.identity.roles),
-                "attrs": dict(self.identity.attrs),
-            }
-        else:
-            result["identity"] = None
+        result["identity"] = self.identity._to_wire() if self.identity is not None else None
         if self.redacted_inputs is not None:
             result["redacted_inputs"] = dict(self.redacted_inputs)
         if self.redacted_output is not None:
@@ -321,50 +485,12 @@ class Context(Generic[T]):
                 version,
             )
 
-        identity = None
-        if data.get("identity") is not None:
-            # CTX-1. This used to index `id_data["id"]` unguarded, so a
-            # malformed wire identity left a bare `KeyError: 'id'` or
-            # `TypeError: string indices must be integers` escaping a method
-            # documented to "best-effort proceed" — neither is an apcore error,
-            # neither carries a registry code, and neither is what a caller
-            # catching ModuleError around a deserialize is prepared for.
-            # apcore-typescript coerces every field and apcore-rust drops the
-            # identity; both report rather than crash on a builtin.
-            from apcore.errors import InvalidInputError
-
-            id_data = data["identity"]
-            if not isinstance(id_data, dict):
-                raise InvalidInputError(
-                    message=f"Context.deserialize: 'identity' must be an object, got {type(id_data).__name__}",
-                )
-            if not isinstance(id_data.get("id"), str) or not id_data["id"]:
-                raise InvalidInputError(
-                    message="Context.deserialize: 'identity.id' is required and must be a non-empty string",
-                )
-            roles = id_data.get("roles") or ()
-            if isinstance(roles, (str, bytes)) or not isinstance(roles, (list, tuple)):
-                raise InvalidInputError(
-                    message="Context.deserialize: 'identity.roles' must be a list of strings",
-                )
-            attrs = id_data.get("attrs") or {}
-            if not isinstance(attrs, dict):
-                raise InvalidInputError(
-                    message="Context.deserialize: 'identity.attrs' must be an object",
-                )
-            identity = Identity(
-                id=id_data["id"],
-                type=id_data.get("type", "user"),
-                roles=tuple(roles),
-                attrs=attrs,
-            )
-
         return cls(
             trace_id=data.get("trace_id", ""),
             caller_id=data.get("caller_id"),
             call_chain=list(data.get("call_chain", [])),
             executor=None,
-            identity=identity,
+            identity=Identity._from_wire(data["identity"]) if data.get("identity") is not None else None,
             redacted_inputs=data.get("redacted_inputs"),
             redacted_output=data.get("redacted_output"),
             data=dict(data.get("data", {})),

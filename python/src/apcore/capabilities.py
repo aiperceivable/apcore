@@ -16,7 +16,7 @@ from apcore.acl import ACL, VisibilityDecision
 from apcore.builtin_steps import BuiltinACLCheck, BuiltinApprovalGate, BuiltinContextCreation, BuiltinModuleLookup
 from apcore.context import Context, Identity
 from apcore.errors import InvalidInputError, PolicyEvaluationError
-from apcore.pipeline import _any_match
+from apcore.pipeline import _any_match, _scoped_steps
 from apcore.policy import ExecutionPolicy
 from apcore.schema.annotations import governance_union
 
@@ -137,14 +137,7 @@ class _Caller:
         scope = {
             "caller_id": self.caller_id,
             "call_chain": list(self.call_chain),
-            "identity": None
-            if identity is None
-            else {
-                "id": identity.id,
-                "type": identity.type,
-                "roles": list(identity.roles),
-                "attrs": identity.attrs,
-            },
+            "identity": identity._authority_projection() if identity is not None else None,
         }
         try:
             return _argument_digest(scope)
@@ -311,10 +304,17 @@ class _CapabilityDiscovery:
     def _visible(
         executor: Executor, module_id: str, context: Context, version_hint: str | None
     ) -> tuple[_Registration, VisibilityDecision] | None:
+        strategy = executor.current_strategy
+        if (
+            context.identity is not None
+            and context.identity.scopes is not None
+            and _scoped_steps(strategy.steps, module_id) is None
+        ):
+            return None
         context_ready = False
         lookup = None
         gate = None
-        for step in executor.current_strategy.steps:
+        for step in strategy.steps:
             patterns = getattr(step, "match_modules", None)
             if patterns is not None and not _any_match(patterns, module_id):
                 continue
@@ -354,6 +354,8 @@ def _still_current(executor: Executor, module_id: str, version_hint: str | None,
 
 
 def _visibility_decision(acl: ACL | None, module_id: str, context: Context) -> VisibilityDecision:
+    if context.identity is not None and context.identity.scopes is not None and type(acl) is not ACL:
+        return VisibilityDecision(False)
     if acl is None:
         return VisibilityDecision(True)
     evaluator = getattr(acl, "evaluate_visibility", None)

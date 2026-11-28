@@ -9,6 +9,7 @@ import type { ErrorOptions } from './errors.js';
 import { MiddlewareChainError } from './middleware/manager.js';
 import { matchPattern } from './utils/pattern.js';
 import { policyInvocationOf } from './policy-evaluation.js';
+import { isScopedAdmissionError } from './scoped-invocation.js';
 
 // ---------------------------------------------------------------------------
 // Step interface
@@ -1251,7 +1252,7 @@ export class PipelineEngine {
 
         // 3 b onStepError hooks: reverse registration order (onion model),
         //     first non-null recovery wins and short-circuits the rest (§2.2).
-        const isGovernanceGate = governanceGateOf(step) !== null ||
+        const isGovernanceGate = governanceGateOf(step) !== null || isScopedAdmissionError(ctx, cause) ||
           (policyInvocation !== undefined && !policyInvocation.dispatched);
         const observedCancellation = observeStep !== undefined &&
           cause instanceof ModuleError && cause.code === 'EXECUTION_CANCELLED';

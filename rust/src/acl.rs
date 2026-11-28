@@ -10,8 +10,8 @@ use std::sync::{Arc, Once};
 
 use crate::acl_handlers::{
     evaluate_conditions_async_outcome as handlers_evaluate_conditions_async_outcome,
-    precheck_conditions, register_builtin_handlers, ConditionOutcome, PrecheckPath, RuleFault,
-    CONDITION_HANDLERS,
+    has_stock_scope_grant, precheck_conditions, register_builtin_handlers, ConditionOutcome,
+    PrecheckPath, RuleFault, CONDITION_HANDLERS,
 };
 use crate::context::Context;
 use crate::errors::{ErrorCode, ModuleError};
@@ -636,6 +636,12 @@ pub struct AuditEntry {
     pub matched_rule_index: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub identity_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub actor_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub subject_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub delegation_depth: Option<usize>,
     #[serde(default)]
     pub roles: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -809,6 +815,9 @@ impl AuditSink {
                     matched_rule = ?entry.matched_rule,
                     matched_rule_index = ?entry.matched_rule_index,
                     identity_type = ?entry.identity_type,
+                    actor_id = ?entry.actor_id,
+                    subject_id = ?entry.subject_id,
+                    delegation_depth = ?entry.delegation_depth,
                     roles = ?entry.roles,
                     call_depth = ?entry.call_depth,
                     trace_id = ?entry.trace_id,
@@ -1790,6 +1799,9 @@ impl ACL {
                 _ if rule.effect != "allow" => return None,
                 _ => {}
             }
+            if !Self::scope_permits(rule.conditions.as_ref(), ctx, PrecheckPath::Async) {
+                return None;
+            }
             possible_with_approval |= requires_approval || pending_approval;
             possible_without_approval |= !(requires_approval || pending_approval);
             if decision == DiscoveryRule::Match {
@@ -1799,12 +1811,13 @@ impl ACL {
                 ));
             }
         }
-        (self.default_effect == "allow").then(|| {
-            AccessHint::from_approval_outcomes(
-                possible_with_approval || pending_approval,
-                possible_without_approval || !pending_approval,
-            )
-        })
+        (self.default_effect == "allow" && Self::scope_permits(None, ctx, PrecheckPath::Async))
+            .then(|| {
+                AccessHint::from_approval_outcomes(
+                    possible_with_approval || pending_approval,
+                    possible_without_approval || !pending_approval,
+                )
+            })
     }
 
     fn discovery_rule(
@@ -1870,24 +1883,24 @@ impl ACL {
             match self.matches_rule(idx, rule, caller, target_id, ctx) {
                 RuleMatch::Match => {
                     return self.finalize_rule_match(
-                        idx,
-                        rule,
+                        (idx, rule),
                         caller,
                         target_id,
                         ctx,
                         pending_approval,
+                        PrecheckPath::Sync,
                     )
                 }
                 RuleMatch::Unevaluable => {
                     match Self::resolve_unevaluable_rule(idx, rule, &paths_before) {
                         UnevaluableResolution::TakesEffect => {
                             return self.finalize_rule_match(
-                                idx,
-                                rule,
+                                (idx, rule),
                                 caller,
                                 target_id,
                                 ctx,
                                 pending_approval,
+                                PrecheckPath::Sync,
                             )
                         }
                         UnevaluableResolution::StepsAside {
@@ -2338,6 +2351,7 @@ impl ACL {
         // requirement (§6.1.1 rule 5): it is reached only when the rule list is
         // EMPTY, and a requirement can only be raised by a rule. There is
         // nothing to carry, so no parameter to carry it.
+        let default_effect = Self::scope_default(default_effect, ctx);
         let entry = self.build_audit_entry(
             caller,
             target_id,
@@ -2361,13 +2375,14 @@ impl ACL {
     /// construction.
     fn finalize_rule_match(
         &self,
-        idx: usize,
-        rule: &ACLRule,
+        matched: (usize, &ACLRule),
         caller: &str,
         target_id: &str,
         ctx: Option<&Context<serde_json::Value>>,
         pending_approval: bool,
+        path: PrecheckPath,
     ) -> AccessDecision {
+        let (idx, rule) = matched;
         // §6.9 row 1: the matched rule determines `access`; the approval
         // requirement is that rule's own UNION any pending one (§6.1.1 rule 5),
         // which may therefore originate in a rule that did not match.
@@ -2378,12 +2393,18 @@ impl ACL {
         // not going to run, so there is nothing to put to a human.
         // `matched_rule_index` still names the rule that actually decided
         // rather than the unevaluable one.
-        let approval_required =
-            rule.effect == "allow" && (rule.approval_required() || pending_approval);
+        let effect = if rule.effect == "allow"
+            && !Self::scope_permits(rule.conditions.as_ref(), ctx, path)
+        {
+            "deny"
+        } else {
+            &rule.effect
+        };
+        let approval_required = effect == "allow" && (rule.approval_required() || pending_approval);
         let entry = self.build_audit_entry(
             caller,
             target_id,
-            &rule.effect,
+            effect,
             "rule_match",
             rule.description.as_deref(),
             Some(idx),
@@ -2391,12 +2412,7 @@ impl ACL {
             ctx,
         );
         self.emit_audit(&entry);
-        AccessDecision::new(
-            rule.effect.clone(),
-            approval_required,
-            Some(idx),
-            "rule_match",
-        )
+        AccessDecision::new(effect, approval_required, Some(idx), "rule_match")
     }
 
     /// Audit + return for the no-rule-matched path. Shared by `check` and
@@ -2420,6 +2436,7 @@ impl ACL {
         // carry it. The result is `approval_required: true` with
         // `matched_rule_index: None`, which is a legal combination since
         // v1.29.0. A `deny` default clears it, per `finalize_rule_match`.
+        let default_effect = Self::scope_default(default_effect, ctx);
         let approval_required = default_effect == "allow" && pending_approval;
         let entry = self.build_audit_entry(
             caller,
@@ -2433,6 +2450,28 @@ impl ACL {
         );
         self.emit_audit(&entry);
         AccessDecision::new(default_effect, approval_required, None, "default_effect")
+    }
+
+    fn scope_permits(
+        conditions: Option<&serde_json::Value>,
+        ctx: Option<&Context<serde_json::Value>>,
+        path: PrecheckPath,
+    ) -> bool {
+        ctx.is_none_or(|ctx| {
+            ctx.identity
+                .as_ref()
+                .and_then(crate::Identity::scopes)
+                .is_none()
+                || has_stock_scope_grant(conditions, ctx, path)
+        })
+    }
+
+    fn scope_default<'a>(effect: &'a str, ctx: Option<&Context<serde_json::Value>>) -> &'a str {
+        if Self::scope_permits(None, ctx, PrecheckPath::Sync) {
+            effect
+        } else {
+            "deny"
+        }
     }
 
     /// Build an audit entry from the check parameters and context.
@@ -2449,6 +2488,8 @@ impl ACL {
         approval_required: bool,
         ctx: Option<&Context<serde_json::Value>>,
     ) -> AuditEntry {
+        let identity = ctx.and_then(|ctx| ctx.identity.as_ref());
+        let scoped = identity.filter(|identity| identity.scopes().is_some());
         AuditEntry {
             approval_required,
             timestamp: Utc::now().to_rfc3339(),
@@ -2458,11 +2499,11 @@ impl ACL {
             reason: reason.to_string(),
             matched_rule: matched_rule_desc.map(std::string::ToString::to_string),
             matched_rule_index,
-            identity_type: ctx
-                .and_then(|c| c.identity.as_ref().map(|id| id.identity_type().to_string())),
-            roles: ctx
-                .and_then(|c| c.identity.as_ref().map(|id| id.roles().to_vec()))
-                .unwrap_or_default(),
+            identity_type: identity.map(|id| id.identity_type().to_string()),
+            actor_id: scoped.map(|id| id.id().to_string()),
+            subject_id: scoped.map(|id| id.root_subject().id().to_string()),
+            delegation_depth: scoped.map(crate::Identity::delegation_depth),
+            roles: identity.map(|id| id.roles().to_vec()).unwrap_or_default(),
             call_depth: ctx.map(|c| c.call_chain.len()),
             trace_id: ctx.map(|c| c.trace_id.clone()),
             // Read the per-call handler-error slot populated by
@@ -2555,24 +2596,24 @@ impl ACL {
             {
                 RuleMatch::Match => {
                     return self.finalize_rule_match(
-                        idx,
-                        rule,
+                        (idx, rule),
                         caller,
                         target_id,
                         ctx,
                         pending_approval,
+                        PrecheckPath::Async,
                     )
                 }
                 RuleMatch::Unevaluable => {
                     match Self::resolve_unevaluable_rule(idx, rule, &paths_before) {
                         UnevaluableResolution::TakesEffect => {
                             return self.finalize_rule_match(
-                                idx,
-                                rule,
+                                (idx, rule),
                                 caller,
                                 target_id,
                                 ctx,
                                 pending_approval,
+                                PrecheckPath::Async,
                             )
                         }
                         UnevaluableResolution::StepsAside {
