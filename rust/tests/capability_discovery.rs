@@ -229,6 +229,56 @@ fn test_capability_cursor_is_bound_and_rechecks_current_registrations() {
 }
 
 #[test]
+fn test_scoped_capability_cursor_rejects_new_subject_or_effective_scope() {
+    let mut executor = Executor::new(Registry::new(), Config::default());
+    executor.set_acl(ACL::new(
+        serde_json::from_value(json!([{
+            "callers": ["@external"], "targets": ["demo.*"],
+            "effect": "allow", "conditions": {"scopes": ["read"]}
+        }]))
+        .unwrap(),
+        "deny",
+        None,
+    ));
+    for id in ["demo.a", "demo.b"] {
+        register(&executor, &json!({"module_id": id}));
+    }
+    let delegated = |subject, scopes| {
+        let root = reader(subject, vec!["eligible".into()])
+            .identity
+            .unwrap()
+            .with_authority(Some(vec!["read".into(), "write".into()]), None)
+            .unwrap();
+        let actor = reader("shared-actor", vec![]).identity.unwrap();
+        Context::new(root.delegate(actor, scopes).unwrap())
+    };
+    let owner = delegated("subject", vec!["read".into(), "write".into()]);
+    let query = CapabilityQuery {
+        limit: 1,
+        ..Default::default()
+    };
+    let first = executor.list_callable(Some(&owner), query.clone()).unwrap();
+    assert_eq!(first.items[0].module_id, "demo.a");
+    assert!(first.next_cursor.is_some());
+    let next = CapabilityQuery {
+        cursor: first.next_cursor,
+        ..query
+    };
+    for other in [
+        delegated("different-subject", vec!["read".into(), "write".into()]),
+        delegated("subject", vec!["read".into()]),
+    ] {
+        assert!(executor.list_callable(Some(&other), next.clone()).is_err());
+    }
+    let equivalent = delegated(
+        "subject",
+        vec!["write".into(), "read".into(), "read".into()],
+    );
+    let last = executor.list_callable(Some(&equivalent), next).unwrap();
+    assert_eq!(last.items[0].module_id, "demo.b");
+}
+
+#[test]
 fn test_capability_descriptors_check_current_version_and_same_version_replacement() {
     let executor = Executor::new(Registry::new(), Config::default());
     register(

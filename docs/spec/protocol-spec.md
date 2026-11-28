@@ -8,8 +8,8 @@ description: "The canonical apcore protocol specification (RFC 2119): module, sc
 
 > Version: 2.0.0
 > Status: Draft
-> Draft Revision: 3
-> Last Updated: 2026-11-27
+> Draft Revision: 4
+> Last Updated: 2026-11-28
 
 ---
 
@@ -2490,6 +2490,17 @@ context_schema:
         attrs:
           type: object
           description: "Extension attributes (tenant_id, email, etc. business fields)"
+        scopes:
+          type: array
+          items:
+            type: string
+          description: "Optional effective scope set; an empty set grants no scoped authority (§6.11)"
+        on_behalf_of:
+          type: object
+          description: "Optional parent identity with the same shape, pointing toward the root subject (§6.11)"
+        issuer:
+          type: string
+          description: "Optional trusted issuer qualifier for the actor's identity namespace (§6.11)"
 
     # ====== Everything else ======
 
@@ -3871,8 +3882,12 @@ audit:
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `identity_types` | `list[string]` | Identity type must be in list |
-| `roles` | `list[string]` | At least one role must overlap |
+| `identity_types` | `list[string]` | The current actor type must be in the list |
+| `roles` | `list[string]` | At least one current actor role must overlap |
+| `scopes` | Nonempty `list[string]` | The current actor must have every listed effective scope (§6.11) |
+| `subject_types` | Nonempty `list[string]` | The root subject type must be in the list (§6.11) |
+| `subject_roles` | Nonempty `list[string]` | At least one root subject role must overlap (§6.11) |
+| `max_delegation_depth` | `integer` (0–8) | The number of active delegation links must not exceed the threshold (§6.11) |
 | `max_call_depth` | `integer` | Call chain length must not exceed threshold |
 | `arguments` | `object` | Predicates over the call's argument **keys** (§6.1.7) |
 | `$or` | `list[object]` | Compound: passes if **any** sub-condition object passes (each sub-object's keys are AND-ed internally). Sub-objects **MAY** contain further compound operators. |
@@ -4509,6 +4524,9 @@ Every `check()` **MUST** emit exactly one audit entry through the configured aud
 | `matched_rule_index` | `integer \| null` | Index of the matched rule in definition order |
 | `identity_type` | `string \| null` | Identity type from the context, when present |
 | `roles` | `list[string]` | Identity roles from the context; empty when absent |
+| `actor_id` | `string` | Current actor ID for a scope-enabled identity (§6.11) |
+| `subject_id` | `string` | Root subject ID for a scope-enabled identity (§6.11) |
+| `delegation_depth` | `integer` | Active delegation depth for a scope-enabled identity (§6.11) |
 | `call_depth` | `integer \| null` | Length of `context.call_chain`, when present |
 | `trace_id` | `string \| null` | Trace ID from the context, when present |
 | `handler_error` | `string \| null` | Non-null **if and only if** a condition was unevaluable (§6.1.1). **MUST** name each unevaluable condition's **path** (§6.1.4) and the reason, ordered and separated as §6.1.1 rule 2 requires. |
@@ -5069,6 +5087,26 @@ The Executor and APCore **MUST** expose idiomatic equivalents of `list_callable(
 
 A caller-aware adapter **MUST** use the same trusted context as its invocation path when applying discovery to its published modules. Standard MCP `tools/list` **MUST** retain the complete `inputSchema` of each eligible tool. Lightweight summaries and definition lookup **MUST** use the separate discovery API. MCP exposes `system.manifest.search` as a read-only query tool when the module is available to the requester. When the adapter publishes module documentation resources, listing and direct access **MUST** apply the same visibility. Transport control tools and ACL-gated management manifests retain their own authorization contracts.
 
+### 6.11 Trusted Identity Delegation {#trusted-identity-delegation}
+
+An `Identity` **MAY** carry immutable `scopes`, `on_behalf_of`, and `issuer` fields. `scopes` is a set of nonempty, case-sensitive strings with no characters in the Unicode `White_Space` property. SDKs **MUST** normalize duplicate members. An absent scope set leaves an ordinary identity under the existing ACL contract. A present empty set explicitly grants zero scopes. The optional `issuer` qualifies the identity namespace and, when supplied, **MUST** be a nonempty string. Identity attributes remain separate from these fields.
+
+The Identity in the Context is the current actor. Each `on_behalf_of` link points toward the root subject that delegated authority. For a direct identity, the actor is also the root subject and delegation depth is zero. Trusted hosts **MAY** create a scoped root and derive a delegated identity from a trusted direct actor and an explicit requested scope set. Each requested scope **MUST** be present in the immediate parent's effective set and in the recipient's own ceiling if the supplied actor already carries one. Every linked identity **MUST** have an explicit scope set, including the parent of the first delegation. SDKs **MUST** reject cycles, malformed authority fields, widening, and chains deeper than eight active links. Repeated actor identifiers in a bounded, attenuating chain confer no additional authority.
+
+Context and identity restoration **MUST** validate the same structure and attenuation as local construction. The wire names are `scopes`, `on_behalf_of`, and `issuer`, with `on_behalf_of` containing a nested identity object. SDKs **MUST** omit absent fields and preserve the legacy wire shape for identities that omit all three. Callers **MUST NOT** treat successful deserialization as authentication or accept an untrusted caller's payload as the authority of an existing Context.
+
+For a scope-enabled identity, the first matching ACL allow rule **MUST** contain a nonempty, top-level `scopes` condition enforced by the stock predicate. Each listed scope **MUST** be present on the current actor. An otherwise matching allow without this grant **MUST** produce a deny, even if a later rule could grant access. Scope tests reachable only through compound conditions and an `allow` default **MUST NOT** grant access. Deny rules retain the ordinary condition and ordering semantics in §6.1 and §6.3. Conditions for `subject_types` and `subject_roles` evaluate against the root subject. `max_delegation_depth` evaluates against the active link count. An identity-dependent condition without a trusted identity **MUST NOT** match.
+
+The effective ACL configuration and pipeline **MUST** enforce scoped authority for execution, streaming, preflight, and discovery. When the Executor cannot establish that the scope gate applies, each of those paths **MUST** fail closed. Discovery uses the prospective caller frame in §6.10 and applies the same ordered semantics without emitting ACL audit entries.
+
+SDKs **MUST** bind delegation-sensitive cursors and approval resumption to a stable projection of the current actor, root subject, effective scopes and trusted active lineage. This projection includes security-relevant role memberships, identity types and issuer qualifiers, and excludes arbitrary attributes and token history. Final-input policy **MUST** receive a detached view of the trusted authority. A deployment **MAY** use a separate stable ownership projection for transport records, keyed on issuer-qualified actor and root subject. Reauthentication can carry the same owner, but current scopes **MUST** govern protected operations and scoped authority **MUST** participate in permission cache keys.
+
+A handler that can resume a pending approval for a scope-enabled identity **MUST** advertise support for authority scope and **MUST** verify the authority projection alongside the applicable invocation scope. The SDK **MUST NOT** issue a pending credential or attempt resumption for a scope-enabled identity when the handler lacks this capability. A handler **MUST NOT** grant access to or consume a record for a different authority. Final-scope pending approvals also require the capability specified in §7.2. Legacy approvals retain their existing invocation binding.
+
+ACL audit entries for scope-enabled identities **MUST** include `actor_id`, `subject_id`, and active `delegation_depth`. When an audit event carries a redacted identity snapshot, D-93 redaction **MUST** apply to attributes at every hop. The snapshot **MUST NOT** contain raw credentials.
+
+Adapters that opt into RFC 8693 JWT scope and actor projection **MUST** verify the signature, expected `iss` and `aud`, and required `exp` before accepting the projection. They **MUST** validate `nbf` and `iat` when supplied. The standard `scope` claim uses the scope-token string syntax in RFC 6749 §3.3. A deployment **MAY** map an additional provider claim whose value is a scope string or array of scope tokens. When both configured claims are present, their normalized sets **MUST** agree. At least one configured scope representation **MUST** be present. The top-level `sub` and outermost `act` claim yield at most one active Core link. Outer actor roles require an explicit trusted mapping. Nested `act` claims are history limited to a structurally validated depth of eight. Those claims **MUST NOT** contribute to Core roles, scope, active depth, approval, or ownership. A supplied credential that fails verification or the configured claim mapping **MUST** be rejected when projection is enabled. See [RFC 8693 §4.1](https://www.rfc-editor.org/rfc/rfc8693.html#section-4.1) for the actor claim and [§4.2](https://www.rfc-editor.org/rfc/rfc8693.html#section-4.2) for scope strings.
+
 ---
 
 ## 7. Approval System
@@ -5301,7 +5339,7 @@ When an evaluator is installed, the strategy **MUST** preserve the built-in auth
 
 Step 5 computes the early approval requirement without prompting, verifying, or consuming the credential. It **MAY** fail early when the built-in strict policy requires a handler and none is configured. Hosts enabling the evaluator **MUST** use before middleware solely for trusted transformations without approval-dependent side effects. Step 7.5 uses the union of the earlier requirement and the evaluator's approval requirement. `allow` **MUST NOT** clear an earlier requirement. The gate performs at most one request or one scoped verification on the final snapshot. Both required approval and submitted credentials require a handler. A submitted credential **MUST** be verified even if the current verdict is `allow`. Reject a mismatched, expired or consumed credential without a fresh approval request or execution. An evaluator's `deny` or failure is terminal before approval or dispatch.
 
-Approval uses the same pending, timeout, and explicit denial results as Step 5. The final scope binds the trusted principal `(identity.type, identity.id)` when present, `caller_id`, canonical target ID, resolved module version, and `canonical_args_digest`. The scope encoding is local to the producing SDK and is independent of the schema content hash. The handler **MUST** compare all scope fields as well as the final-scope marker. Scope digests **MUST NOT** be used to transfer approval between SDKs with different native numeric types.
+Approval uses the same pending, timeout, and explicit denial results as Step 5. The final scope binds `caller_id`, canonical target ID, resolved module version, `canonical_args_digest`, and the trusted principal when present. It binds `(identity.type, identity.id)` for a legacy principal and additionally binds the authority projection in §6.11 for a scope-enabled principal. The scope encoding is local to the producing SDK and is independent of the schema content hash. The handler **MUST** compare all scope fields as well as the final-scope marker. Scope digests **MUST NOT** be used to transfer approval between SDKs with different native numeric types.
 
 For the argument digest, the SDK **MUST** encode the effective argument object as UTF-8. Objects and arrays use compact JSON punctuation, strings use JSON escaping with Unicode scalar values preserved, and object names sort by unsigned UTF-16 code units. Encode null and booleans as JSON literals. Encode safe native integers as `i` followed by their signed decimal form and `;`. Encode finite binary64 floats as `f` followed by sixteen lowercase hex digits of their bits and `;`. Where the language has only binary64 numbers, safe integral values use integer encoding except negative zero. Safe integers are in the inclusive range `[-9007199254740991, 9007199254740991]`. Reject integers or integral floats outside the range, lone surrogates, non-finite or cyclic values, and host values for which the SDK cannot prove a lossless JSON-shaped projection. The SDK **MUST** fail closed for an unsupported value and **MUST NOT** change the business value merely to compute a digest.
 
@@ -10372,6 +10410,7 @@ The specification and the SDK have independent version numbers. `CHANGELOG.md` r
 
 | Version | Date | Summary | Records |
 |---|---|---|---|
+| 2.0.0 (draft revision 4) | Unreleased | Define trusted identity delegation, ACL scope enforcement, and authority binding for discovery and approvals (§6.11, §7.4.1). | D-155, [Changelog](https://github.com/aiperceivable/apcore/blob/main/CHANGELOG.md) |
 | 2.0.0 (draft revision 3) | Unreleased | Add silent ACL visibility, caller-scoped summaries and schema lookup, and `system.manifest.search` (§6.10, §11.3). | D-154, [Changelog](https://github.com/aiperceivable/apcore/blob/main/CHANGELOG.md) |
 | 2.0.0 (draft revision 2) | Unreleased | Add the opt-in post-validation policy evaluator, final-input approval binding, and preflight semantics (§7.2–§7.4.1, §11.3, §12.8). | [Changelog](https://github.com/aiperceivable/apcore/blob/main/CHANGELOG.md) |
 | 2.0.0 (draft revision 1) | Unreleased | Define an in-memory Core Profile and opt-in extensions (§1.8, §12). Deny calls requiring approval when the handler is absent, and require approval for destructive modules by default (§6.6.3.1, §7.4, §7.9). Require invocation-scoped approval resumption and use a non-secret correlation ID in telemetry (§7, §9.16.2). Specify managed drain, recovery, scoped forced removal, reload reports and lifecycle events (§6.7, §9.16.2, §12.7.9). Assign provider projections to Surfaces (§4.17 and Appendix D). Resolve path-typed configuration against one project root (§9.2.2). Clarify pipeline configuration, preflight and approval argument scope (§5.16.1, §7.3–7.4, §12.8), configured redaction (§6.1.8, §10.6.1) and trace IDs (§10.5). Align schema examples with Draft 2020-12 and the validation error format (§4.2, §4.14, §8.1). | D-153, [#113](https://github.com/aiperceivable/apcore/issues/113), [Changelog](https://github.com/aiperceivable/apcore/blob/main/CHANGELOG.md) |

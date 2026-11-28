@@ -1,5 +1,6 @@
 import type { Context } from './context.js';
 import { InvalidInputError } from './errors.js';
+import { cursorPrincipal } from './identity.js';
 import { copyPolicyInputs } from './policy-evaluation.js';
 import { uuidV4 } from './utils/uuid.js';
 
@@ -103,9 +104,7 @@ function buildCursorBinding(context: Context | null, filters: SearchFilters): st
   const identity = context?.identity;
   try {
     return copyPolicyInputs('capability discovery', {
-      principal: identity === null || identity === undefined ? null : {
-        id: identity.id, type: identity.type, roles: [...new Set(identity.roles)].sort(), attrs: identity.attrs,
-      },
+      principal: cursorPrincipal(identity),
       callerId: context?.callerId ?? null,
       callChain: [...(context?.callChain ?? [])],
       filters: { ...filters, readonly: filters.readonly ?? null },

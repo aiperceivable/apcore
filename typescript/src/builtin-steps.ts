@@ -18,6 +18,8 @@ import type { Config } from './config.js';
 import { getDefault } from './config-defaults.js';
 import { CancelToken, awaitExecution } from './cancel.js';
 import { Context } from './context.js';
+import { authorityKeyOf, hasScopeCeiling } from './identity.js';
+import { assertScopedInvocation, isStockScopeAcl, recordScopedGrant } from './scoped-invocation.js';
 import {
   ACLDeniedError,
   ApprovalDeniedError,
@@ -155,6 +157,7 @@ export class BuiltinContextCreation implements Step {
       invocation.identity = derived.identity;
       invocation.principalId = derived.identity?.id;
       invocation.principalType = derived.identity?.type;
+      invocation.authorityKey = authorityKeyOf(derived.identity);
     }
     ctx.onContextReady?.(derived);
     return { action: 'continue' };
@@ -364,12 +367,17 @@ export class BuiltinACLCheck implements Step {
   async execute(ctx: PipelineContext): Promise<StepResult> {
     const invocation = policyInvocationOf(ctx);
     if (invocation) assertPolicyBinding(ctx, invocation);
+    assertScopedInvocation(ctx, false);
+    if (hasScopeCeiling(ctx.context.identity) && !isStockScopeAcl(this._acl)) {
+      throw new ACLDeniedError(ctx.context.callerId, ctx.moduleId);
+    }
     if (this._acl === null) {
       if (invocation) invocation.aclApprovalRequired = false;
       return { action: 'continue' };
     }
     const callerId = ctx.context.callerId;
     const decision = await this._decide(ctx, callerId);
+    recordScopedGrant(ctx, decision);
     // §6.9 rows 3–4 / §7.4: the ACL's approval requirement is carried to the
     // approval gate at Step 5, which fires on the union of it, the module's
     // annotation and `gateDestructive`. An implementation that reads only the
@@ -575,6 +583,9 @@ export class BuiltinApprovalGate implements Step {
     }
 
     if (!needsApproval) {
+      if (approvalToken !== null && authorityKeyOf(ctx.context.identity) !== null) {
+        throw new ApprovalDeniedError(createApprovalResult({ status: 'rejected' }), ctx.moduleId);
+      }
       if (decision.destructive) {
         this._warnOnce(
           `destructive_ungated:${ctx.moduleId}`,
@@ -644,16 +655,18 @@ export class BuiltinApprovalGate implements Step {
     scope?: { moduleVersion: string | null; canonicalArgsDigest: string },
   ): ApprovalRequest {
     const mod = ctx.module as Record<string, unknown> | null;
+    const authorityKey = authorityKeyOf(ctx.context.identity);
     return createApprovalRequest({
       moduleId: ctx.moduleId,
       callerId: ctx.context.callerId,
       action: ctx.moduleId,
       arguments: args,
-      context: scope === undefined ? ctx.context : policyApprovalContext(ctx.context),
+      context: scope === undefined && authorityKey === null ? ctx.context : policyApprovalContext(ctx.context),
       annotations: annotations.requiresApproval ? annotations : Object.freeze({ ...annotations, requiresApproval: true }),
       description: (mod?.['description'] as string) ?? null,
       tags: (mod?.['tags'] as string[]) ?? [],
       ...scope,
+      ...(authorityKey === null ? {} : { authorityKey }),
     });
   }
 
@@ -661,16 +674,18 @@ export class BuiltinApprovalGate implements Step {
     handler: ApprovalHandler, token: string | null, request: ApprovalRequest, auditContext = request.context,
   ): Promise<void> {
     const final = request.canonicalArgsDigest !== undefined;
+    const authorityScoped = request.authorityKey !== undefined;
     let result: ApprovalResult;
     try {
-      const supportsFinalScope = final && handler.supportsFinalScope === true;
-      result = await this._requestApproval(handler, token, request, !final || supportsFinalScope);
-      if (final) result = this._safeFinalResult(result, supportsFinalScope);
+      const supportsScope = (!final || handler.supportsFinalScope === true) &&
+        (!authorityScoped || handler.supportsAuthorityScope === true);
+      result = await this._requestApproval(handler, token, request, supportsScope);
+      if (final || authorityScoped) result = this._safeFinalResult(result, supportsScope);
     } catch (error) {
-      if (!final) throw error;
+      if (!final && !authorityScoped) throw error;
       result = createApprovalResult({ status: 'rejected' });
     }
-    if (final) auditContext.cancelToken?.check();
+    if (final || authorityScoped) auditContext.cancelToken?.check();
     this._emitAudit(result, request.moduleId, auditContext, token);
 
     if (result.status === 'approved') {
@@ -941,6 +956,7 @@ export class BuiltinExecute implements Step {
   constructor(private readonly _config: Config | null) {}
 
   async execute(ctx: PipelineContext): Promise<StepResult> {
+    assertScopedInvocation(ctx, true);
     const invocation = policyInvocationOf(ctx);
     let inputs = ctx.inputs;
     if (invocation) {
@@ -971,7 +987,10 @@ export class BuiltinExecute implements Step {
           invocation.producer = protectedProducer;
           ctx.outputStream = protectedProducer;
         } else {
-          ctx.outputStream = this._streamWithLease(ctx, () => candidate.stream(ctx.inputs, ctx.context));
+          ctx.outputStream = this._streamWithLease(ctx, () => {
+            assertScopedInvocation(ctx, true);
+            return candidate.stream(ctx.inputs, ctx.context);
+          });
         }
         return { action: 'continue' };
       }

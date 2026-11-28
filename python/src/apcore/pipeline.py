@@ -13,8 +13,8 @@ from enum import Enum
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any, Callable, Protocol, runtime_checkable
 
-from apcore.context import _APPROVAL_TOKEN_KEY
-from apcore.errors import InvalidInputError, ModuleError, ModuleTimeoutError, PolicyEvaluationError
+from apcore.context import Identity, _APPROVAL_TOKEN_KEY
+from apcore.errors import ACLDeniedError, InvalidInputError, ModuleError, ModuleTimeoutError, PolicyEvaluationError
 from apcore.middleware.manager import MiddlewareChainError
 from apcore.utils.pattern import match_pattern
 
@@ -677,6 +677,29 @@ async def _invoke_step_cleanup_hooks(
 class PipelineEngine:
     """Executes a pipeline strategy step by step."""
 
+    @staticmethod
+    def _scoped_gate_index(strategy: ExecutionStrategy, ctx: PipelineContext) -> int:
+        from apcore.acl import ACL
+        from apcore.builtin_steps import BuiltinACLCheck, BuiltinContextCreation, BuiltinModuleLookup
+
+        context_ready = False
+        lookup_ready = False
+        for index, step in enumerate(strategy.steps):
+            patterns = getattr(step, "match_modules", None)
+            if patterns is not None and not _any_match(patterns, ctx.module_id):
+                continue
+            if step.name == "execute":
+                break
+            if type(step) is BuiltinContextCreation:
+                context_ready = True
+            elif type(step) is BuiltinModuleLookup:
+                lookup_ready = context_ready
+            elif isinstance(step, BuiltinACLCheck):
+                if type(step) is BuiltinACLCheck and type(step.acl) is ACL and lookup_ready and step.pure:
+                    return index
+                break
+        raise ACLDeniedError(ctx.context.caller_id, ctx.module_id)
+
     async def run(
         self,
         strategy: ExecutionStrategy,
@@ -720,11 +743,19 @@ class PipelineEngine:
         unavailable: set[str] = set()
         effective_run_until = run_until or ctx.run_until
         observation = ctx._stream_observation
+        identity = getattr(ctx.context, "identity", None)
+        gate_index = None
+        if isinstance(identity, Identity) and identity.scopes is not None and not ctx._acl_allowed:
+            gate_index = self._scoped_gate_index(strategy, ctx)
+        scoped_target = ctx.module_id
+        scoped_module = None
         i = 0
 
         # Index-based loop (not for-each) to support skip_to.
         while i < len(steps):
             step = steps[i]
+            if gate_index is not None and i > gate_index and not ctx._acl_allowed and not ctx.dry_run:
+                raise ACLDeniedError(ctx.context.caller_id, scoped_target)
             if observation is not None and observation.defer_step(step.name, ctx):
                 i += 1
                 continue
@@ -841,6 +872,15 @@ class PipelineEngine:
                 observation.before_step(step.name, ctx)
             recovered = False
             try:
+                if gate_index is not None and i >= gate_index:
+                    if (
+                        ctx.context.identity is not identity
+                        or ctx.module_id != scoped_target
+                        or (i > gate_index and ctx.module is not scoped_module)
+                    ):
+                        raise ACLDeniedError(ctx.context.caller_id, scoped_target)
+                    if i == gate_index:
+                        scoped_module = ctx.module
                 if timeout_ms > 0:
                     result = await asyncio.wait_for(
                         step.execute(ctx),
@@ -912,6 +952,7 @@ class PipelineEngine:
                     getattr(step, "_fail_closed_on_error", False)
                     or ctx._policy_pending
                     or isinstance(exc, PolicyEvaluationError)
+                    or (gate_index is not None and isinstance(exc, ACLDeniedError))
                 )
                 recovery: Any = None
                 if error_mws:
@@ -1076,12 +1117,16 @@ class PipelineEngine:
                     context=ctx,
                 )
                 if effective_run_until(state):
+                    if gate_index is not None and not ctx._acl_allowed:
+                        raise ACLDeniedError(ctx.context.caller_id, scoped_target)
                     trace.success = True
                     trace.total_duration_ms = (time.monotonic() - start) * 1000
                     return ctx.output, trace
 
             i += 1
 
+        if gate_index is not None and not ctx._acl_allowed and not ctx.dry_run:
+            raise ACLDeniedError(ctx.context.caller_id, scoped_target)
         trace.success = not any(item.result.action == "abort" for item in trace.steps if not item.skipped)
         trace.total_duration_ms = (time.monotonic() - start) * 1000
         # Use ctx.output — it's the most up-to-date (middleware_after may modify it)

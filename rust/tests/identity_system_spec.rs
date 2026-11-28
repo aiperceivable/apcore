@@ -30,8 +30,169 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use serde_json::{json, Value};
 
+use super::conformance_env;
 use apcore::context::{Context, ContextFactory, Identity};
 use apcore::errors::ModuleError;
+
+#[test]
+fn scoped_delegation_round_trips_and_cannot_widen_authority() {
+    let subject = Identity::new("subject".into(), "user".into(), vec![], HashMap::new())
+        .with_authority(
+            Some(vec!["read".into(), "write".into()]),
+            Some("issuer".into()),
+        )
+        .unwrap();
+    let actor = Identity::new("actor".into(), "service".into(), vec![], HashMap::new());
+    let delegated = subject
+        .delegate(actor.clone(), vec!["read".into()])
+        .unwrap();
+    assert_eq!(delegated.id(), "actor");
+    assert_eq!(delegated.root_subject().id(), "subject");
+    assert_eq!(delegated.delegation_depth(), 1);
+    assert_eq!(delegated.scopes().unwrap(), &["read".to_string()]);
+    assert!(delegated.delegate(actor, vec!["write".into()]).is_err());
+
+    let context = Context::<Value>::new(delegated.clone());
+    let mut wire = context.serialize();
+    let restored = Context::<Value>::deserialize(wire.clone()).unwrap();
+    assert_eq!(restored.identity, Some(delegated));
+    wire["identity"]["scopes"] = json!(["admin"]);
+    assert!(Context::<Value>::deserialize(wire).is_err());
+}
+
+#[tokio::test]
+async fn scoped_delegation_conformance() {
+    let path = conformance_env::find_fixtures_root().join("identity_delegation.json");
+    let fixture: Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+    for case in fixture["test_cases"].as_array().unwrap() {
+        let id = case["id"].as_str().unwrap();
+        let input = &case["input"];
+        let expected = &case["expected"];
+        let context = Context::<Value>::deserialize(json!({"identity": input["identity"]}));
+        assert_eq!(context.is_ok(), expected["valid"] == true, "{id}");
+        let Ok(context) = context else {
+            continue;
+        };
+        let identity = context.identity.as_ref().unwrap();
+        assert_eq!(
+            json!(identity.delegation_depth()),
+            expected["depth"],
+            "{id}"
+        );
+        assert_eq!(
+            json!(identity.root_subject().id()),
+            expected["subject_id"],
+            "{id}"
+        );
+        if let Some(effect) = expected["effect"].as_str() {
+            let audit = Arc::new(std::sync::Mutex::new(vec![]));
+            let captured = Arc::clone(&audit);
+            let acl = apcore::ACL::new(
+                serde_json::from_value(input["rules"].clone()).unwrap(),
+                input["default_effect"].as_str().unwrap_or("deny"),
+                Some(Arc::new(move |entry| {
+                    captured.lock().unwrap().push(entry.clone())
+                })),
+            );
+            let target_id = "delegation.target";
+            assert_eq!(
+                acl.check_access(None, target_id, Some(&context), None)
+                    .access,
+                effect,
+                "{id}"
+            );
+            assert_eq!(
+                acl.async_check_access(None, target_id, Some(&context), None)
+                    .await
+                    .access,
+                effect,
+                "{id}"
+            );
+            assert_eq!(
+                acl.evaluate_visibility(None, target_id, Some(&context))
+                    .is_some(),
+                effect == "allow",
+                "{id}"
+            );
+            let entries = audit.lock().unwrap();
+            assert_eq!(entries.len(), 2, "discovery must remain silent: {id}");
+            for entry in entries.iter() {
+                assert_eq!(entry.decision, effect, "{id}");
+                if identity.scopes().is_some() {
+                    assert_eq!(entry.actor_id.as_deref(), Some(identity.id()), "{id}");
+                    assert_eq!(
+                        entry.subject_id.as_deref(),
+                        Some(identity.root_subject().id()),
+                        "{id}"
+                    );
+                    assert_eq!(
+                        entry.delegation_depth,
+                        Some(identity.delegation_depth()),
+                        "{id}"
+                    );
+                } else {
+                    assert!(entry.delegation_depth.is_none(), "{id}");
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn scoped_owner_is_stable_across_scope_refresh_but_authority_changes() {
+    let subject = Identity::new("subject".into(), "user".into(), vec![], HashMap::new())
+        .with_authority(
+            Some(vec!["read".into(), "write".into()]),
+            Some("issuer".into()),
+        )
+        .unwrap();
+    let actor = Identity::new("actor".into(), "service".into(), vec![], HashMap::new());
+    let older = subject
+        .delegate(actor.clone(), vec!["write".into(), "read".into()])
+        .unwrap();
+    let refreshed = subject
+        .delegate(actor.clone(), vec!["read".into(), "read".into()])
+        .unwrap();
+    assert_eq!(older.owner_key(), refreshed.owner_key());
+    assert_ne!(older.authority_key(), refreshed.authority_key());
+    assert_eq!(None, actor.authority_key());
+    assert!(subject.delegate(actor, vec![" read".into()]).is_err());
+}
+
+#[tokio::test]
+async fn scoped_identity_conditions_validate_operands_before_matching() {
+    let target = "delegation.target";
+    let identity = Identity::new("user".into(), "user".into(), vec![], HashMap::new())
+        .with_authority(Some(vec!["read".into()]), None)
+        .unwrap();
+    let context = Context::<Value>::new(identity);
+    for malformed in [
+        json!({"scopes": []}),
+        json!({"subject_types": ["user", 0]}),
+        json!({"max_delegation_depth": {"lte": 0}}),
+        json!({"max_delegation_depth": 9}),
+    ] {
+        let acl = apcore::ACL::new(
+            serde_json::from_value(json!([
+                {"callers": ["@external"], "targets": [target], "effect": "deny", "conditions": malformed},
+                {"callers": ["@external"], "targets": [target], "effect": "allow", "conditions": {"scopes": ["read"]}},
+            ]))
+            .unwrap(),
+            "deny",
+            None,
+        );
+        assert!(!acl
+            .check_access(None, target, Some(&context), None)
+            .is_allowed());
+        assert!(!acl
+            .async_check_access(None, target, Some(&context), None)
+            .await
+            .is_allowed());
+        assert!(acl
+            .evaluate_visibility(None, target, Some(&context))
+            .is_none());
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Helpers

@@ -729,6 +729,126 @@ impl ACLConditionHandler for RolesHandler {
     }
 }
 
+struct ScopesHandler;
+
+#[async_trait]
+impl ACLConditionHandler for ScopesHandler {
+    async fn evaluate(&self, value: &Value, ctx: &Context<Value>) -> bool {
+        scopes_match(value, ctx)
+    }
+}
+
+fn scopes_match(value: &Value, ctx: &Context<Value>) -> bool {
+    let Some(scopes) = ctx.identity.as_ref().and_then(crate::Identity::scopes) else {
+        return false;
+    };
+    value.as_array().is_some_and(|required| {
+        !required.is_empty()
+            && required.iter().all(|value| {
+                value.as_str().is_some_and(|scope| {
+                    crate::context::valid_scope_literal(scope)
+                        && scopes.iter().any(|held| held == scope)
+                })
+            })
+    })
+}
+
+pub(crate) fn has_stock_scope_grant(
+    conditions: Option<&Value>,
+    ctx: &Context<Value>,
+    path: PrecheckPath,
+) -> bool {
+    let Some(required) = conditions.and_then(|conditions| conditions.get("scopes")) else {
+        return false;
+    };
+    let stock = match path {
+        PrecheckPath::Sync => CONDITION_HANDLERS
+            .read()
+            .get("scopes")
+            .is_some_and(|handler| Arc::ptr_eq(handler, &DISCOVERY_SCOPES)),
+        PrecheckPath::Async => stock_discovery_handler("scopes").is_some(),
+    };
+    stock && scopes_match(required, ctx)
+}
+
+struct SubjectTypesHandler;
+
+#[async_trait]
+impl ACLConditionHandler for SubjectTypesHandler {
+    async fn evaluate(&self, value: &Value, ctx: &Context<Value>) -> bool {
+        ctx.identity
+            .as_ref()
+            .zip(value.as_array())
+            .is_some_and(|(identity, types)| {
+                let subject = identity.root_subject();
+                types
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .any(|kind| kind == subject.identity_type())
+            })
+    }
+}
+
+struct SubjectRolesHandler;
+
+#[async_trait]
+impl ACLConditionHandler for SubjectRolesHandler {
+    async fn evaluate(&self, value: &Value, ctx: &Context<Value>) -> bool {
+        ctx.identity
+            .as_ref()
+            .zip(value.as_array())
+            .is_some_and(|(identity, roles)| {
+                let subject = identity.root_subject();
+                roles
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .any(|role| subject.roles().iter().any(|held| held == role))
+            })
+    }
+}
+
+struct MaxDelegationDepthHandler;
+
+#[async_trait]
+impl ACLConditionHandler for MaxDelegationDepthHandler {
+    async fn evaluate(&self, value: &Value, ctx: &Context<Value>) -> bool {
+        ctx.identity
+            .as_ref()
+            .zip(delegation_threshold(value))
+            .is_some_and(|(identity, max)| identity.delegation_depth() as u64 <= max)
+    }
+}
+
+fn delegation_threshold(value: &Value) -> Option<u64> {
+    integral_threshold(value)
+        .filter(|threshold| *threshold <= crate::context::MAX_DELEGATION_DEPTH as u64)
+}
+
+fn identity_condition_fault(key: &str, value: &Value) -> Option<&'static str> {
+    match key {
+        "scopes" | "subject_roles" | "subject_types" => {
+            let Some(items) = value.as_array().filter(|items| {
+                !items.is_empty()
+                    && items
+                        .iter()
+                        .all(|item| item.as_str().is_some_and(|item| !item.is_empty()))
+            }) else {
+                return Some("value must be a nonempty list of nonempty strings");
+            };
+            (key == "scopes"
+                && !items
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .all(crate::context::valid_scope_literal))
+            .then_some("scope strings must not contain whitespace")
+        }
+        "max_delegation_depth" if delegation_threshold(value).is_none() => {
+            Some("value must be an integer from zero to eight")
+        }
+        _ => None,
+    }
+}
+
 /// Extract a non-negative integer threshold from a JSON number, accepting
 /// integral floats (`5.0` → `5`) but rejecting non-integral floats (`5.5`).
 ///
@@ -1224,20 +1344,14 @@ fn collect_condition_faults(
                     ));
                 }
             }
-            // §6.1.7's `arguments` is the one leaf whose operand the precheck
-            // CAN judge. Its predicate vocabulary is closed by the spec and
-            // there is no registration point for it, so the shape of a
-            // well-formed operand is knowable without running anything —
-            // which is what makes it structural rather than a handler's own
-            // business. Being in the precheck also means `validate_rules()`
-            // reports a broken predicate, and that a structurally broken
-            // `deny` rule is unevaluable even for a context-less call, which
-            // is §6.1.4's whole point.
+            // These closed operand contracts can be validated without
+            // running a handler, even when there is no caller context.
             "arguments" => collect_argument_faults(value, &key_path, out),
-            // Every other leaf handler is the authority on its own value, and
-            // asking it would mean running it — which the precheck must not
-            // do. Those value faults surface at execution instead.
-            _ => {}
+            _ => {
+                if let Some(reason) = identity_condition_fault(key, value) {
+                    out.push(structural_fault(key_path, Some(key), reason));
+                }
+            }
         }
     }
 }
@@ -1301,6 +1415,14 @@ static DISCOVERY_IDENTITY_TYPES: LazyLock<Arc<dyn ACLConditionHandler>> =
     LazyLock::new(|| Arc::new(IdentityTypesHandler));
 static DISCOVERY_ROLES: LazyLock<Arc<dyn ACLConditionHandler>> =
     LazyLock::new(|| Arc::new(RolesHandler));
+static DISCOVERY_SCOPES: LazyLock<Arc<dyn ACLConditionHandler>> =
+    LazyLock::new(|| Arc::new(ScopesHandler));
+static DISCOVERY_SUBJECT_TYPES: LazyLock<Arc<dyn ACLConditionHandler>> =
+    LazyLock::new(|| Arc::new(SubjectTypesHandler));
+static DISCOVERY_SUBJECT_ROLES: LazyLock<Arc<dyn ACLConditionHandler>> =
+    LazyLock::new(|| Arc::new(SubjectRolesHandler));
+static DISCOVERY_MAX_DELEGATION_DEPTH: LazyLock<Arc<dyn ACLConditionHandler>> =
+    LazyLock::new(|| Arc::new(MaxDelegationDepthHandler));
 static DISCOVERY_MAX_CALL_DEPTH: LazyLock<Arc<dyn ACLConditionHandler>> =
     LazyLock::new(|| Arc::new(MaxCallDepthHandler));
 static DISCOVERY_OR: LazyLock<Arc<dyn ACLConditionHandler>> =
@@ -1312,6 +1434,10 @@ fn stock_discovery_handler(key: &str) -> Option<&'static Arc<dyn ACLConditionHan
     let stock = match key {
         "identity_types" => &*DISCOVERY_IDENTITY_TYPES,
         "roles" => &*DISCOVERY_ROLES,
+        "scopes" => &*DISCOVERY_SCOPES,
+        "subject_types" => &*DISCOVERY_SUBJECT_TYPES,
+        "subject_roles" => &*DISCOVERY_SUBJECT_ROLES,
+        "max_delegation_depth" => &*DISCOVERY_MAX_DELEGATION_DEPTH,
         "max_call_depth" => &*DISCOVERY_MAX_CALL_DEPTH,
         "$or" => &*DISCOVERY_OR,
         "$not" => &*DISCOVERY_NOT,
@@ -1369,6 +1495,12 @@ fn discovery_condition(key: &str, value: &Value, ctx: &Context<Value>) -> Condit
 pub fn register_builtin_handlers() {
     seed_condition("identity_types", || Arc::clone(&DISCOVERY_IDENTITY_TYPES));
     seed_condition("roles", || Arc::clone(&DISCOVERY_ROLES));
+    seed_condition("scopes", || Arc::clone(&DISCOVERY_SCOPES));
+    seed_condition("subject_types", || Arc::clone(&DISCOVERY_SUBJECT_TYPES));
+    seed_condition("subject_roles", || Arc::clone(&DISCOVERY_SUBJECT_ROLES));
+    seed_condition("max_delegation_depth", || {
+        Arc::clone(&DISCOVERY_MAX_DELEGATION_DEPTH)
+    });
     seed_condition("max_call_depth", || Arc::clone(&DISCOVERY_MAX_CALL_DEPTH));
     // §6.1.7: `arguments` is part of the language §6.1 already defines, not a
     // mechanism beside it, so it is seeded here with the other built-ins and
@@ -1645,9 +1777,9 @@ mod tests {
         );
         assert_eq!(
             body.matches("seed_condition(").count() + body.matches("seed_async_condition(").count(),
-            8,
-            "expected all eight built-in registrations to be seeded — four \
-             sync-only handlers plus the two mode-matched compound pairs:\n{body}"
+            12,
+            "expected all twelve built-in registrations to be seeded — eight \
+             sync handlers plus the two mode-matched compound pairs:\n{body}"
         );
     }
 

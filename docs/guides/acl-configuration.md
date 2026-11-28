@@ -235,10 +235,33 @@ All keys in a `conditions` object must hold for the rule to match.
 |-----|-------------|
 | `roles` | The caller's `Identity` has at least one of the listed roles |
 | `identity_types` | The caller's identity type is one of the listed values |
+| `scopes` | The current actor has every listed effective scope |
+| `subject_types` | The root subject's identity type is one of the listed values |
+| `subject_roles` | The root subject has at least one of the listed roles |
+| `max_delegation_depth` | The number of active delegation links is at most this integer from 0 through 8 |
 | `max_call_depth` | The call chain is no deeper than this value |
 | `arguments` | The call's argument **keys** satisfy `has_key`, `has_all_keys` or `has_none_of` |
 | `$or` | Any of the listed condition objects holds |
 | `$not` | The wrapped condition object does not hold |
+
+For an identity with explicit scopes, a grant requires the first matching allow rule to include a nonempty top-level `scopes` list. The rule can also constrain the current actor and the root subject independently.
+
+```yaml
+version: "1.0"
+default_effect: deny
+audit:
+  enabled: true
+  include_denied: true
+rules:
+  - callers: ["@external"]
+    targets: ["reports.read"]
+    effect: allow
+    conditions:
+      scopes: ["reports:read"]
+      identity_types: ["service"]
+      subject_roles: ["report_viewer"]
+      max_delegation_depth: 1
+```
 
 ```yaml
 # acl/global_acl.yaml

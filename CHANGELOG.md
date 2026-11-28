@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Add the pure TypeScript Prometheus text renderer and host-owned subscriber factories for configured event delivery.
 - **Protocol 2.0.0 draft revision 2.** Add opt-in policy evaluation after input validation. The enabled pipeline combines approval requirements at one gate, binds approval to the selected module version and effective arguments, and enforces the gate before ordinary and streaming execution. Final-scope pending approvals require an explicitly compatible scoped handler.
 - **Protocol 2.0.0 draft revision 3.** Add caller-scoped capability summaries and full-schema lookup using silent ACL visibility. Add the read-only `system.manifest.search` module with opaque cursors bound to the original requester.
+- **Protocol 2.0.0 draft revision 4.** Add trusted identity delegation, scope-aware ACL grants, root-subject conditions, and authority binding for discovery cursors, policy input, and pending approval resumption.
 
 ### Changed
 

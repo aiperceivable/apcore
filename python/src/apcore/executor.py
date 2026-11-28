@@ -875,6 +875,10 @@ class Executor:
         # Convert pipeline trace to PreflightResult checks
         if trace is not None:
             checks.extend(_trace_to_checks(trace, pipe_ctx.preflight_errors))
+        scoped = getattr(getattr(context, "identity", None), "scopes", None) is not None
+        if scoped and not pipe_ctx._acl_allowed and not any(c.check == _ACL_CHECK and not c.passed for c in checks):
+            error = ACLDeniedError(context.caller_id, module_id)
+            checks.append(PreflightCheckResult(check=_ACL_CHECK, passed=False, error=error.to_dict()))
 
         # Detect requires_approval (preflight reports, does not enforce).
         #
@@ -1218,6 +1222,11 @@ class Executor:
         # typed cause is what middleware on_error handlers and the final
         # caller observe — not the chain-machinery wrapper.
         original = exc.original if isinstance(exc, MiddlewareChainError) else exc
+        if (
+            isinstance(original, ACLDeniedError)
+            and getattr(getattr(ctx_obj, "identity", None), "scopes", None) is not None
+        ):
+            recoverable = False
         wrapped = propagate_error(original, module_id, ctx_obj) if ctx_obj else original
         executed_mw = pipe_ctx.executed_middlewares
         if recoverable and executed_mw:
@@ -1808,18 +1817,14 @@ class Executor:
         enforcing_gates = [
             step
             for step in self._strategy.steps
-            if isinstance(step, BuiltinApprovalGate)
-            and (step.handler is not None or step.policy.strict)
+            if isinstance(step, BuiltinApprovalGate) and (step.handler is not None or step.policy.strict)
         ]
         ungated: list[str] = []
         for module_id in self._registry.list(visibility=["public", "hidden"]):
             annotations = self._module_governance_annotations(module_id)
             if annotations is None or not annotations.requires_approval:
                 continue
-            if not any(
-                gate.policy.resolve(module_id, annotations).needs_approval
-                for gate in enforcing_gates
-            ):
+            if not any(gate.policy.resolve(module_id, annotations).needs_approval for gate in enforcing_gates):
                 ungated.append(module_id)
         return ungated
 

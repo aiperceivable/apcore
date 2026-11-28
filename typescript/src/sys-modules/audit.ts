@@ -1,4 +1,4 @@
-import type { Context } from '../context.js';
+import type { Context, Identity } from '../context.js';
 
 export type AuditAction = 'update_config' | 'reload_module' | 'toggle_feature';
 
@@ -8,6 +8,8 @@ export interface AuditEntry {
   targetModuleId: string;
   actorId: string;
   actorType: string;
+  subjectId?: string;
+  delegationDepth?: number;
   traceId: string;
   change: { before: unknown; after: unknown };
   /**
@@ -65,12 +67,17 @@ export function buildAuditEntry(
   change: { before: unknown; after: unknown },
   correlationId = '',
 ): AuditEntry {
+  const identity = context?.identity;
   return {
     timestamp: new Date().toISOString(),
     action,
     targetModuleId,
     actorId: context?.identity?.id ?? 'unknown',
     actorType: context?.identity?.type ?? 'unknown',
+    ...(identity == null ? {} : {
+      subjectId: identity.rootSubject?.id ?? identity.id,
+      delegationDepth: identity.delegationDepth ?? 0,
+    }),
     traceId: context?.traceId ?? 'unknown',
     change,
     correlationId,
@@ -131,34 +138,47 @@ export function extractAuditIdentity(
   if (!ident) {
     return { caller_id: callerId, identity: null };
   }
-  const snapshot: Record<string, unknown> = {
+  return { caller_id: callerId, identity: auditIdentitySnapshot(ident) };
+}
+
+const identityAuditFields = new Set([
+  'id', 'type', 'roles', 'display_name', 'actor_id', 'subject_id', 'delegation_depth', 'on_behalf_of', 'issuer', 'scopes',
+]);
+
+function auditIdentitySnapshot(ident: Identity): Record<string, unknown> {
+  const attrs = Object.fromEntries(
+    Object.entries(ident.attrs).filter(([key]) => !identityAuditFields.has(key)),
+  );
+  const displayName = ident.attrs['display_name'];
+  return {
+    ...redactAuditFields(attrs, new Set()),
     id: ident.id,
     type: ident.type,
+    actor_id: ident.id,
+    subject_id: ident.rootSubject?.id ?? ident.id,
+    delegation_depth: ident.delegationDepth ?? 0,
+    ...(ident.roles.length === 0 ? {} : { roles: [...ident.roles] }),
+    ...(typeof displayName === 'string' && displayName.length > 0 ? { display_name: displayName } : {}),
+    ...(ident.onBehalfOf === undefined ? {} : { on_behalf_of: auditIdentitySnapshot(ident.onBehalfOf) }),
   };
-  // D-118: an EMPTY roles list is omitted, not emitted as `roles: []`. The spec
-  // names only `id`, `type` and optionally `display_name` for this snapshot,
-  // and apcore-python and apcore-rust both omit the key; this SDK emitted it
-  // unconditionally. `roles: []` and an absent `roles` are different claims to a
-  // subscriber reading the audit trail — the first says the principal was
-  // checked and carries no roles, the second says roles were not part of this
-  // record at all. Emitting the first for every identity makes the distinction
-  // unavailable.
-  if (ident.roles.length > 0) {
-    snapshot['roles'] = [...ident.roles];
+}
+
+function redactAuditFields(data: Record<string, unknown>, ancestors: Set<object>): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(data).map(([key, value]) => {
+    const sensitive = SENSITIVE_IDENTITY_ATTR_SUBSTRINGS.some(part => key.toLowerCase().includes(part));
+    return [key, sensitive ? '<redacted>' : redactAuditValue(value, ancestors)];
+  }));
+}
+
+function redactAuditValue(value: unknown, ancestors: Set<object>): unknown {
+  if (typeof value === 'function') return '<redacted>';
+  if (typeof value !== 'object' || value === null) return value;
+  if (ancestors.has(value)) return '<redacted>';
+  ancestors.add(value);
+  try {
+    if (Array.isArray(value)) return value.map(item => redactAuditValue(item, ancestors));
+    return redactAuditFields(value as Record<string, unknown>, ancestors);
+  } finally {
+    ancestors.delete(value);
   }
-  // Surface display_name from attrs if present (spec #45.2 calls it out as
-  // an optional first-class field on the audit identity snapshot).
-  const displayName = (ident.attrs as Record<string, unknown>)['display_name'];
-  if (typeof displayName === 'string' && displayName.length > 0) {
-    snapshot['display_name'] = displayName;
-  }
-  // Pass through any other attrs, redacting those whose key matches a
-  // sensitive substring (case-insensitive).
-  for (const [k, v] of Object.entries(ident.attrs)) {
-    if (k === 'display_name') continue;
-    const lk = k.toLowerCase();
-    const sensitive = SENSITIVE_IDENTITY_ATTR_SUBSTRINGS.some((s) => lk.includes(s));
-    snapshot[k] = sensitive ? '<redacted>' : v;
-  }
-  return { caller_id: callerId, identity: snapshot };
 }

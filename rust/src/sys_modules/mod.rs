@@ -318,7 +318,48 @@ fn redact_identity_attr(name: &str, value: &serde_json::Value) -> serde_json::Va
     {
         return serde_json::Value::String(IDENTITY_REDACTED_TOKEN.to_string());
     }
-    value.clone()
+    redact_identity_value(value)
+}
+
+#[cfg(feature = "sys-modules")]
+fn redact_identity_value(value: &serde_json::Value) -> serde_json::Value {
+    match value {
+        serde_json::Value::Object(fields) => serde_json::Value::Object(
+            fields
+                .iter()
+                .map(|(key, value)| (key.clone(), redact_identity_attr(key, value)))
+                .collect(),
+        ),
+        serde_json::Value::Array(values) => {
+            serde_json::Value::Array(values.iter().map(redact_identity_value).collect())
+        }
+        _ => value.clone(),
+    }
+}
+
+#[cfg(feature = "sys-modules")]
+fn audit_identity(identity: &crate::Identity) -> serde_json::Value {
+    let mut snapshot = serde_json::json!({"id": identity.id(), "type": identity.identity_type()});
+    if !identity.roles().is_empty() {
+        snapshot["roles"] = serde_json::json!(identity.roles());
+    }
+    if let Some(fields) = snapshot.as_object_mut() {
+        for (key, value) in identity.attrs() {
+            if !matches!(key.as_str(), "id" | "type" | "roles") {
+                fields.insert(key.clone(), redact_identity_attr(key, value));
+            }
+        }
+    }
+    if let Some(scopes) = identity.scopes() {
+        snapshot["scopes"] = serde_json::json!(scopes);
+    }
+    if let Some(issuer) = identity.issuer() {
+        snapshot["issuer"] = serde_json::json!(issuer);
+    }
+    if let Some(parent) = identity.on_behalf_of() {
+        snapshot["on_behalf_of"] = audit_identity(parent);
+    }
+    snapshot
 }
 
 /// Augment an audit-event payload with caller identity extracted from the
@@ -354,27 +395,66 @@ pub(crate) fn augment_with_context_identity(
                 serde_json::json!(identity.identity_type()),
             );
 
-            // Canonical nested snapshot.
-            let mut snapshot = serde_json::Map::new();
-            snapshot.insert("id".to_string(), serde_json::json!(identity.id()));
-            snapshot.insert(
-                "type".to_string(),
-                serde_json::json!(identity.identity_type()),
-            );
-            let roles = identity.roles();
-            if !roles.is_empty() {
-                snapshot.insert("roles".to_string(), serde_json::json!(roles));
+            if identity.scopes().is_some() {
+                obj.insert(
+                    "subject_id".into(),
+                    serde_json::json!(identity.root_subject().id()),
+                );
+                obj.insert(
+                    "delegation_depth".into(),
+                    serde_json::json!(identity.delegation_depth()),
+                );
             }
-            for (key, value) in identity.attrs() {
-                if matches!(key.as_str(), "id" | "type" | "roles") {
-                    continue;
-                }
-                snapshot.insert(key.clone(), redact_identity_attr(key, value));
-            }
-            obj.insert("identity".to_string(), serde_json::Value::Object(snapshot));
+            obj.insert("identity".to_string(), audit_identity(identity));
         }
     }
     data
+}
+
+#[cfg(all(test, feature = "sys-modules"))]
+mod identity_audit_tests {
+    use super::augment_with_context_identity;
+    use crate::context::{Context, Identity};
+    use serde_json::{json, Value};
+
+    #[test]
+    fn scoped_audit_redacts_nested_attributes_at_every_hop() {
+        let root = Identity::new(
+            "root".into(),
+            "user".into(),
+            vec![],
+            [(
+                "provider".into(),
+                json!({"session_id": "root-session", "region": "west"}),
+            )]
+            .into_iter()
+            .collect(),
+        )
+        .with_authority(Some(vec!["read".into()]), None)
+        .unwrap();
+        let actor = Identity::new(
+            "actor".into(),
+            "agent".into(),
+            vec![],
+            [("network".into(), json!([{"auth_header": "actor-secret"}]))]
+                .into_iter()
+                .collect(),
+        );
+        let context = Context::<Value>::new(root.delegate(actor, vec!["read".into()]).unwrap());
+        let event = augment_with_context_identity(json!({}), &context);
+        assert_eq!(event["actor_id"], "actor");
+        assert_eq!(event["subject_id"], "root");
+        assert_eq!(event["delegation_depth"], 1);
+        assert_eq!(event["identity"]["network"][0]["auth_header"], "<redacted>");
+        assert_eq!(
+            event["identity"]["on_behalf_of"]["provider"]["session_id"],
+            "<redacted>"
+        );
+        assert_eq!(
+            event["identity"]["on_behalf_of"]["provider"]["region"],
+            "west"
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------

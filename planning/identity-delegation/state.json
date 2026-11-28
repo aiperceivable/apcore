@@ -6,32 +6,31 @@
   "execution_order": ["shared-contract", "core-sdks", "surfaces", "verification"],
   "progress": {
     "total_tasks": 4,
-    "completed": 0,
-    "in_progress": 0,
-    "pending": 3,
+    "completed": 2,
+    "in_progress": 1,
+    "pending": 1,
     "skipped": 0,
-    "blocked": 1
+    "blocked": 0
   },
   "tasks": [
     {
       "id": "shared-contract",
       "file": "tasks/shared-contract.md",
       "title": "Shared delegation contract and conformance",
-      "status": "blocked",
-      "blocker": "Maintainer approval of the proposed protocol draft revision"
+      "status": "completed"
     },
     {
       "id": "core-sdks",
       "file": "tasks/core-sdks.md",
       "title": "Python, TypeScript, and Rust delegated identity",
-      "status": "pending",
+      "status": "completed",
       "dependencies": ["shared-contract"]
     },
     {
       "id": "surfaces",
       "file": "tasks/surfaces.md",
       "title": "MCP and A2A verified claim mapping",
-      "status": "pending",
+      "status": "in_progress",
       "dependencies": ["core-sdks"]
     },
     {

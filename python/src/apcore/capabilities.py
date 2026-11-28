@@ -137,14 +137,7 @@ class _Caller:
         scope = {
             "caller_id": self.caller_id,
             "call_chain": list(self.call_chain),
-            "identity": None
-            if identity is None
-            else {
-                "id": identity.id,
-                "type": identity.type,
-                "roles": list(identity.roles),
-                "attrs": identity.attrs,
-            },
+            "identity": identity._authority_projection() if identity is not None else None,
         }
         try:
             return _argument_digest(scope)
@@ -354,6 +347,8 @@ def _still_current(executor: Executor, module_id: str, version_hint: str | None,
 
 
 def _visibility_decision(acl: ACL | None, module_id: str, context: Context) -> VisibilityDecision:
+    if context.identity is not None and context.identity.scopes is not None and type(acl) is not ACL:
+        return VisibilityDecision(False)
     if acl is None:
         return VisibilityDecision(True)
     evaluator = getattr(acl, "evaluate_visibility", None)

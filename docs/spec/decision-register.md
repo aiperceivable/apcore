@@ -166,6 +166,7 @@ them.
 | D-132 | The specification follows three agreeing, correct implementations | In force | v1.62.0 | [divergence log](./2026-09-divergence-decisions.md#d-132-the-specification-follows-three-agreeing-correct-implementations) |
 | D-153 | Managed lifecycle binds admission, cancellation, and recovery to a generation | Draft | — | [Managed Module Lifecycle](./protocol-spec.md#1279-managed-module-lifecycle) |
 | D-154 | Capability discovery proves visibility before projecting metadata and rechecks access on every request | Draft | — | [ACL-aware capability discovery](./protocol-spec.md#acl-aware-capability-discovery) |
+| D-155 | Trusted identities attenuate explicit scopes, and scoped ACL grants and approval credentials bind to the current authority | Draft | — | [Trusted identity delegation](./protocol-spec.md#trusted-identity-delegation) |
 | E-01 | `start_reaper` starts synchronously; only `stop()` is awaited | In force | — | [2026-09 audit log](./2026-09-decision-log.md#e-01-asynctaskmanagerstart_reaper-does-the-call-itself-need-to-be-awaited) |
 | E-02 | `APCore.discover` is sync in Python, async in TypeScript and Rust | In force | — | [2026-09 audit log](./2026-09-decision-log.md#e-02-apcorediscover-synchronous-in-all-languages-contradicted-two-of-three-implementations) |
 | E-03 | `ACL(rules=[…])` validates every rule it is handed | In force | v1.33.0 | [2026-09 audit log](./2026-09-decision-log.md#e-03-aclrules-did-not-re-validate-a-rule-mutated-before-its-first-construction) |

@@ -55,6 +55,7 @@ class PolicyEvaluationRequest:
     identity: Identity | None = field(repr=False)
     arguments: dict[str, Any] = field(repr=False)
     sensitive_fields: tuple[str, ...]
+    authority_key: str | None = field(default=None, repr=False)
 
 
 @dataclass(frozen=True)

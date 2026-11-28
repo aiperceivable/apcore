@@ -31,6 +31,7 @@ import {
   BuiltinACLCheck,
   BuiltinApprovalGate,
   BuiltinContextCreation,
+  BuiltinExecute,
   BuiltinModuleLookup,
   buildInternalStrategy,
   buildMinimalStrategy,
@@ -49,6 +50,8 @@ import { buildStrategyFromConfigSync, ConfigurationError } from './pipeline-conf
 // Node-only code into the browser dependency graph.
 import { type EventEmitter, createEvent } from './events/emitter.js';
 import { Context } from './context.js';
+import { hasScopeCeiling } from './identity.js';
+import { assertScopeGate, assertScopedInvocation, beginScopedInvocation, isStockScopeAcl } from './scoped-invocation.js';
 import { governanceUnion } from './schema/annotations.js';
 import { sourceSchemaFor } from './schema/loader-pure.js';
 import { RedactionConfig } from './observability/context-logger.js';
@@ -894,9 +897,11 @@ export class Executor {
         !lookup.usesRegistry(this._registry) || lookup.toggleState.isDisabled(moduleId)) return null;
     const generation = this._registry.publicGeneration(moduleId);
     if (generation === null) return null;
-    const gates = steps.filter(step => step.name === 'acl_check' || step instanceof BuiltinACLCheck);
+    const gates = steps.filter(step => (step.name === 'acl_check' || step instanceof BuiltinACLCheck) &&
+      stepMatchesModule(step, moduleId));
     if (gates.length === 0 || steps.indexOf(gates[0]) <= lookupIndex) return null;
     const target = parent.child(moduleId);
+    if (hasScopeCeiling(target.identity) && !this._hasScopeGate(this._strategy, moduleId)) return null;
     let approvalRequired = false;
     let approvalConditional = false;
     for (const gate of gates) {
@@ -1165,6 +1170,27 @@ export class Executor {
     return this._policyEvaluator === null ? strategy : withPostValidationPolicy(strategy, this._policyEvaluator, this._eventEmitter);
   }
 
+  private _hasScopeGate(strategy: ExecutionStrategy, moduleId: string): boolean {
+    const steps = strategy.steps.filter(step => stepMatchesModule(step, moduleId));
+    const create = steps.findIndex(step => step.name === 'context_creation');
+    const lookup = steps.findIndex(step => step.name === 'module_lookup');
+    const dispatch = steps.findIndex(step => step.name === 'execute');
+    const check = steps.findIndex(step => step.name === 'acl_check');
+    const gate = steps[check];
+    const execute = steps[dispatch];
+    return create >= 0 && create < lookup && lookup < check && check < dispatch &&
+      Object.getPrototypeOf(steps[create]) === BuiltinContextCreation.prototype &&
+      steps[create].execute === BuiltinContextCreation.prototype.execute &&
+      Object.getPrototypeOf(steps[lookup]) === BuiltinModuleLookup.prototype &&
+      steps[lookup].execute === BuiltinModuleLookup.prototype.execute &&
+      gate.ignoreErrors !== true && gate instanceof BuiltinACLCheck &&
+      Object.getPrototypeOf(gate) === BuiltinACLCheck.prototype &&
+      gate.execute === BuiltinACLCheck.prototype.execute && gate.pure &&
+      isStockScopeAcl(gate.acl) && execute instanceof BuiltinExecute &&
+      Object.getPrototypeOf(execute) === BuiltinExecute.prototype &&
+      execute.execute === BuiltinExecute.prototype.execute;
+  }
+
   use(middleware: Middleware): Executor {
     this._middlewareManager.add(middleware);
     return this;
@@ -1248,6 +1274,7 @@ export class Executor {
     // is enforced regardless of how the caller built the Context.
     let ctx = context ?? Context.create();
     ctx = bindExecutorToCtx(ctx, this);
+    if (hasScopeCeiling(ctx.identity)) assertScopeGate(ctx, moduleId, this._hasScopeGate(strategy, moduleId));
     const pipeCtx: PipelineContext = {
       moduleId,
       inputs: inputs ?? {},
@@ -1269,12 +1296,14 @@ export class Executor {
     try {
       while (true) {
         try {
+          beginScopedInvocation(pipeCtx);
           if (protectedCall) {
             beginPolicyInvocation(pipeCtx);
             pipeCtx.inputs = policyIngressInputs(pipeCtx.inputs, moduleId);
           }
           prepareApprovalInputs(pipeCtx);
           const [output, trace] = await this._pipelineEngine.run(strategy, pipeCtx);
+          assertScopedInvocation(pipeCtx, true);
           if (protectedCall && !policyInvocationOf(pipeCtx)?.dispatched) throw new PolicyEvaluationError(moduleId);
           return [(output ?? {}) as Record<string, unknown>, trace];
         } catch (exc) {
@@ -1437,6 +1466,7 @@ export class Executor {
     // Issue #66: auto-bind executor (see call() for rationale).
     let ctx = context ?? Context.create();
     ctx = bindExecutorToCtx(ctx, this);
+    if (hasScopeCeiling(ctx.identity)) assertScopeGate(ctx, moduleId, this._hasScopeGate(strategy, moduleId));
     const pipeCtx: PipelineContext = {
       moduleId,
       inputs: inputs ?? {},
@@ -1475,12 +1505,14 @@ export class Executor {
     try {
       // Run through producer creation, or finish the unary fallback.
       try {
+        beginScopedInvocation(pipeCtx);
         if (protectedCall) {
           beginPolicyInvocation(pipeCtx);
           pipeCtx.inputs = policyIngressInputs(pipeCtx.inputs, moduleId);
         }
         prepareApprovalInputs(pipeCtx);
         await pipeline.next();
+        assertScopedInvocation(pipeCtx, true);
         const invocation = policyInvocationOf(pipeCtx);
         if (protectedCall && !invocation?.dispatched && !invocation?.producer) throw new PolicyEvaluationError(moduleId);
       } catch (exc) {
@@ -1742,11 +1774,16 @@ export class Executor {
       dryRun: true,
     };
     if (protectedCall) beginPolicyInvocation(pipeCtx);
+    beginScopedInvocation(pipeCtx);
 
     try {
       let trace: PipelineTrace | null = null;
       try {
+        if (hasScopeCeiling(validateCtx.identity)) {
+          assertScopeGate(validateCtx, moduleId, this._hasScopeGate(strategy, moduleId));
+        }
         const [, t] = await this._pipelineEngine.run(strategy, pipeCtx);
+        if (!t.steps.some(step => step.error !== undefined)) assertScopedInvocation(pipeCtx, true);
         trace = t;
       } catch (e) {
         // Step raised a domain error (ModuleNotFoundError, ACLDeniedError, etc.)

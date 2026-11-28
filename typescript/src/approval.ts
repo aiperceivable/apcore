@@ -73,6 +73,8 @@ export interface ApprovalRequest {
   readonly moduleVersion?: string | null;
   /** Present on approvals bound to the final validated invocation. */
   readonly canonicalArgsDigest?: string;
+  /** Present when approval is bound to scoped or issuer-qualified authority. */
+  readonly authorityKey?: string;
 }
 
 /**
@@ -96,6 +98,7 @@ export function createApprovalRequest(options: {
   action?: string;
   moduleVersion?: string | null;
   canonicalArgsDigest?: string;
+  authorityKey?: string;
 }): ApprovalRequest {
   return Object.freeze({
     moduleId: options.moduleId,
@@ -108,6 +111,7 @@ export function createApprovalRequest(options: {
     tags: Object.freeze([...(options.tags ?? [])]),
     ...(options.moduleVersion !== undefined ? { moduleVersion: options.moduleVersion } : {}),
     ...(options.canonicalArgsDigest !== undefined ? { canonicalArgsDigest: options.canonicalArgsDigest } : {}),
+    ...(options.authorityKey !== undefined ? { authorityKey: options.authorityKey } : {}),
   });
 }
 
@@ -154,6 +158,8 @@ export function createApprovalResult(options: {
 export interface ApprovalHandler {
   /** Opt in to issuing and consuming approvals bound to the final invocation. */
   readonly supportsFinalScope?: boolean;
+  /** Opt in to issuing and consuming approvals bound to a current authority key. */
+  readonly supportsAuthorityScope?: boolean;
   requestApproval(request: ApprovalRequest): Promise<ApprovalResult>;
   checkApproval(approvalId: string): Promise<ApprovalResult>;
   /** Validate the current call's identity, target and arguments, then consume the approval. */

@@ -451,14 +451,18 @@ impl Step for BuiltinACLCheck {
                 // (allows are high-volume and already covered by tracing spans).
                 if !ctx.dry_run {
                     if let Some(emitter) = ctx.event_emitter.clone() {
+                        let mut data = serde_json::json!({
+                            "module_id": ctx.module_id,
+                            "caller_id": caller_id,
+                            "reason": "ACL denied",
+                            "trace_id": ctx.context.trace_id,
+                        });
+                        if let Some(identity) = &ctx.context.identity {
+                            identity.enrich_principal_audit(&mut data);
+                        }
                         let event = ApCoreEvent::with_module(
                             "apcore.acl.denied",
-                            serde_json::json!({
-                                "module_id": ctx.module_id,
-                                "caller_id": caller_id,
-                                "reason": "ACL denied",
-                                "trace_id": ctx.context.trace_id,
-                            }),
+                            data,
                             ctx.module_id.clone(),
                             "warn",
                         );
@@ -470,7 +474,9 @@ impl Step for BuiltinACLCheck {
                     &ctx.module_id,
                 ));
             }
+            ctx.record_scope_grant();
         }
+        ctx.require_scope_grant()?;
         Ok(StepResult::continue_step())
     }
 }
@@ -530,16 +536,20 @@ impl BuiltinApprovalGate {
         } else {
             "warn"
         };
+        let mut data = serde_json::json!({
+            "module_id": ctx.module_id,
+            "status": result.status,
+            "approved_by": result.approved_by,
+            "reason": result.reason,
+            "approval_id": audit_id,
+            "trace_id": ctx.context.trace_id,
+        });
+        if let Some(identity) = &ctx.context.identity {
+            identity.enrich_principal_audit(&mut data);
+        }
         let event = ApCoreEvent::with_module(
             "apcore.approval.decision",
-            serde_json::json!({
-                "module_id": ctx.module_id,
-                "status": result.status,
-                "approved_by": result.approved_by,
-                "reason": result.reason,
-                "approval_id": audit_id,
-                "trace_id": ctx.context.trace_id,
-            }),
+            data,
             ctx.module_id.clone(),
             severity,
         );
@@ -691,6 +701,8 @@ impl BuiltinApprovalGate {
     ) -> Result<(), ModuleError> {
         const UNSUPPORTED_FINAL: &str =
             "The approval handler does not support final-scope resumption";
+        const UNSUPPORTED_AUTHORITY: &str =
+            "The approval handler does not bind durable approvals to current authority";
         let approval_token = ctx.take_approval_credential()?;
         let final_scope = digest.is_some();
         if final_scope && approval_token.is_some() && !handler.supports_final_scope() {
@@ -715,6 +727,10 @@ impl BuiltinApprovalGate {
             description: (!description.is_empty()).then(|| description.to_owned()),
             tags: module.tags(),
         };
+        let authority_scope = request.authority_key().is_some();
+        if authority_scope && approval_token.is_some() && !handler.supports_authority_scope() {
+            return Err(Self::reject_unavailable_handler(ctx, UNSUPPORTED_AUTHORITY).await);
+        }
         let approval_result = if let Some(credential) = approval_token.as_deref() {
             handler
                 .check_approval_for_call(credential, &request)
@@ -724,6 +740,12 @@ impl BuiltinApprovalGate {
         };
         if final_scope && approval_result.status == "pending" && !handler.supports_final_scope() {
             return Err(Self::reject_unavailable_handler(ctx, UNSUPPORTED_FINAL).await);
+        }
+        if authority_scope
+            && approval_result.status == "pending"
+            && !handler.supports_authority_scope()
+        {
+            return Err(Self::reject_unavailable_handler(ctx, UNSUPPORTED_AUTHORITY).await);
         }
         let audit_id = approval_result.observable_id(approval_token.as_deref());
         Self::emit_approval_decision(ctx, &approval_result, audit_id);
@@ -749,6 +771,7 @@ impl Step for BuiltinApprovalGate {
 
     #[allow(clippy::too_many_lines)] // approval gate logic is inherently multi-step; splitting would obscure the protocol flow
     async fn execute(&self, ctx: &mut PipelineContext) -> Result<StepResult, ModuleError> {
+        ctx.require_scope_grant()?;
         ctx.validate_approval_credential()?;
 
         let registry = ctx
@@ -857,6 +880,7 @@ impl Step for BuiltinApprovalGate {
             return Ok(StepResult::continue_step());
         }
         if !needs_approval {
+            ctx.reject_unconsumed_scoped_approval()?;
             if decision.destructive {
                 Self::warn_destructive_ungated(ctx);
             }
@@ -940,6 +964,7 @@ impl Step for BuiltinPostValidationPolicy {
     }
 
     async fn execute(&self, ctx: &mut PipelineContext) -> Result<StepResult, ModuleError> {
+        ctx.require_scope_grant()?;
         let evaluator = ctx
             .policy_evaluator
             .clone()
@@ -997,10 +1022,11 @@ impl BuiltinPostValidationPolicy {
             .policy_approval_annotations
             .take()
             .ok_or_else(|| missing_pipeline_input("policy_approval_annotations"))?;
-        if annotations.requires_approval
-            || effect == PolicyEffect::RequireApproval
-            || ctx.has_approval_credential()
-        {
+        let required = annotations.requires_approval || effect == PolicyEffect::RequireApproval;
+        if !required {
+            ctx.reject_unconsumed_scoped_approval()?;
+        }
+        if required || ctx.has_approval_credential() {
             let Some(handler) = ctx.approval_handler.clone() else {
                 return Err(BuiltinApprovalGate::reject_unavailable_handler(
                     ctx,
@@ -1036,13 +1062,17 @@ impl BuiltinPostValidationPolicy {
         let Some(emitter) = ctx.event_emitter.as_ref() else {
             return;
         };
+        let mut data = serde_json::json!({
+            "rule_id": verdict.rule_id,
+            "decision": verdict.decision,
+            "sensitive_fields": request.sensitive_fields,
+        });
+        if let Some(identity) = &request.identity {
+            identity.enrich_principal_audit(&mut data);
+        }
         let event = ApCoreEvent::with_module(
             "apcore.policy.decision",
-            serde_json::json!({
-                "rule_id": verdict.rule_id,
-                "decision": verdict.decision,
-                "sensitive_fields": request.sensitive_fields,
-            }),
+            data,
             ctx.module_id.clone(),
             if verdict.decision == PolicyEffect::Deny {
                 "warn"
@@ -1181,6 +1211,8 @@ impl Step for BuiltinExecute {
     }
 
     async fn execute(&self, ctx: &mut PipelineContext) -> Result<StepResult, ModuleError> {
+        ctx.require_scope_grant()?;
+        ctx.reject_unconsumed_scoped_approval()?;
         ctx.bind_policy_inputs()?;
         let module = ctx
             .module

@@ -7,7 +7,7 @@ use std::sync::OnceLock;
 
 use serde_json::Value;
 
-use crate::builtin_steps::{build_standard_strategy, BuiltinContextCreation};
+use crate::builtin_steps::{build_standard_strategy, BuiltinACLCheck, BuiltinContextCreation};
 use crate::errors::{ErrorCode, ModuleError};
 use crate::pipeline::{ExecutionStrategy, Step};
 
@@ -90,18 +90,38 @@ struct ConfiguredStep {
 pub(crate) fn builtin_context_creation_applies(step: &dyn Step, module_id: &str) -> bool {
     // The outermost overlay supplies the engine's matcher. Inspect wrapped
     // steps only for their implementation identity.
+    builtin_step_applies::<BuiltinContextCreation>(step, module_id)
+}
+
+pub(crate) fn builtin_scope_gate_applies(strategy: &ExecutionStrategy, module_id: &str) -> bool {
+    let steps = strategy.steps();
+    let Some(index) = steps.iter().position(|step| {
+        step.pure()
+            && !step.ignore_errors()
+            && builtin_step_applies::<BuiltinACLCheck>(step.as_ref(), module_id)
+    }) else {
+        return false;
+    };
+    steps[..index].iter().any(|step| {
+        step.pure()
+            && !step.ignore_errors()
+            && builtin_context_creation_applies(step.as_ref(), module_id)
+    })
+}
+
+fn builtin_step_applies<T: Step>(step: &dyn Step, module_id: &str) -> bool {
     step.match_modules().is_none_or(|patterns| {
         patterns
             .iter()
             .any(|pattern| crate::utils::helpers::match_pattern(pattern, module_id))
-    }) && is_builtin_context_creation(step)
+    }) && is_builtin_step::<T>(step)
 }
 
-fn is_builtin_context_creation(step: &dyn Step) -> bool {
+fn is_builtin_step<T: Step>(step: &dyn Step) -> bool {
     let implementation = step as &dyn std::any::Any;
     implementation.downcast_ref::<ConfiguredStep>().map_or_else(
-        || implementation.is::<BuiltinContextCreation>(),
-        |configured| is_builtin_context_creation(configured.inner.as_ref()),
+        || implementation.is::<T>(),
+        |configured| is_builtin_step::<T>(configured.inner.as_ref()),
     )
 }
 

@@ -1,6 +1,7 @@
 import { awaitExecution, CancelToken, ExecutionCancelledError } from './cancel.js';
-import { Context, createIdentity, type Identity } from './context.js';
+import { Context, type Identity } from './context.js';
 import { PolicyEvaluationError } from './errors.js';
+import { authorityKeyOf, detachIdentity } from './identity.js';
 import type { ApprovalHandler } from './approval.js';
 import type { ModuleAnnotations } from './module.js';
 import type { PipelineContext } from './pipeline.js';
@@ -42,6 +43,7 @@ interface PolicyInvocation {
   identity?: Identity | null;
   principalId?: string;
   principalType?: string;
+  authorityKey?: string | null;
   selected?: { module: unknown; version: string | null; governance: ModuleAnnotations | null };
   aclApprovalRequired?: boolean;
   earlyApproval?: { needed: boolean; annotations: ModuleAnnotations; handler: ApprovalHandler | null };
@@ -79,7 +81,8 @@ export function assertPolicyBinding(ctx: PipelineContext, invocation: PolicyInvo
   const { context, selected } = invocation;
   if (ctx.moduleId !== invocation.id || ctx.context !== (context ?? invocation.parent) ||
       (context && (context.callerId !== invocation.callerId || context.identity !== invocation.identity ||
-        context.identity?.id !== invocation.principalId || context.identity?.type !== invocation.principalType)) ||
+        context.identity?.id !== invocation.principalId || context.identity?.type !== invocation.principalType ||
+        authorityKeyOf(context.identity) !== invocation.authorityKey)) ||
       (selected && ctx.module !== selected.module)) {
     throw new PolicyEvaluationError(invocation.id);
   }
@@ -197,10 +200,6 @@ export async function policyArgumentsDigest(moduleId: string, snapshot: Validati
   } catch {
     throw new PolicyEvaluationError(moduleId);
   }
-}
-
-function detachIdentity(identity: Identity | null): Identity | null {
-  return identity === null ? null : createIdentity(identity.id, identity.type, [...identity.roles], structuredClone(identity.attrs));
 }
 
 /** @internal Isolate the scope handed to an asynchronous approval handler. */

@@ -1200,6 +1200,40 @@ impl Executor {
         Ok(())
     }
 
+    fn ensure_scope_gate(
+        &self,
+        strategy: &ExecutionStrategy,
+        module_id: &str,
+        context: &Context<Value>,
+    ) -> Result<(), ModuleError> {
+        if context
+            .identity
+            .as_ref()
+            .and_then(crate::Identity::scopes)
+            .is_some()
+            && (self.acl.is_none()
+                || !crate::pipeline_config::builtin_scope_gate_applies(strategy, module_id))
+        {
+            return Err(ModuleError::acl_denied(
+                context.caller_id.as_deref(),
+                module_id,
+            ));
+        }
+        Ok(())
+    }
+
+    fn denied_scope_preflight(error: &ModuleError) -> PreflightResult {
+        PreflightResult {
+            checks: vec![PreflightCheckResult {
+                check: crate::module::ACL_CHECK_NAME.to_owned(),
+                passed: false,
+                error: Some(error.to_dict()),
+                warnings: vec![],
+            }],
+            ..PreflightResult::default()
+        }
+    }
+
     /// Set the approval handler.
     pub fn set_approval_handler(&mut self, handler: Box<dyn ApprovalHandler>) {
         self.set_approval_handler_shared(Arc::from(handler));
@@ -1388,6 +1422,7 @@ impl Executor {
         }
         Self::validate_module_id(module_id)?;
         let mut parent = context.cloned().unwrap_or_else(Context::anonymous);
+        self.ensure_scope_gate(strategy, module_id, &parent)?;
         parent.bind_executor(self.instance_handle())?;
         let started = std::time::Instant::now();
         let mut previous_steps = Vec::new();
@@ -1402,6 +1437,8 @@ impl Executor {
             let (output, mut trace) = match PipelineEngine::run(strategy, &mut attempt).await {
                 Ok((output, trace)) => {
                     Self::reject_aborted_trace(&trace)?;
+                    attempt.require_scope_grant()?;
+                    attempt.reject_unconsumed_scoped_approval()?;
                     (output.unwrap_or(Value::Null), trace)
                 }
                 Err(error) => {
@@ -1506,6 +1543,9 @@ impl Executor {
         let context = ctx
             .cloned()
             .unwrap_or_else(Context::<serde_json::Value>::anonymous);
+        if let Err(error) = self.ensure_scope_gate(&self.strategy, module_id, &context) {
+            return Ok(Self::denied_scope_preflight(&error));
+        }
         let mut pipe_ctx =
             PipelineContext::new(module_id, inputs.clone(), context, self.strategy.name());
         let business_inputs = pipe_ctx
@@ -1533,6 +1573,9 @@ impl Executor {
 
         let mut checks: Vec<PreflightCheckResult> = Vec::new();
         let trace_result = PipelineEngine::run(&self.strategy, &mut pipe_ctx).await;
+        if let Err(error) = pipe_ctx.require_scope_grant() {
+            return Ok(Self::denied_scope_preflight(&error));
+        }
         match trace_result {
             Ok((_output, trace)) => {
                 checks.extend(trace_to_checks(&trace.steps, &pipe_ctx.preflight_errors));
@@ -2011,7 +2054,11 @@ impl Executor {
         let result =
             Self::run_stream_segment(&self.strategy, &mut setup.pipe_ctx, options, recorder).await;
         let raw_error = match result {
-            Ok((_, trace)) => return Self::reject_aborted_trace(&trace),
+            Ok((_, trace)) => {
+                Self::reject_aborted_trace(&trace)?;
+                setup.pipe_ctx.require_scope_grant()?;
+                return setup.pipe_ctx.reject_unconsumed_scoped_approval();
+            }
             Err(error) => error,
         };
         // A failed after-step hook can leave an opened producer in the context.
@@ -2260,6 +2307,7 @@ impl Executor {
         self.ensure_startup_configuration()?;
         // D-103: no synthetic principal for a call that supplied none.
         let context = ctx.unwrap_or_else(Context::<Value>::anonymous);
+        self.ensure_scope_gate(&self.strategy, module_id, &context)?;
 
         let mut pipe_ctx = PipelineContext::new(module_id, inputs, context, self.strategy.name());
         pipe_ctx.validate_approval_credential()?;
@@ -2304,6 +2352,7 @@ impl Executor {
         // can observe the trace). Streaming requires a resolved module, so
         // an aborted pre-execute phase is an error for us.
         Self::reject_aborted_trace(&trace)?;
+        pipe_ctx.require_scope_grant()?;
 
         let module = pipe_ctx.module.clone().ok_or_else(|| {
             ModuleError::new(

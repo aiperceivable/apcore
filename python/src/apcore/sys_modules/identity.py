@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from apcore.context import Identity, _identity_audit_fields
+
 #: Identity ``attrs`` whose names match one of these case-insensitive
 #: substrings are replaced with the literal string ``"<redacted>"`` in
 #: audit-event payloads (Issue #45.2).  This list is intentionally a
@@ -50,6 +52,18 @@ def _redact_identity_attr(name: str, value: Any) -> Any:
     return value
 
 
+def _redact_nested(value: Any, ancestors: frozenset[int]) -> Any:
+    if not isinstance(value, (dict, list, tuple)):
+        return value
+    if id(value) in ancestors:
+        return _IDENTITY_REDACTED_TOKEN
+    ancestors = ancestors | {id(value)}
+    if isinstance(value, dict):
+        return {key: _redact_nested(_redact_identity_attr(str(key), child), ancestors) for key, child in value.items()}
+    children = [_redact_nested(child, ancestors) for child in value]
+    return tuple(children) if isinstance(value, tuple) else children
+
+
 def _extract_identity_dict(context: Any) -> dict[str, Any] | None:
     """Return a redacted-safe dict view of ``context.identity`` or ``None``.
 
@@ -67,6 +81,10 @@ def _extract_identity_dict(context: Any) -> dict[str, Any] | None:
     identity = getattr(context, "identity", None)
     if identity is None:
         return None
+    return _identity_snapshot(identity)
+
+
+def _identity_snapshot(identity: Any) -> dict[str, Any]:
     snapshot: dict[str, Any] = {
         "id": getattr(identity, "id", None),
         "type": getattr(identity, "type", None),
@@ -74,19 +92,22 @@ def _extract_identity_dict(context: Any) -> dict[str, Any] | None:
     roles = list(getattr(identity, "roles", ()) or ())
     if roles:
         snapshot["roles"] = roles
+    parent = identity.on_behalf_of if isinstance(identity, Identity) else None
+    if isinstance(parent, Identity):
+        snapshot["on_behalf_of"] = _identity_snapshot(parent)
     attrs = getattr(identity, "attrs", None) or {}
     if isinstance(attrs, dict):
         for key, value in attrs.items():
             # Don't shadow the canonical id/type/roles keys.
             if key in snapshot:
                 continue
-            snapshot[key] = _redact_identity_attr(key, value)
+            snapshot[key] = _redact_nested(_redact_identity_attr(str(key), value), frozenset())
     return snapshot
 
 
 def _audit_payload_extras(context: Any) -> dict[str, Any]:
     """Build the ``caller_id`` (+ optional ``identity``) fragment for audit events."""
-    extras: dict[str, Any] = {"caller_id": _extract_caller_id(context)}
+    extras: dict[str, Any] = {"caller_id": _extract_caller_id(context), **_identity_audit_fields(context)}
     identity_dict = _extract_identity_dict(context)
     if identity_dict is not None:
         extras["identity"] = identity_dict

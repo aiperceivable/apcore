@@ -4,11 +4,11 @@ use std::sync::{Arc, Mutex};
 use apcore::approval::{ApprovalHandler, ApprovalRequest, ApprovalResult};
 use apcore::errors::ErrorCode;
 use apcore::middleware::Middleware;
-use apcore::pipeline::{PipelineState, StepMiddleware};
+use apcore::pipeline::{PipelineContext, PipelineState, Step, StepMiddleware, StepResult};
 use apcore::registry::ModuleDescriptor;
 use apcore::{
-    ChunkStream, Config, Context, Executor, Module, ModuleAnnotations, ModuleError, PolicyEffect,
-    PolicyEvaluationRequest, PolicyEvaluator, PolicyVerdict, Registry, ACL,
+    ChunkStream, Config, Context, Executor, Identity, Module, ModuleAnnotations, ModuleError,
+    PolicyEffect, PolicyEvaluationRequest, PolicyEvaluator, PolicyVerdict, Registry, ACL,
 };
 use async_trait::async_trait;
 use futures_util::{stream, StreamExt};
@@ -155,6 +155,7 @@ impl Middleware for Rewrite {
 
 fn approval_scope(request: &ApprovalRequest) -> Value {
     json!({
+        "authority": request.authority_key(),
         "principal": request.context.as_ref().and_then(|ctx| ctx.identity.as_ref()),
         "caller_id": request.caller_id,
         "module_id": request.module_id,
@@ -169,6 +170,7 @@ const TEST_CREDENTIAL: &str = "fixture-resume-credential";
 struct Approver {
     pending: bool,
     supports_final_scope: bool,
+    supports_authority_scope: bool,
     requested: Mutex<Vec<ApprovalRequest>>,
     scope: Mutex<Option<Value>>,
     checks: AtomicUsize,
@@ -178,6 +180,10 @@ struct Approver {
 impl ApprovalHandler for Approver {
     fn supports_final_scope(&self) -> bool {
         self.supports_final_scope
+    }
+
+    fn supports_authority_scope(&self) -> bool {
+        self.supports_authority_scope
     }
 
     async fn request_approval(
@@ -309,6 +315,7 @@ async fn post_validation_policy_matches_shared_fixture() {
 
         let evaluator = spy_evaluator(case["verdict"].as_str().unwrap());
         let approver = Arc::new(Approver {
+            supports_authority_scope: false,
             pending: entry == "resume",
             supports_final_scope: true,
             requested: Mutex::new(Vec::new()),
@@ -414,10 +421,252 @@ fn pending_approver(supports_final_scope: bool) -> Arc<Approver> {
     Arc::new(Approver {
         pending: true,
         supports_final_scope,
+        supports_authority_scope: false,
         requested: Mutex::new(Vec::new()),
         scope: Mutex::new(None),
         checks: AtomicUsize::new(0),
     })
+}
+
+fn delegated_context(subject: &str, scopes: &[&str]) -> Context<Value> {
+    let principal = |id: &str| {
+        Identity::new(
+            id.into(),
+            "user".into(),
+            vec![],
+            std::collections::HashMap::new(),
+        )
+    };
+    let root = principal(subject)
+        .with_authority(
+            Some(vec!["read".into(), "write".into()]),
+            Some("idp".into()),
+        )
+        .unwrap();
+    Context::new(
+        root.delegate(
+            principal("agent"),
+            scopes.iter().map(ToString::to_string).collect(),
+        )
+        .unwrap(),
+    )
+}
+
+fn read_scoped_acl() -> ACL {
+    ACL::new(
+        serde_json::from_value(json!([{
+            "effect": "allow", "callers": ["@external"], "targets": ["demo.policy"],
+            "conditions": {"scopes": ["read"]}
+        }]))
+        .unwrap(),
+        "deny",
+        None,
+    )
+}
+
+struct AlternateFlow;
+
+#[async_trait]
+impl Step for AlternateFlow {
+    fn name(&self) -> &'static str {
+        "alternate_flow"
+    }
+
+    fn description(&self) -> &'static str {
+        "Route to execution after lookup"
+    }
+
+    fn removable(&self) -> bool {
+        true
+    }
+
+    fn replaceable(&self) -> bool {
+        true
+    }
+
+    fn pure(&self) -> bool {
+        true
+    }
+
+    async fn execute(&self, _: &mut PipelineContext) -> Result<StepResult, ModuleError> {
+        Ok(StepResult::skip_to("execute"))
+    }
+}
+
+#[tokio::test]
+async fn scoped_invocation_requires_observed_acl_admission_on_the_active_path() {
+    let mut strategy = apcore::builtin_steps::build_standard_strategy();
+    strategy
+        .insert_before("acl_check", Box::new(AlternateFlow))
+        .unwrap();
+    let mut executor =
+        Executor::with_strategy(probe_registry("1.0.0"), Config::in_memory(), strategy);
+    executor.set_acl(read_scoped_acl());
+    let target = "demo.policy";
+    let context = delegated_context("subject", &["read"]);
+    let call = executor.call(target, json!({}), Some(&context), None).await;
+    assert_eq!(call.unwrap_err().code, ErrorCode::ACLDenied);
+    let stream = executor
+        .stream(target, json!({}), Some(&context), None)
+        .next()
+        .await
+        .unwrap();
+    assert_eq!(stream.unwrap_err().code, ErrorCode::ACLDenied);
+    assert!(
+        !executor
+            .validate(target, &json!({}), Some(&context))
+            .await
+            .unwrap()
+            .valid
+    );
+}
+
+#[tokio::test]
+async fn scoped_calls_streams_preflights_and_discovery_require_the_enforcing_gate() {
+    let registry = probe_registry("1.0.0");
+    let target = "demo.policy";
+    let context = delegated_context("subject", &["read"]);
+    let absent = Executor::new(Arc::clone(&registry), Config::in_memory());
+    let mut removed =
+        Executor::with_strategy_name(Arc::clone(&registry), Config::in_memory(), "minimal")
+            .unwrap();
+    removed.set_acl(read_scoped_acl());
+    for executor in [&absent, &removed] {
+        assert_eq!(
+            executor
+                .call(target, json!({}), Some(&context), None)
+                .await
+                .unwrap_err()
+                .code,
+            ErrorCode::ACLDenied
+        );
+        assert_eq!(
+            executor
+                .stream(target, json!({}), Some(&context), None)
+                .next()
+                .await
+                .unwrap()
+                .unwrap_err()
+                .code,
+            ErrorCode::ACLDenied
+        );
+        let report = executor
+            .validate(target, &json!({}), Some(&context))
+            .await
+            .unwrap();
+        assert!(!report.valid);
+        assert_eq!(report.checks.len(), 1);
+        assert_eq!(
+            report.checks[0].error.as_ref().unwrap()["code"],
+            "ACL_DENIED"
+        );
+        assert!(executor
+            .get_callable_descriptor(target, None, Some(&context))
+            .is_none());
+    }
+    let mut guarded = Executor::new(registry, Config::in_memory());
+    guarded.set_acl(read_scoped_acl());
+    assert!(guarded
+        .call(target, json!({}), Some(&context), None)
+        .await
+        .is_ok());
+    assert!(guarded
+        .stream(target, json!({}), Some(&context), None)
+        .next()
+        .await
+        .unwrap()
+        .is_ok());
+    assert!(
+        guarded
+            .validate(target, &json!({}), Some(&context))
+            .await
+            .unwrap()
+            .valid
+    );
+    assert!(guarded
+        .get_callable_descriptor(target, None, Some(&context))
+        .is_some());
+    assert_eq!(
+        guarded
+            .call(
+                target,
+                json!({"_approval_token": TEST_CREDENTIAL}),
+                Some(&context),
+                None
+            )
+            .await
+            .unwrap_err()
+            .code,
+        ErrorCode::ApprovalDenied
+    );
+}
+
+#[tokio::test]
+async fn scoped_approval_cannot_resume_under_a_different_subject_or_ceiling() {
+    let mut executor = Executor::new(probe_registry("1.0.0"), Config::in_memory());
+    executor.set_acl(read_scoped_acl());
+    let policy = spy_evaluator("require_approval");
+    executor.set_policy_evaluator(Some(policy.clone())).unwrap();
+    let target = "demo.policy";
+    let original = delegated_context("subject", &["read", "write"]);
+    let unsupported = pending_approver(true);
+    executor.set_approval_handler_shared(unsupported.clone());
+    assert_eq!(
+        executor
+            .call(target, json!({}), Some(&original), None)
+            .await
+            .unwrap_err()
+            .code,
+        ErrorCode::ApprovalDenied
+    );
+    let credential = json!({"_approval_token": TEST_CREDENTIAL});
+    assert_eq!(
+        executor
+            .call(target, credential.clone(), Some(&original), None)
+            .await
+            .unwrap_err()
+            .code,
+        ErrorCode::ApprovalDenied
+    );
+    assert_eq!(unsupported.checks.load(Ordering::Relaxed), 0);
+
+    let mut handler = pending_approver(true);
+    Arc::get_mut(&mut handler).unwrap().supports_authority_scope = true;
+    executor.set_approval_handler_shared(handler.clone());
+    let pending = executor
+        .call(target, json!({}), Some(&original), None)
+        .await
+        .unwrap_err();
+    assert_eq!(pending.code, ErrorCode::ApprovalPending);
+    assert_eq!(pending.details["approval_id"], TEST_CREDENTIAL);
+    let original_key = original.identity.as_ref().unwrap().authority_key();
+    assert_eq!(
+        handler.requested.lock().unwrap()[0].authority_key(),
+        original_key
+    );
+    assert_eq!(
+        policy.observed.lock().unwrap()[0].authority_key(),
+        original_key
+    );
+    for different in [
+        delegated_context("other-subject", &["read", "write"]),
+        delegated_context("subject", &["read"]),
+    ] {
+        assert_eq!(
+            executor
+                .call(target, credential.clone(), Some(&different), None)
+                .await
+                .unwrap_err()
+                .code,
+            ErrorCode::ApprovalDenied
+        );
+        assert!(handler.scope.lock().unwrap().is_some());
+    }
+    assert!(executor
+        .call(target, credential, Some(&original), None)
+        .await
+        .is_ok());
+    assert!(handler.scope.lock().unwrap().is_none());
 }
 
 #[tokio::test]

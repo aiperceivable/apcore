@@ -326,7 +326,7 @@ The following requirements are not met by the SDK implementations in this reposi
 
 ## 8. Conformance Test Fixtures
 
-The repository ships **100 cross-language fixture files** under `conformance/fixtures/` covering **1252 test cases**. `conformance-integrity` checks these two numbers, §8.1's per-fixture counts and its Total row against the fixtures themselves. Each fixture is consumed by all three SDK test runners (§5.2). An SDK declaring a conformance level **MUST** pass every fixture whose tested feature is required at that level (§5.3).
+The repository ships **101 cross-language fixture files** under `conformance/fixtures/` covering **1269 test cases**. `conformance-integrity` checks these two numbers, §8.1's per-fixture counts and its Total row against the fixtures themselves. Each fixture is consumed by all three SDK test runners (§5.2). An SDK declaring a conformance level **MUST** pass every fixture whose tested feature is required at that level (§5.3).
 
 ### 8.1 Fixture Inventory
 
@@ -383,6 +383,7 @@ The repository ships **100 cross-language fixture files** under `conformance/fix
 | [`json_input_native_types`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/json_input_native_types.json) | 4 | A natively typed contract accepts the JSON strings its schema accepts — date-time, UUID, enum — and still rejects what the schema rejects (type-mapping §17.3, D-136) |
 | [`gate_step_configure`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/gate_step_configure.json) | 8 | `configure` cannot weaken `acl_check` / `approval_gate`: `ignore_errors: true`, `match_modules` and `pure: true` are rejected at load (spec §5.16.1, D-130) |
 | [`governance_state`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/governance_state.json) | 13 | `Executor.governance_state()` — configured vs. actually wired (spec §6.6.5) |
+| [`identity_delegation`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/identity_delegation.json) | 17 | Trusted scope attenuation and delegated ACL authorization (spec §6.11) |
 | [`identity_system`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/identity_system.json) | 8 | Identity construction and propagation (spec §5.7) |
 | [`multi_root_discovery`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/multi_root_discovery.json) | 6 | `extensions.roots` multi-root discovery with namespace isolation (§9.1.1, D-70) |
 | [`middleware_hardening`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/middleware_hardening.json) | 11 | Context namespacing, CircuitBreaker |
@@ -432,7 +433,7 @@ The repository ships **100 cross-language fixture files** under `conformance/fix
 | [`usage_contract`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/usage_contract.json) | 11 | `system.usage.*` value semantics no schema can assert (spec §6.7.1) |
 | [`usage_exporter`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/usage_exporter.json) | 3 | `UsageExporter` push interface (D-55) |
 | [`version_negotiation`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/version_negotiation.json) | 12 | Version negotiation (Algorithm A14) |
-| **Total** | **1252** | **100 fixtures** |
+| **Total** | **1269** | **101 fixtures** |
 
 ### 8.2 Loading Fixtures from a Test Runner
 
