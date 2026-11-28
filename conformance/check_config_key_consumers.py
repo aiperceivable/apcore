@@ -147,7 +147,7 @@ def _health_enabled() -> str | None:
 
 @probe("sys_modules.manifest.enabled")
 def _manifest_enabled() -> str | None:
-    return _group_probe("manifest", {"system.manifest.module", "system.manifest.full"})
+    return _group_probe("manifest", {"system.manifest.module", "system.manifest.full", "system.manifest.search"})
 
 
 @probe("sys_modules.usage.enabled")

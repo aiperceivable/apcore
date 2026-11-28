@@ -32,7 +32,7 @@ from apcore.sys_modules.control import (
 )
 from apcore.sys_modules.health import HealthModule, HealthSummaryModule
 from apcore.sys_modules.overrides import FileOverridesStore, OverridesStore
-from apcore.sys_modules.manifest import ManifestFullModule, ManifestModule
+from apcore.sys_modules.manifest import ManifestFullModule, ManifestModule, ManifestSearchModule
 from apcore.sys_modules.usage import UsageModule, UsageSummaryModule
 from apcore.observability.usage import UsageCollector, UsageMiddleware
 
@@ -348,7 +348,7 @@ def _register_sys_modules(
     and the one ``schemas/sys-modules.schema.json`` declares, key by key:
 
     - ``health.enabled``   — "Whether system.health.summary and system.health.module are registered"
-    - ``manifest.enabled`` — "Whether system.manifest.module and system.manifest.full are registered"
+    - ``manifest.enabled`` — whether the manifest modules are registered
     - ``usage.enabled``    — "Whether system.usage.summary and system.usage.module are registered"
 
     All three default to ``True``, so the flags narrow and never widen.
@@ -382,6 +382,7 @@ def _register_sys_modules(
     if _cfg_get(sys_cfg, config, "manifest.enabled", True):
         register_module("system.manifest.module", ManifestModule(registry=registry, config=config))
         register_module("system.manifest.full", ManifestFullModule(registry=registry, config=config))
+        register_module("system.manifest.search", ManifestSearchModule())
 
     if _cfg_get(sys_cfg, config, "usage.enabled", True):
         register_module("system.usage.summary", UsageSummaryModule(collector=usage_collector))

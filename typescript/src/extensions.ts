@@ -8,6 +8,7 @@
 
 import type { ACL } from './acl.js';
 import type { ApprovalHandler } from './approval.js';
+import type { CapabilitySearchProvider } from './capability-discovery.js';
 import { InvalidInputError } from './errors.js';
 import type { Executor } from './executor.js';
 import { Middleware } from './middleware/index.js';
@@ -140,6 +141,14 @@ function builtInPoints(): Map<string, InternalExtensionPoint> {
       typeCheck: value => typeof value === 'object' && value !== null &&
         typeof (value as Partial<PolicyEvaluator>).evaluate === 'function',
       typeName: 'PolicyEvaluator',
+    }],
+    ['capability_search_provider', {
+      name: 'capability_search_provider',
+      description: 'Ranking provider for currently authorized capability candidates',
+      multiple: false,
+      typeCheck: value => typeof value === 'object' && value !== null &&
+        typeof (value as Partial<CapabilitySearchProvider>).search === 'function',
+      typeName: 'CapabilitySearchProvider',
     }],
   ]);
 }
@@ -285,6 +294,9 @@ export class ExtensionManager {
 
     const evaluator = this.get('policy_evaluator') as PolicyEvaluator | null;
     if (evaluator !== null) executor.setPolicyEvaluator(evaluator);
+
+    const searchProvider = this.get('capability_search_provider') as CapabilitySearchProvider | null;
+    if (searchProvider !== null) executor.setCapabilitySearchProvider(searchProvider);
 
     // Middleware
     for (const mw of this.getAll('middleware')) {

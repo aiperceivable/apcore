@@ -45,6 +45,7 @@ __all__ = [
     "ACL",
     "ConditionOutcome",
     "RuleValidationFinding",
+    "VisibilityDecision",
 ]
 
 _logger = logging.getLogger(__name__)
@@ -521,6 +522,36 @@ class AccessDecision:
 
 
 @dataclass(frozen=True)
+class VisibilityDecision:
+    """Eligibility for discovery and the reachable ACL approval outcomes."""
+
+    visible: bool
+    approval_required: bool = False
+    approval_conditional: bool = False
+
+
+_VISIBILITY_HANDLERS = {
+    "identity_types": _IdentityTypesHandler(),
+    "roles": _RolesHandler(),
+    "max_call_depth": _MaxCallDepthHandler(),
+}
+_MATCH = ConditionOutcome.SATISFIED
+_NO_MATCH = ConditionOutcome.UNSATISFIED
+_FAULT = ConditionOutcome.UNEVALUABLE
+_DYNAMIC_VISIBILITY_OUTCOMES = frozenset(ConditionOutcome)
+
+
+def _combine_visibility(
+    left: frozenset[ConditionOutcome], right: frozenset[ConditionOutcome], decisive: ConditionOutcome
+) -> frozenset[ConditionOutcome]:
+    return frozenset(
+        decisive if decisive in (first, second) else _FAULT if _FAULT in (first, second) else first
+        for first in left
+        for second in right
+    )
+
+
+@dataclass(frozen=True)
 class RuleValidationFinding:
     """One structural or registry fault found by the §6.1.4 precheck.
 
@@ -747,9 +778,7 @@ class ACL:
     """
 
     _condition_handlers: ClassVar[dict[str, ACLConditionHandler]] = {
-        "identity_types": _IdentityTypesHandler(),
-        "roles": _RolesHandler(),
-        "max_call_depth": _MaxCallDepthHandler(),
+        **_VISIBILITY_HANDLERS,
         # PROTOCOL_SPEC §6.1.7: `arguments` is built-in, and registered here
         # beside the other built-ins rather than through a new registration
         # point — `register_condition` writes runtime code into a process-wide
@@ -1799,6 +1828,81 @@ class ACL:
             _projection_var.reset(projection_token)
             _handler_error_var.reset(token)
 
+    def evaluate_visibility(
+        self, caller_id: str | None, target_id: str, context: Context | None = None
+    ) -> VisibilityDecision:
+        """Prove visibility across reachable ACL outcomes without call arguments or audit effects."""
+        effective_caller, rules, default_effect, _ = self._snapshot(caller_id)
+        pending_approvals = {False}
+        possible_approvals: set[bool] = set()
+        for rule in rules:
+            outcomes = self._visibility_rule(rule, effective_caller, target_id, context)
+            if rule.effect != "allow" and outcomes != {_NO_MATCH}:
+                return VisibilityDecision(False)
+            if _MATCH in outcomes:
+                possible_approvals.update(
+                    pending or rule.approval == APPROVAL_REQUIRED for pending in pending_approvals
+                )
+            if outcomes == {_MATCH}:
+                break
+            if _FAULT in outcomes and self._raises_pending_approval(rule):
+                pending_approvals = (pending_approvals | {True}) if _NO_MATCH in outcomes else {True}
+        else:
+            if default_effect != "allow":
+                return VisibilityDecision(False)
+            possible_approvals.update(pending_approvals)
+
+        return VisibilityDecision(
+            True, approval_required=possible_approvals == {True}, approval_conditional=len(possible_approvals) > 1
+        )
+
+    def _visibility_rule(
+        self, rule: ACLRule, caller: str, target: str, context: Context | None
+    ) -> frozenset[ConditionOutcome]:
+        if self._precheck_patterns(rule):
+            return frozenset({_FAULT})
+        if not self._match_patterns(rule.callers, caller, context) or not self._match_patterns(
+            rule.targets, target, context
+        ):
+            return frozenset({_NO_MATCH})
+        if rule.conditions is None:
+            return frozenset({_MATCH})
+        if self._precheck_conditions(rule.conditions, async_path=True):
+            return frozenset({_FAULT})
+        if context is None:
+            return frozenset({_NO_MATCH})
+        return self._visibility_matches(rule.conditions, context)
+
+    @classmethod
+    def _visibility_matches(cls, conditions: dict[str, Any], context: Context) -> frozenset[ConditionOutcome]:
+        outcomes = frozenset({_MATCH})
+        for key, value in conditions.items():
+            outcomes = _combine_visibility(outcomes, cls._visibility_condition(key, value, context), _NO_MATCH)
+            if outcomes == {_NO_MATCH}:
+                break
+        return outcomes
+
+    @classmethod
+    def _visibility_condition(cls, key: str, value: Any, context: Context) -> frozenset[ConditionOutcome]:
+        registered = cls._async_condition_handlers.get(key, cls._condition_handlers.get(key))
+        if key == "$or" and registered is _BUILTIN_ASYNC_OR:
+            outcomes = frozenset({_NO_MATCH})
+            for operand in value:
+                outcomes = _combine_visibility(outcomes, cls._visibility_matches(operand, context), _MATCH)
+                if outcomes == {_MATCH}:
+                    break
+            return outcomes
+        if key == "$not" and registered is _BUILTIN_ASYNC_NOT:
+            negations = {_MATCH: _NO_MATCH, _NO_MATCH: _MATCH, _FAULT: _FAULT}
+            return frozenset(negations[outcome] for outcome in cls._visibility_matches(value, context))
+        handler = _VISIBILITY_HANDLERS.get(key)
+        if handler is None or registered is not handler:
+            return _DYNAMIC_VISIBILITY_OUTCOMES
+        try:
+            return frozenset({_as_outcome(handler.evaluate(value, context))})
+        except (TypeError, ValueError):
+            return frozenset({_FAULT})
+
     def _snapshot(self, caller_id: str | None) -> tuple[str, list[ACLRule], str, "_AuditSink"]:
         """Atomically snapshot mutable state for a check call.
 
@@ -2420,5 +2524,7 @@ ACL.register_condition("$not", _NotHandler(ACL._evaluate_conditions))
 
 # Async-aware variants: used by async_check() so $or/$not properly await
 # async sub-condition handlers (mirrors TypeScript registerAsyncCondition).
-ACL.register_async_condition("$or", _OrHandlerAsync(ACL._evaluate_conditions_async))
-ACL.register_async_condition("$not", _NotHandlerAsync(ACL._evaluate_conditions_async))
+_BUILTIN_ASYNC_OR = _OrHandlerAsync(ACL._evaluate_conditions_async)
+_BUILTIN_ASYNC_NOT = _NotHandlerAsync(ACL._evaluate_conditions_async)
+ACL.register_async_condition("$or", _BUILTIN_ASYNC_OR)
+ACL.register_async_condition("$not", _BUILTIN_ASYNC_NOT)

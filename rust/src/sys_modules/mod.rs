@@ -812,6 +812,11 @@ pub(crate) fn register_sys_modules_for_client(
                 ),
                 vec!["system".into(), "manifest".into()],
             ),
+            (
+                manifest::ManifestSearchModule::ID,
+                Box::new(manifest::ManifestSearchModule),
+                vec!["system".into(), "manifest".into()],
+            ),
         ]);
     }
     if usage_enabled {

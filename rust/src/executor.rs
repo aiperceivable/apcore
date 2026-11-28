@@ -842,6 +842,7 @@ pub struct Executor {
     /// (apcore#76 RFC pilot). Flows to the gate via `PipelineContext`.
     pub policy: Option<Arc<ExecutionPolicy>>,
     policy_evaluator: Option<Arc<dyn PolicyEvaluator>>,
+    pub(crate) capability_discovery: crate::capability::DiscoveryState,
     /// Event emitter for governance events (apcore#77). When set, the ACL and
     /// approval-gate steps publish `apcore.acl.denied` /
     /// `apcore.approval.decision` / `apcore.policy.override` on the bus.
@@ -980,6 +981,7 @@ impl Executor {
             approval_handler: None,
             policy: None,
             policy_evaluator: None,
+            capability_discovery: crate::capability::DiscoveryState::default(),
             event_emitter: None,
             governance_warned: Arc::new(parking_lot::Mutex::new(std::collections::HashSet::new())),
             redaction: std::sync::OnceLock::new(),
@@ -1010,6 +1012,7 @@ impl Executor {
             approval_handler: None,
             policy: None,
             policy_evaluator: None,
+            capability_discovery: crate::capability::DiscoveryState::default(),
             event_emitter: None,
             governance_warned: Arc::new(parking_lot::Mutex::new(std::collections::HashSet::new())),
             redaction: std::sync::OnceLock::new(),
@@ -1036,6 +1039,7 @@ impl Executor {
             approval_handler: None,
             policy: None,
             policy_evaluator: None,
+            capability_discovery: crate::capability::DiscoveryState::default(),
             event_emitter: None,
             governance_warned: Arc::new(parking_lot::Mutex::new(std::collections::HashSet::new())),
             redaction: std::sync::OnceLock::new(),
@@ -1078,6 +1082,7 @@ impl Executor {
             approval_handler: approval_handler.map(|h| Arc::from(h) as Arc<dyn ApprovalHandler>),
             policy: None,
             policy_evaluator: None,
+            capability_discovery: crate::capability::DiscoveryState::default(),
             event_emitter: None,
             governance_warned: Arc::new(parking_lot::Mutex::new(std::collections::HashSet::new())),
             redaction: std::sync::OnceLock::new(),

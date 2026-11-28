@@ -182,6 +182,12 @@ pub trait Step: Send + Sync + std::any::Any {
         None
     }
 
+    /// Report toggled availability from the built-in module lookup, if present.
+    #[doc(hidden)]
+    fn builtin_module_is_enabled(&self, _module_id: &str) -> Option<bool> {
+        None
+    }
+
     /// `PipelineContext` fields this step writes (e.g. `["output"]`). Advisory only.
     fn provides(&self) -> &[&str] {
         &[]

@@ -34,6 +34,9 @@ export {
   CTX_TRACING_SPANS,
 } from './executor.js';
 export type { StreamCompletion, StreamCompletionReason, StreamExecution, StreamStepOutcome } from './stream-completion.js';
+export type {
+  CallableDefinition, CapabilityAccessHint, CapabilityPage, CapabilitySearchOptions, CapabilitySearchProvider, ModuleSummary,
+} from './capability-discovery.js';
 
 // Module types
 export {
@@ -156,6 +159,7 @@ export type { StreamingModule } from './streaming.js';
 export { ACL } from './acl.js';
 export type {
   AccessCheckOptions,
+  VisibilityDecision,
   AccessDecision,
   ACLApproval,
   ACLRule,

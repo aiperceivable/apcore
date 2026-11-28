@@ -102,6 +102,25 @@ export interface AccessDecision {
   readonly reason: string;
 }
 
+/** Authorization proved for discovery without evaluating invocation arguments. */
+export interface VisibilityDecision {
+  readonly visible: boolean;
+  readonly approvalRequired: boolean;
+  readonly approvalConditional: boolean;
+}
+
+const HIDDEN_VISIBILITY: VisibilityDecision = Object.freeze({
+  visible: false, approvalRequired: false, approvalConditional: false,
+});
+
+const visibilityHandlers = new Map([
+  ['identity_types', new IdentityTypesHandler()],
+  ['roles', new RolesHandler()],
+  ['max_call_depth', new MaxCallDepthHandler()],
+]);
+
+type VisibilityCondition = boolean | 'unknown';
+
 /**
  * Per-call inputs to an ACL check beyond caller, target and `Context`.
  *
@@ -1687,6 +1706,84 @@ export class ACL {
     return decision.access === 'allow' && !decision.approvalRequired;
   }
 
+  /** Prove visibility without auditing, evaluating custom handlers, or assuming input arguments. */
+  evaluateVisibility(
+    callerId: string | null,
+    targetId: string,
+    context: Context | null = null,
+  ): VisibilityDecision {
+    // An inherited projection cannot describe a host's overridden access policy.
+    if (this.asyncCheckAccess !== ACL.prototype.asyncCheckAccess) return HIDDEN_VISIBILITY;
+    const caller = callerId ?? '@external';
+    const possibleApprovals = new Set<boolean>();
+    let pendingApproval = false;
+    for (const rule of this._rules) {
+      const outcome = this._visibilityRule(rule, caller, targetId, context);
+      if (outcome === false) continue;
+      if (rule.effect !== 'allow') return HIDDEN_VISIBILITY;
+      if (outcome === 'unevaluable') {
+        pendingApproval ||= ACL._raisesPendingApproval(rule);
+        continue;
+      }
+      possibleApprovals.add(pendingApproval || rule.approval === 'required');
+      if (outcome === true) return ACL._visibleApproval(possibleApprovals);
+    }
+    if (this._defaultEffect !== 'allow') return HIDDEN_VISIBILITY;
+    possibleApprovals.add(pendingApproval);
+    return ACL._visibleApproval(possibleApprovals);
+  }
+
+  private static _visibleApproval(possibleApprovals: Set<boolean>): VisibilityDecision {
+    return {
+      visible: true,
+      approvalRequired: !possibleApprovals.has(false),
+      approvalConditional: possibleApprovals.size > 1,
+    };
+  }
+
+  private _visibilityRule(
+    rule: ACLRule, callerId: string, targetId: string, context: Context | null,
+  ): VisibilityCondition | 'unevaluable' {
+    if (ACL._precheckPatternFields(rule).length > 0) return 'unevaluable';
+    if (!this._matchPatterns(rule.callers, callerId, context) ||
+        !this._matchPatterns(rule.targets, targetId, context)) return false;
+    if (rule.conditions == null) return true;
+    const faults: RuleFault[] = [];
+    precheckConditions(rule.conditions, '', 'async', faults);
+    if (faults.length > 0) return 'unevaluable';
+    return context === null ? false : ACL._visibilityConditions(rule.conditions, context);
+  }
+
+  private static _visibilityConditions(conditions: Record<string, unknown>, context: Context): VisibilityCondition {
+    let uncertain = false;
+    for (const [key, value] of Object.entries(conditions)) {
+      const outcome = ACL._visibilityCondition(key, value, context);
+      if (outcome === false) return false;
+      if (outcome === 'unknown') uncertain = true;
+    }
+    return uncertain ? 'unknown' : true;
+  }
+
+  private static _visibilityCondition(key: string, value: unknown, context: Context): VisibilityCondition {
+    const registered = ACL.asyncConditionHandlers.get(key) ?? ACL.conditionHandlers.get(key);
+    const handler = visibilityHandlers.get(key);
+    if (handler !== undefined && registered === handler) return handler.evaluate(value, context);
+    if (key === '$not' && registered === builtinNotHandlerAsync) {
+      const outcome = ACL._visibilityConditions(value as Record<string, unknown>, context);
+      return outcome === 'unknown' ? outcome : !outcome;
+    }
+    if (key === '$or' && registered === builtinOrHandlerAsync) {
+      let uncertain = false;
+      for (const branch of value as Record<string, unknown>[]) {
+        const outcome = ACL._visibilityConditions(branch, context);
+        if (outcome === true) return true;
+        if (outcome === 'unknown') uncertain = true;
+      }
+      return uncertain ? 'unknown' : false;
+    }
+    return 'unknown';
+  }
+
   /**
    * The structured decision for a call (PROTOCOL_SPEC §6.8.1) — authorization
    * and approval requirement as the two independent results §6.1.6 defines.
@@ -2309,9 +2406,7 @@ export class ACL {
 // (`identity_types`, `roles`, `max_call_depth`). Singular aliases
 // were removed to align with Python (apcore-python commit 2c204fb)
 // and Rust (apcore-rust src/acl_handlers.rs).
-ACL.registerCondition('identity_types', new IdentityTypesHandler());
-ACL.registerCondition('roles', new RolesHandler());
-ACL.registerCondition('max_call_depth', new MaxCallDepthHandler());
+for (const [condition, handler] of visibilityHandlers) ACL.registerCondition(condition, handler);
 // §6.1.7 — `arguments` is BUILT IN and there is no registration point for it.
 // It is registered here, with the other built-ins, precisely so that §6.1.4's
 // precheck covers it for free: `argument:` written for `arguments:` is then an

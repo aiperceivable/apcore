@@ -113,6 +113,7 @@ nav:
           - Cancellation: features/cancellation.md
       - Security & Governance:
           - ACL System: features/acl-system.md
+          - ACL-aware Capability Discovery: features/capability-discovery.md
           - Identity System: features/identity-system.md
           - Approval System: features/approval-system.md
           - Call Chain Guard: features/call-chain-guard.md

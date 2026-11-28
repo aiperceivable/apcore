@@ -40,16 +40,19 @@ class StubExporter implements SpanExporter {
 // ---------------------------------------------------------------------------
 
 describe('ExtensionManager init', () => {
-  it('has seven built-in extension points', () => {
+  it('has eight built-in extension points', () => {
     const mgr = new ExtensionManager();
     const points = mgr.listPoints();
-    expect(points).toHaveLength(7);
+    expect(points).toHaveLength(8);
   });
 
   it('built-in point names match expected set', () => {
     const mgr = new ExtensionManager();
     const names = new Set(mgr.listPoints().map((p: ExtensionPoint) => p.name));
-    expect(names).toEqual(new Set(['discoverer', 'middleware', 'acl', 'span_exporter', 'module_validator', 'approval_handler', 'policy_evaluator']));
+    expect(names).toEqual(new Set([
+      'discoverer', 'middleware', 'acl', 'span_exporter', 'module_validator',
+      'approval_handler', 'policy_evaluator', 'capability_search_provider',
+    ]));
   });
 
   it('listPoints returns ExtensionPoint objects', () => {

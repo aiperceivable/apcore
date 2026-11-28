@@ -1,0 +1,24 @@
+# ACL-aware Capability Discovery Implementation Plan
+
+## Visibility and execution
+
+`ACL.evaluate_visibility` evaluates the exact caller and target from the same trusted invocation context used by the executor's active built-in ACL gate. Derive the same prospective caller frame and depth as Step 1 without mutating the original context. Reuse pattern matching, structural prechecks, first-match evaluation, and built-in identity, role, and call-depth predicates. Keep the invocation path and its audit behavior intact.
+
+Discovery has no submitted arguments. Treat argument predicates and custom conditions, including replacements for built-in handlers, as undetermined. Resolve logical compounds with known and undetermined outcomes, then disclose only when all remaining first-match outcomes grant access. A possible deny or an argument-dependent grant with no independent allow stays hidden. Apply the existing fail-closed rules for malformed conditions and keep their diagnostics internal. An installed custom ACL must provide a silent visibility contract before the executor can disclose entries it governs. No ACL installed retains public discovery in the default assembly.
+
+Visibility runs without module validation, input policy evaluation, approval handling, normal ACL audit logging, denied events, or error-history records. It excludes registrations that are hidden or ineligible for new execution. Use the current registration generation and selected version for both authorization and the returned view. A provider result is a candidate selector and cannot authorize metadata, including forgotten candidates, stale versions, or hidden IDs.
+
+## Public APIs
+
+- `Executor` and `APCore` expose `list_callable` and `get_callable_definitions`, with idiomatic SDK naming. `list_callable` returns a `CapabilityPage` of `ModuleSummary` records containing the module ID, resolved version, short description, tags, read-only flag, and an advisory `access_hint`. It returns no schemas, source paths, or arbitrary metadata.
+- Match the optional query, prefix, tags, and read-only filters against current public candidates. Default to 20 items with an explicit maximum of 100. Default search needs only deterministic lexical and tag matching. The optional `CapabilitySearchProvider` can supply ranked IDs. The executor filters every returned ID before it reads or returns metadata.
+- `get_callable_definitions` returns detached copies of the complete input and output schemas for eligible requested IDs. Missing, denied, and hidden IDs yield omissions with the same response shape. Validate trust and visibility for each request even when an ID came from a previous page.
+- Use `requires_approval` when the ACL and normal Step 5 policy guarantee human approval for the invocation. Use `conditional` when an eligible ACL decision can vary in approval outcome or a configured post-validation evaluator can add requirements. Use `allowed` for the remaining eligible entries. Apply `include_approval_required=false` to definite approval entries. Every invocation still runs the usual governance pipeline.
+- Cursors are opaque, integrity-protected or server-side, and scoped to the executor, requester identity and roles, relevant trusted context, and normalized filters. Reject invalid, expired, foreign-scope, or incompatible cursors without exposing their bindings. Use stable ordering with a module-ID tie breaker and reauthorize every item at emission. A disappearance or replacement during lookup must not expose a stale definition.
+- Add `system.manifest.search` as a separate read-only facade gated by its own ACL. Run discovery with the originating trusted request context and apply target visibility in addition to the facade's ACL. Derive each target frame from the original caller so the search module cannot contribute its own identity, ACL grants, or extra call depth. Preserve `system.manifest.full` and `system.manifest.module` wire contracts and existing access checks.
+
+## Surfaces
+
+MCP bridges use the same authenticated identity and caller context as actual invocation. Apply Core visibility per request to the adapter's existing exported-tool candidates. Keep standard schemas, aliases, versions, and capability negotiation. Preserve transport meta-tools on their existing authorization paths. Project module documentation through the same visibility check where discoverable MCP resources expose it. Management manifest resources continue through their own ACL and keep their existing output shapes.
+
+Build minimal and full Core distributions before checking the installed Surfaces providers. Only MCP changes its protocol projection for this milestone. Test other Surfaces consumers against the built Core artifacts. Delegation, new budgets, and general SDK ergonomics have separate milestones.

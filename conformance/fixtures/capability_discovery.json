@@ -1,0 +1,495 @@
+{
+  "description": "ACL-aware discovery uses the normal trusted caller frame, proves visibility without call arguments, and withholds non-public or unauthorized definitions without audit or execution effects.",
+  "driver_contract": {
+    "modules": [
+      {
+        "module_id": "demo.echo",
+        "description": "Echo message",
+        "tags": [
+          "message"
+        ],
+        "readonly": true
+      },
+      {
+        "module_id": "demo.hidden",
+        "description": "Hidden utility",
+        "discoverable": false
+      },
+      {
+        "module_id": "demo.review",
+        "description": "Review message",
+        "tags": [
+          "message",
+          "review"
+        ],
+        "requires_approval": true
+      }
+    ],
+    "notes": "Register all modules at version 1.0.0 with an object input schema containing a message property and a complete output schema. Create a real Executor with the ordered ACL rules and default_effect deny for each case. Context has a user Identity with the supplied roles (empty when omitted) and is external unless caller_id is given; represent a non-external caller as the tail of the parent call chain. list_callable receives options if present. For the same context independently request definitions for demo.hidden, demo.echo, demo.review, and demo.unknown, plus a duplicate demo.echo. Every listed item must have the expected hint and no schema. Definitions must contain complete input and output schemas; when omitted from expected, expect the set of listed IDs, disregarding order. Audit entries, handler invocations and executions must stay zero. A configured policy_evaluator must never be invoked."
+  },
+  "test_cases": [
+    {
+      "id": "authenticated_role_grant",
+      "input": {
+        "rules": [
+          {
+            "callers": [
+              "@external"
+            ],
+            "targets": [
+              "demo.echo"
+            ],
+            "effect": "allow",
+            "conditions": {
+              "roles": [
+                "reader"
+              ]
+            }
+          },
+          {
+            "callers": [
+              "@external"
+            ],
+            "targets": [
+              "demo.hidden"
+            ],
+            "effect": "allow"
+          }
+        ],
+        "roles": [
+          "reader"
+        ]
+      },
+      "expected": {
+        "items": [
+          {
+            "module_id": "demo.echo",
+            "access_hint": "allowed"
+          }
+        ],
+        "audit_entries": 0
+      }
+    },
+    {
+      "id": "unauthorized_role_omits_both_levels",
+      "input": {
+        "rules": [
+          {
+            "callers": [
+              "@external"
+            ],
+            "targets": [
+              "demo.echo"
+            ],
+            "effect": "allow",
+            "conditions": {
+              "roles": [
+                "reader"
+              ]
+            }
+          }
+        ],
+        "roles": [
+          "observer"
+        ]
+      },
+      "expected": {
+        "items": [],
+        "audit_entries": 0
+      }
+    },
+    {
+      "id": "possible_deny_prevents_disclosure",
+      "input": {
+        "rules": [
+          {
+            "callers": [
+              "@external"
+            ],
+            "targets": [
+              "demo.echo"
+            ],
+            "effect": "deny",
+            "conditions": {
+              "arguments": {
+                "has_key": [
+                  "mode"
+                ]
+              }
+            }
+          },
+          {
+            "callers": [
+              "@external"
+            ],
+            "targets": [
+              "demo.echo"
+            ],
+            "effect": "allow"
+          }
+        ]
+      },
+      "expected": {
+        "items": [],
+        "audit_entries": 0
+      }
+    },
+    {
+      "id": "definite_first_grant_shadows_later_deny",
+      "input": {
+        "rules": [
+          {
+            "callers": [
+              "@external"
+            ],
+            "targets": [
+              "demo.echo"
+            ],
+            "effect": "allow"
+          },
+          {
+            "callers": [
+              "@external"
+            ],
+            "targets": [
+              "demo.echo"
+            ],
+            "effect": "deny",
+            "conditions": {
+              "arguments": {
+                "has_key": [
+                  "mode"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "expected": {
+        "items": [
+          {
+            "module_id": "demo.echo",
+            "access_hint": "allowed"
+          }
+        ],
+        "audit_entries": 0
+      }
+    },
+    {
+      "id": "argument_only_grant_has_no_authorized_fallback",
+      "input": {
+        "rules": [
+          {
+            "callers": [
+              "@external"
+            ],
+            "targets": [
+              "demo.echo"
+            ],
+            "effect": "allow",
+            "conditions": {
+              "arguments": {
+                "has_key": [
+                  "mode"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "expected": {
+        "items": [],
+        "audit_entries": 0
+      }
+    },
+    {
+      "id": "possible_approval_does_not_prevent_proven_visibility",
+      "input": {
+        "rules": [
+          {
+            "callers": [
+              "@external"
+            ],
+            "targets": [
+              "demo.echo"
+            ],
+            "effect": "allow",
+            "conditions": {
+              "arguments": {
+                "has_key": [
+                  "mode"
+                ]
+              }
+            },
+            "approval": "required"
+          },
+          {
+            "callers": [
+              "@external"
+            ],
+            "targets": [
+              "demo.echo"
+            ],
+            "effect": "allow"
+          }
+        ]
+      },
+      "expected": {
+        "items": [
+          {
+            "module_id": "demo.echo",
+            "access_hint": "conditional"
+          }
+        ],
+        "audit_entries": 0
+      }
+    },
+    {
+      "id": "module_requires_approval",
+      "input": {
+        "rules": [
+          {
+            "callers": [
+              "@external"
+            ],
+            "targets": [
+              "demo.review"
+            ],
+            "effect": "allow"
+          }
+        ]
+      },
+      "expected": {
+        "items": [
+          {
+            "module_id": "demo.review",
+            "access_hint": "requires_approval"
+          }
+        ],
+        "audit_entries": 0
+      }
+    },
+    {
+      "id": "hide_definite_approval_from_summaries",
+      "input": {
+        "rules": [
+          {
+            "callers": [
+              "@external"
+            ],
+            "targets": [
+              "demo.*"
+            ],
+            "effect": "allow"
+          }
+        ],
+        "options": {
+          "include_approval_required": false
+        }
+      },
+      "expected": {
+        "items": [
+          {
+            "module_id": "demo.echo",
+            "access_hint": "allowed"
+          }
+        ],
+        "definitions": [
+          "demo.echo",
+          "demo.review"
+        ],
+        "audit_entries": 0
+      }
+    },
+    {
+      "id": "policy_is_reported_as_conditional_without_evaluation",
+      "input": {
+        "rules": [
+          {
+            "callers": [
+              "@external"
+            ],
+            "targets": [
+              "demo.echo"
+            ],
+            "effect": "allow"
+          }
+        ],
+        "policy_evaluator": true
+      },
+      "expected": {
+        "items": [
+          {
+            "module_id": "demo.echo",
+            "access_hint": "conditional"
+          }
+        ],
+        "audit_entries": 0
+      }
+    },
+    {
+      "id": "prospective_nested_context_depth",
+      "input": {
+        "rules": [
+          {
+            "callers": [
+              "worker.reader"
+            ],
+            "targets": [
+              "demo.echo"
+            ],
+            "effect": "allow",
+            "conditions": {
+              "max_call_depth": 2
+            }
+          }
+        ],
+        "caller_id": "worker.reader"
+      },
+      "expected": {
+        "items": [
+          {
+            "module_id": "demo.echo",
+            "access_hint": "allowed"
+          }
+        ],
+        "audit_entries": 0
+      }
+    },
+    {
+      "id": "compound_known_false_denial_does_not_block",
+      "input": {
+        "rules": [
+          {
+            "callers": [
+              "@external"
+            ],
+            "targets": [
+              "demo.echo"
+            ],
+            "effect": "deny",
+            "conditions": {
+              "roles": [
+                "operator"
+              ],
+              "arguments": {
+                "has_key": [
+                  "mode"
+                ]
+              }
+            }
+          },
+          {
+            "callers": [
+              "@external"
+            ],
+            "targets": [
+              "demo.echo"
+            ],
+            "effect": "allow"
+          }
+        ],
+        "roles": [
+          "reader"
+        ]
+      },
+      "expected": {
+        "items": [
+          {
+            "module_id": "demo.echo",
+            "access_hint": "allowed"
+          }
+        ],
+        "audit_entries": 0
+      }
+    },
+    {
+      "id": "lexical_tag_filter_only_changes_summary",
+      "input": {
+        "rules": [
+          {
+            "callers": [
+              "@external"
+            ],
+            "targets": [
+              "demo.*"
+            ],
+            "effect": "allow"
+          }
+        ],
+        "options": {
+          "query": "review",
+          "tags": [
+            "review"
+          ],
+          "prefix": "demo."
+        }
+      },
+      "expected": {
+        "items": [
+          {
+            "module_id": "demo.review",
+            "access_hint": "requires_approval"
+          }
+        ],
+        "definitions": [
+          "demo.echo",
+          "demo.review"
+        ],
+        "audit_entries": 0
+      }
+    },
+    {
+      "id": "lexical_query_is_one_substring",
+      "input": {
+        "rules": [
+          {
+            "callers": [
+              "@external"
+            ],
+            "targets": [
+              "demo.echo"
+            ],
+            "effect": "allow"
+          }
+        ],
+        "options": {
+          "query": "echo demo"
+        }
+      },
+      "expected": {
+        "items": [],
+        "definitions": [
+          "demo.echo"
+        ],
+        "audit_entries": 0
+      }
+    },
+    {
+      "id": "module_prefix_is_literal",
+      "input": {
+        "rules": [
+          {
+            "callers": [
+              "@external"
+            ],
+            "targets": [
+              "demo.echo"
+            ],
+            "effect": "allow"
+          }
+        ],
+        "options": {
+          "prefix": " demo."
+        }
+      },
+      "expected": {
+        "items": [],
+        "definitions": [
+          "demo.echo"
+        ],
+        "audit_entries": 0
+      }
+    }
+  ]
+}

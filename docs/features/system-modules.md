@@ -20,6 +20,7 @@ The built-in `system.*` modules let AI agents and operators query and control a 
 | [`system.health.module`](#systemhealthmodule) | Health detail for one module: latency and recent errors | readonly, idempotent |
 | [`system.manifest.module`](#systemmanifestmodule) | One module's schema, annotations, tags, source path | readonly, idempotent |
 | [`system.manifest.full`](#systemmanifestfull) | Full registry manifest, filterable by tags and prefix | readonly, idempotent |
+| [`system.manifest.search`](#systemmanifestsearch) | Lightweight capability summaries visible to the caller | readonly, idempotent |
 | [`system.usage.summary`](#systemusagesummary) | Usage statistics for every module, with trends | readonly, idempotent |
 | [`system.usage.module`](#systemusagemodule) | One module's usage, per-caller breakdown, hourly distribution | readonly, idempotent |
 | [`system.control.update_config`](#systemcontrolupdate_config) | Change a runtime configuration value | requires_approval |
@@ -45,10 +46,10 @@ With the defaults this gives three states (§6.6.3):
 | Config | Modules registered |
 |---|---|
 | `sys_modules.enabled: false` | **0** |
-| `sys_modules.enabled: true`, `events.enabled: false` | **6** — `system.health.*`, `system.usage.*`, `system.manifest.*` |
-| `sys_modules.enabled: true`, `events.enabled: true` | **9** — the six plus the three `system.control.*` write modules |
+| `sys_modules.enabled: true`, `events.enabled: false` | **7** — `system.health.*`, `system.usage.*`, `system.manifest.*` |
+| `sys_modules.enabled: true`, `events.enabled: true` | **10** — the seven read modules plus three `system.control.*` write modules |
 
-A registry holding only the six read modules has no write surface; anything reasoning about exposure should distinguish the two enabled states.
+A registry holding only the read modules has no write surface.
 
 The control modules declare `requires_approval: true`, so the approval gate applies to them. Approval, like ACL, is inactive by absence ([§6.6.3.1](../spec/protocol-spec.md#6631-layers-2-and-3-are-inactive-by-absence)): with no `ApprovalHandler` the gate is skipped with a warning unless `ExecutionPolicy(strict=true)` is set, and a missing ACL file attaches no ACL. To see what actually gates a registry, read [`executor.governance_state()`](./core-executor.md#governance-state-api) (§6.6.5).
 
@@ -310,6 +311,12 @@ Each `modules[]` entry has the shape of `system.manifest.module`'s output. `proj
 - reentrant: true
 
 ---
+
+## system.manifest.search
+
+Returns the public module summaries visible to the original trusted caller. The module has its own ACL, and every returned target must also pass the discovery check. Existing administrative manifests retain their independent ACLs.
+
+Pass optional filters `query`, `prefix`, `tags`, `readonly`, `limit`, and `include_approval_required`. To continue, pass `cursor` with the same filters and authenticated context. The result contains `items` and `next_cursor`, which is null on the last page. See [ACL-aware capability discovery](./capability-discovery.md) for the approval hints and schema lookup APIs.
 
 ## system.usage.summary
 

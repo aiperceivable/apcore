@@ -60,6 +60,8 @@ pub enum ExtensionKind {
     ApprovalHandler(Arc<dyn ApprovalHandler>),
     /// Post-validation evaluator for an executor.
     PolicyEvaluator(Arc<dyn PolicyEvaluator>),
+    /// Ranking provider for authorized capability discovery.
+    CapabilitySearchProvider(Arc<dyn crate::CapabilitySearchProvider>),
 }
 
 impl std::fmt::Debug for ExtensionKind {
@@ -78,6 +80,9 @@ impl std::fmt::Debug for ExtensionKind {
                 write!(f, "ExtensionKind::ApprovalHandler({h:?})")
             }
             ExtensionKind::PolicyEvaluator(_) => write!(f, "ExtensionKind::PolicyEvaluator(...)"),
+            ExtensionKind::CapabilitySearchProvider(_) => {
+                write!(f, "ExtensionKind::CapabilitySearchProvider(...)")
+            }
         }
     }
 }
@@ -99,6 +104,9 @@ impl ExtensionKind {
             ExtensionKind::SpanExporter(e) => std::ptr::from_ref(&**e).cast::<()>(),
             ExtensionKind::ModuleValidator(v) => std::ptr::from_ref(&**v).cast::<()>(),
             ExtensionKind::ApprovalHandler(h) => std::ptr::from_ref(&**h).cast::<()>(),
+            ExtensionKind::CapabilitySearchProvider(provider) => {
+                std::ptr::from_ref(&**provider).cast::<()>()
+            }
             ExtensionKind::PolicyEvaluator(evaluator) => {
                 std::ptr::from_ref(&**evaluator).cast::<()>()
             }
@@ -115,6 +123,7 @@ impl ExtensionKind {
             ExtensionKind::ModuleValidator(_) => "module_validator",
             ExtensionKind::ApprovalHandler(_) => "approval_handler",
             ExtensionKind::PolicyEvaluator(_) => "policy_evaluator",
+            ExtensionKind::CapabilitySearchProvider(_) => "capability_search_provider",
         }
     }
 }
@@ -181,6 +190,14 @@ fn built_in_points() -> HashMap<String, ExtensionPoint> {
             multiple: false,
         },
     );
+    points.insert(
+        "capability_search_provider".to_string(),
+        ExtensionPoint {
+            name: "capability_search_provider".to_string(),
+            description: "Ranking for authorized capability discovery".to_string(),
+            multiple: false,
+        },
+    );
     points
 }
 
@@ -190,8 +207,7 @@ fn built_in_points() -> HashMap<String, ExtensionPoint> {
 
 /// Manages extension points and their registered implementations.
 ///
-/// Pre-registers six built-in extension points: discoverer, middleware,
-/// acl, `span_exporter`, `module_validator`, and `approval_handler`.
+/// Pre-registers built-in points for discovery, invocation, and observability.
 ///
 /// Extensions are registered as [`ExtensionKind`] variants, ensuring type
 /// safety at compile time rather than relying on runtime `isinstance` checks
@@ -575,6 +591,12 @@ impl ExtensionManager {
             executor.set_policy_evaluator(Some(Arc::clone(evaluator)))?;
         }
 
+        if let Some(ExtensionKind::CapabilitySearchProvider(provider)) =
+            self.first_builtin("capability_search_provider")
+        {
+            executor.set_capability_search_provider(Some(Arc::clone(provider)));
+        }
+
         // Discoverer
         if let Some(ExtensionKind::Discoverer(d)) = self.first_builtin("discoverer") {
             registry.set_discoverer_shared(Arc::clone(d));
@@ -673,6 +695,7 @@ impl ExtensionManager {
             "module_validator" => "ModuleValidator",
             "approval_handler" => "ApprovalHandler",
             "policy_evaluator" => "PolicyEvaluator",
+            "capability_search_provider" => "CapabilitySearchProvider",
             _ => "Unknown",
         }
     }
@@ -686,7 +709,7 @@ mod tests {
     fn test_new_has_built_in_points() {
         let mgr = ExtensionManager::new();
         let points = mgr.list_points();
-        assert_eq!(points.len(), 7);
+        assert_eq!(points.len(), 8);
 
         let names: Vec<String> = points.iter().map(|p| p.name.clone()).collect();
         assert!(names.contains(&"discoverer".to_string()));
@@ -696,6 +719,7 @@ mod tests {
         assert!(names.contains(&"module_validator".to_string()));
         assert!(names.contains(&"approval_handler".to_string()));
         assert!(names.contains(&"policy_evaluator".to_string()));
+        assert!(names.contains(&"capability_search_provider".to_string()));
     }
 
     #[test]
@@ -951,7 +975,7 @@ mod tests {
     #[test]
     fn test_default_impl() {
         let mgr = ExtensionManager::default();
-        assert_eq!(mgr.list_points().len(), 7);
+        assert_eq!(mgr.list_points().len(), 8);
     }
 
     #[test]

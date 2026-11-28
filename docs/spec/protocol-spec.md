@@ -8,7 +8,7 @@ description: "The canonical apcore protocol specification (RFC 2119): module, sc
 
 > Version: 2.0.0
 > Status: Draft
-> Draft Revision: 2
+> Draft Revision: 3
 > Last Updated: 2026-11-27
 
 ---
@@ -4705,12 +4705,12 @@ Layer 1: Activation (Config) — two stages, not one
   sys_modules.enabled = false (default)
     → 0 modules registered. Nothing to call, nothing to list.
   sys_modules.enabled = true, sys_modules.events.enabled = false (default)
-    → 6 read modules: system.health.*, system.usage.*, system.manifest.*
+    → 7 read modules: system.health.*, system.usage.*, system.manifest.*
     → NO system.control.* — the write modules require the EventEmitter that
       carries their audit events (§6.7 cross-cutting requirement 3), so they
       are registered inside the events branch and not otherwise.
   both = true
-    → 9 modules: the 6 above plus the 3 system.control.* write modules.
+    → 10 modules: the 7 above plus the 3 system.control.* write modules.
 
 Layer 2: Authorization (ACL)
   When system modules ARE registered, ACL rules control who can call them.
@@ -4727,7 +4727,7 @@ Layer 3: Approval (requires_approval annotation)
   SHOULD set requires_approval = true for human-in-the-loop enforcement.
 ```
 
-The 0 / 6 / 9 distinction matters to anything that reasons about exposure: a registry holding six read-only modules and no ACL is an **information-disclosure** question, not a control-plane one. Treating "system modules are registered" as one state produces a warning that fires on a configuration with no write surface at all.
+The 0 / 7 / 10 distinction matters to anything that reasons about exposure: a registry holding seven read-only modules and no ACL is an **information-disclosure** question, not a control-plane one. Treating "system modules are registered" as one state produces a warning that fires on a configuration with no write surface at all.
 
 Adapters and UI layers **SHOULD NOT** introduce additional independent permission switches. The three layers above are sufficient — adding adapter-level switches creates shadow permission systems that can diverge from the actual ACL state.
 
@@ -4814,7 +4814,7 @@ Two things it **does not** claim, and implementations **MUST NOT** document it a
 1. **That protection exists when it is `false`.** A configured, wired ACL may permit every call. The flag reports the **absence of a gate**, never the presence of protection. Implementations **MUST NOT** name it `is_secure`, expose an inverse spelled as safety, or otherwise present it as a security verdict.
 2. **That nothing will stop the call when it is `true`.** A deployment may enforce through a custom pipeline step, custom middleware, or an upstream gateway. Those are invisible to this accessor by construction and are not negated by the flag.
 
-The read modules are reported separately for the reason given in §6.6.3: six read-only modules with no ACL is an information-disclosure question, and folding them into the control-surface flag makes it fire on a configuration with no write surface at all.
+The read modules are reported separately for the reason given in §6.6.3: seven read-only modules with no ACL is an information-disclosure question, and folding them into the control-surface flag makes it fire on a configuration with no write surface at all.
 
 ###### 6.6.5.1.1 Why the two gates are not symmetric
 
@@ -4887,6 +4887,7 @@ This section documents the canonical `system.*` module catalogue. Conformant SDK
 | `system.health.module`         | Observability  | Read  | Level 1 | Detailed health for a single module (latency p50/p99, error count, error rate) |
 | `system.manifest.module`       | Introspection  | Read  | Level 1 | Full manifest for one module (input_schema, output_schema, annotations, tags, dependencies, source path) |
 | `system.manifest.full`         | Introspection  | Read  | Level 1 | Full manifest for all registered modules |
+| `system.manifest.search`       | Introspection  | Read  | Level 1 | Paginated summaries visible to the requesting caller (§6.10) |
 | `system.usage.summary`         | Observability  | Read  | Level 1 | Aggregated usage statistics (calls, errors, latency) |
 | `system.usage.module`          | Observability  | Read  | Level 1 | Per-module usage statistics |
 | `system.control.update_config` | Administration | Write | Level 2 | Update a runtime configuration value by dot-path key (audit-logged) |
@@ -4902,7 +4903,7 @@ This section documents the canonical `system.*` module catalogue. Conformant SDK
 5. **`system.control.update_config`** **MUST** redact sensitive keys (per §10.6.1 `obs.redaction.sensitive_keys`) in both `old_value` and `new_value` fields of its output and audit event.
 6. **`system.control.toggle_feature`** state **MUST** persist via the configured `OverridesStore` so toggle state survives process restart; without persistence, toggle decisions revert to the registered defaults on reload.
 
-**Conformance note:** SDKs declaring Level 1 conformance ([Conformance](./conformance.md) §3) MUST register the 6 read modules. SDKs declaring Level 2 MUST additionally register the 3 control modules. Implementations MAY register additional modules under `system.<vendor>.*` namespaces — these are NOT covered by this canonical catalogue and MUST NOT collide with the names above.
+**Conformance note:** SDKs declaring Level 1 conformance ([Conformance](./conformance.md) §3) MUST register the 7 read modules. SDKs declaring Level 2 MUST additionally register the 3 control modules. Implementations MAY register additional modules under `system.<vendor>.*` namespaces — these are NOT covered by this canonical catalogue and MUST NOT collide with the names above.
 
 #### 6.7.1 Usage Module Output Contract
 
@@ -5040,6 +5041,33 @@ Approval requirements have more than one source. The composition is normative, n
 
 **Rule 7 is a compatibility constraint, not a modelling preference.** `AuditEntry.decision` is a string that downstream consumers parse. A third value breaks every existing parser; a new field beside it does not.
 
+### 6.10 ACL-aware capability discovery {#acl-aware-capability-discovery}
+
+Capability discovery answers whether a trusted caller may see metadata for an active, public module. Every invocation **MUST** still satisfy the execution pipeline's ACL, validation, policy, approval, and lifecycle checks.
+
+#### 6.10.1 Silent visibility
+
+- The Executor **MUST** use the prospective target invocation's caller frame, depth, and trusted identity, with the ACL that governs its pipeline. It **MUST NOT** derive identity or caller from query data. When no ACL governs the default assembly, public active modules are eligible.
+- `ACL.evaluate_visibility` **MUST** preserve §6.1–§6.2 rule ordering, structural prechecks, and fail-closed resolution. It **MUST** evaluate known built-in identity, role, and depth predicates. Argument predicates and custom handlers, including replacements for built-ins, are unknown to discovery. The probe **MUST NOT** supply fabricated arguments or run these handlers. After structural precheck, false in an AND and true in an OR settle the corresponding expression. Negating unknown remains unknown.
+- The probe **MUST** grant visibility only if every reachable first-match result is an allow. A reachable unknown deny hides the target. An unknown allow may change the approval requirement, but the fallthrough path still requires a grant. Malformed conditions retain §6.1.1 deny and pending-approval semantics. A custom ACL **MUST** provide an equivalent silent decision for its governed targets to be eligible.
+- Discovery **MUST NOT** emit the ordinary ACL audit entry or denied event, write to execution error history, validate inputs, call the policy evaluator or approval handler, or run module hooks or execution. It **MUST NOT** return hidden, disabled, draining, missing, or otherwise ineligible registrations. Metadata **MUST** correspond to the authorized registration generation, even when the same version is registered again.
+
+#### 6.10.2 Summaries, definition lookup, and paging
+
+The Executor and APCore **MUST** expose idiomatic equivalents of `list_callable(context, options)` and `get_callable_definitions(module_ids, context)`. SDKs **MAY** provide a version-aware single-definition lookup for adapters. A version selector **MUST** use the invocation resolver and **MUST NOT** disclose stale or unresolvable metadata.
+
+- `list_callable` **MUST** produce a `CapabilityPage` containing `items` and an opaque, nullable `next_cursor`. Each `ModuleSummary` **MUST** contain `module_id`, resolved `version`, `description`, `tags`, `readonly`, and `access_hint`. Summaries **MUST NOT** include schemas, source paths, or arbitrary metadata.
+- `access_hint` **MUST** be `requires_approval` when every eligible path requires approval under ACL and Step 5, `conditional` when the requirement can vary or the final-input policy can add a requirement, and `allowed` otherwise. `include_approval_required: false` **MUST** omit entries with `requires_approval`.
+- Filters are `query`, `prefix`, `tags`, and `readonly`. Omitted filters are unconstrained. The default lexical search **MUST** trim and lowercase the query and match it as one substring within the lowercased module ID, description, or a single tag. Prefixes and requested tags match literally, and every requested tag **MUST** be present. Results **MUST** have deterministic order with a module ID tie breaker. Page size defaults to 20 and the allowed range is 1–100.
+- A cursor **MUST** be bound to the issuing Executor, trusted principal and caller frame, and normalized request filters, including page size. Invalid, expired, or foreign cursors **MUST** fail without returning entries or cursor binding details. Every emitted entry **MUST** pass current visibility, including after ACL or registry changes.
+- Definition lookup **MUST** return the full detached input and output JSON Schemas with the resolved module ID and version. It **MUST** check visibility again. Missing, hidden, and unauthorized IDs **MUST** be omitted indistinguishably; duplicate IDs **MUST** appear at most once in first-request order.
+- A configured `CapabilitySearchProvider` (§11.3) **MAY** rank candidate IDs. The Executor **MUST** run the same visibility and active-registration checks on those IDs before returning metadata.
+
+#### 6.10.3 Manifest search and adapter projection
+
+`system.manifest.search` is a read-only module using the filters and pagination in §6.10.2. Clients **MUST** omit unset input fields. Its result uses the `CapabilityPage` shape in snake_case with a nullable `next_cursor`. The call **MUST** pass its own ACL. Target visibility **MUST** then use the original trusted caller frame, excluding the search module's own frame. The existing `system.manifest.full` and `system.manifest.module` retain their own ACL checks and wire contracts.
+
+A caller-aware adapter **MUST** use the same trusted context as its invocation path when applying discovery to its published modules. Standard MCP `tools/list` **MUST** retain the complete `inputSchema` of each eligible tool. Lightweight summaries and definition lookup **MUST** use the separate discovery API. MCP exposes `system.manifest.search` as a read-only query tool when the module is available to the requester. When the adapter publishes module documentation resources, listing and direct access **MUST** apply the same visibility. Transport control tools and ACL-gated management manifests retain their own authorization contracts.
 
 ---
 
@@ -8184,7 +8212,7 @@ Config.register_namespace(
 
 !!! warning "These defaults are off, and §6.6.3 is the reason"
     `enabled` and `events.enabled` are the two flags §6.6.3 describes as the
-    0 / 6 / 9 activation ladder, and both default to **false**. Registering
+    0 / 7 / 10 activation ladder, and both default to **false**. Registering
     this namespace with `enabled: True` would stand the system modules up in
     every project that never asked for them, and `events.enabled: True` would
     additionally stand up the three `system.control.*` **write** modules —
@@ -8845,6 +8873,7 @@ implementations registered for one point are not chained (§11.7) (D-143).
 > | *(no equivalent)*   | `span_exporter`          | Observability export as a dedicated extension point |
 > | *(no equivalent)*   | `approval_handler`       | The approval gate's handler (§7) as an extension point |
 > | *(no equivalent)*   | `policy_evaluator`       | Opt-in evaluation of validated execution arguments (§7.4.1) |
+> | *(no equivalent)*   | `capability_search_provider` | Optional ranking of capability candidates (§6.10) |
 > | `id_converter`      | *(not an extension point)* | Not a common runtime customization need |
 > | `executor`          | *(not an extension point)* | Local execution covers the supported use cases |
 >
@@ -8939,7 +8968,7 @@ Extension Point: Executor
 Extensions are registered in code with `ExtensionManager.register(point_name, extension)` and wired
 with `apply(registry, executor)` (§11.3):
 
-1. A single-valued point (`discoverer`, `acl`, `module_validator`, `approval_handler`, `policy_evaluator`) holds one
+1. A single-valued point (`discoverer`, `acl`, `module_validator`, `approval_handler`, `policy_evaluator`, `capability_search_provider`) holds one
    implementation; registering another replaces it.
 2. A multi-valued point (`middleware`, `span_exporter`) holds every registered implementation in
    registration order.
@@ -10343,6 +10372,7 @@ The specification and the SDK have independent version numbers. `CHANGELOG.md` r
 
 | Version | Date | Summary | Records |
 |---|---|---|---|
+| 2.0.0 (draft revision 3) | Unreleased | Add silent ACL visibility, caller-scoped summaries and schema lookup, and `system.manifest.search` (§6.10, §11.3). | D-154, [Changelog](https://github.com/aiperceivable/apcore/blob/main/CHANGELOG.md) |
 | 2.0.0 (draft revision 2) | Unreleased | Add the opt-in post-validation policy evaluator, final-input approval binding, and preflight semantics (§7.2–§7.4.1, §11.3, §12.8). | [Changelog](https://github.com/aiperceivable/apcore/blob/main/CHANGELOG.md) |
 | 2.0.0 (draft revision 1) | Unreleased | Define an in-memory Core Profile and opt-in extensions (§1.8, §12). Deny calls requiring approval when the handler is absent, and require approval for destructive modules by default (§6.6.3.1, §7.4, §7.9). Require invocation-scoped approval resumption and use a non-secret correlation ID in telemetry (§7, §9.16.2). Specify managed drain, recovery, scoped forced removal, reload reports and lifecycle events (§6.7, §9.16.2, §12.7.9). Assign provider projections to Surfaces (§4.17 and Appendix D). Resolve path-typed configuration against one project root (§9.2.2). Clarify pipeline configuration, preflight and approval argument scope (§5.16.1, §7.3–7.4, §12.8), configured redaction (§6.1.8, §10.6.1) and trace IDs (§10.5). Align schema examples with Draft 2020-12 and the validation error format (§4.2, §4.14, §8.1). | D-153, [#113](https://github.com/aiperceivable/apcore/issues/113), [Changelog](https://github.com/aiperceivable/apcore/blob/main/CHANGELOG.md) |
 | 1.66.0 | 2026-10-19 | A23 preserves optional enum, const, reference and applicator constraints inside an anyOf-null wrapper; required fields remain unchanged. | [#124](https://github.com/aiperceivable/apcore/issues/124) |

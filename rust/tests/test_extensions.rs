@@ -22,7 +22,7 @@ fn make_acl() -> ExtensionKind {
 #[test]
 fn test_new_has_six_built_in_points() {
     let mgr = ExtensionManager::new();
-    assert_eq!(mgr.list_points().len(), 7);
+    assert_eq!(mgr.list_points().len(), 8);
 }
 
 #[test]
@@ -47,7 +47,7 @@ fn test_list_points_contains_all_expected_names() {
 #[test]
 fn test_default_equals_new() {
     let mgr = ExtensionManager::default();
-    assert_eq!(mgr.list_points().len(), 7);
+    assert_eq!(mgr.list_points().len(), 8);
 }
 
 // ---------------------------------------------------------------------------

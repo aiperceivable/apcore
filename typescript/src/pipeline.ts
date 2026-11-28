@@ -55,6 +55,11 @@ export interface Step {
   execute(ctx: PipelineContext): Promise<StepResult>;
 }
 
+/** @internal Check the module selector shared by execution and discovery. */
+export function stepMatchesModule(step: Step, moduleId: string): boolean {
+  return step.matchModules?.some(pattern => matchPattern(pattern, moduleId)) ?? true;
+}
+
 // ---------------------------------------------------------------------------
 // StepResult
 // ---------------------------------------------------------------------------
@@ -1088,29 +1093,25 @@ export class PipelineEngine {
       observeStep?.(step.name, 'before_hooks');
 
       // Read declarations (optional fields, backward compat via ?? defaults)
-      const stepMatchModules = step.matchModules ?? null;
       const stepIgnoreErrors = step.ignoreErrors ?? false;
       const stepPure = step.pure ?? false;
       const stepTimeoutMs = step.timeoutMs ?? 0;
 
       // 1 match_modules filter
-      if (stepMatchModules !== null) {
-        const matched = stepMatchModules.some((pattern) => matchPattern(pattern, ctx.moduleId));
-        if (!matched) {
-          if (isDryRun()) {
-            for (const key of step.provides ?? []) failedProvides.add(key);
-          }
-          trace.steps.push({
-            name: step.name,
-            durationMs: 0,
-            result: { action: 'continue' },
-            skipped: true,
-            decisionPoint: false,
-            skipReason: 'no_match',
-          });
-          idx += 1;
-          continue;
+      if (!stepMatchesModule(step, ctx.moduleId)) {
+        if (isDryRun()) {
+          for (const key of step.provides ?? []) failedProvides.add(key);
         }
+        trace.steps.push({
+          name: step.name,
+          durationMs: 0,
+          result: { action: 'continue' },
+          skipped: true,
+          decisionPoint: false,
+          skipReason: 'no_match',
+        });
+        idx += 1;
+        continue;
       }
 
       // 2 dry_run filter: skip steps with side effects

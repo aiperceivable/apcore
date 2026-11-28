@@ -11,7 +11,7 @@ import inspect
 import logging
 import threading
 import time
-from collections.abc import AsyncGenerator, AsyncIterator
+from collections.abc import AsyncGenerator, AsyncIterator, Iterable
 from contextlib import AsyncExitStack, aclosing
 from copy import copy, deepcopy
 from typing import TYPE_CHECKING, Any, Callable
@@ -26,6 +26,13 @@ from apcore.builtin_steps import (
     _is_idempotent,
 )
 from apcore.cancel import CancelToken, ExecutionCancelledError
+from apcore.capabilities import (
+    CallableDefinition,
+    CapabilityPage,
+    CapabilitySearchProvider,
+    _CapabilityDiscovery,
+    _Filters,
+)
 from apcore.config import Config
 from apcore.context import Context
 from apcore.context_keys import _current_trace_span
@@ -75,6 +82,7 @@ from apcore.pipeline import (
     _any_match,
 )
 from apcore.registry import MAX_MODULE_ID_LENGTH, MODULE_ID_PATTERN, Registry
+from apcore.registry.types import ModuleDescriptor
 from apcore.streaming import StreamExecution, _StreamObservation
 
 if TYPE_CHECKING:
@@ -303,6 +311,7 @@ class Executor:
         approval_handler: ApprovalHandler | None = None,
         policy: ExecutionPolicy | None = None,
         policy_evaluator: PolicyEvaluator | None = None,
+        capability_search_provider: CapabilitySearchProvider | None = None,
         event_emitter: Any = None,
         toggle_state: Any = None,
         sync_bridge_timeout_ms: int | None = None,
@@ -322,6 +331,7 @@ class Executor:
             policy: Optional ExecutionPolicy with execution-time governance
                 overrides for the Step 5 gate (apcore#76 RFC pilot).
             policy_evaluator: Optional evaluator for the validated invocation.
+            capability_search_provider: Optional ranker for discoverable module IDs.
             event_emitter: Optional EventEmitter. When provided, the executor
                 emits apcore.stream.post_validation_failed events so
                 post-stream failures (which cannot un-send already-yielded
@@ -398,6 +408,8 @@ class Executor:
         # while governance_state() reported the gate as configured and wired.
         self._strategy = self._bind_providers(self._strategy)
         self.set_policy_evaluator(policy_evaluator)
+        self._capability_discovery = _CapabilityDiscovery()
+        self.set_capability_search_provider(capability_search_provider)
 
         self._pipeline_engine = PipelineEngine()
 
@@ -435,6 +447,7 @@ class Executor:
         approval_handler: ApprovalHandler | None = None,
         policy: ExecutionPolicy | None = None,
         policy_evaluator: PolicyEvaluator | None = None,
+        capability_search_provider: CapabilitySearchProvider | None = None,
         sync_bridge_timeout_ms: int | None = None,
     ) -> Executor:
         """Convenience factory for creating an Executor from a Registry.
@@ -448,6 +461,7 @@ class Executor:
             approval_handler: Optional approval handler.
             policy: Optional execution-time governance policy (apcore#76).
             policy_evaluator: Optional evaluator for the validated invocation.
+            capability_search_provider: Optional ranker for discoverable module IDs.
             sync_bridge_timeout_ms: Optional wait limit for the sync thread bridge.
 
         Returns:
@@ -462,6 +476,7 @@ class Executor:
             approval_handler=approval_handler,
             policy=policy,
             policy_evaluator=policy_evaluator,
+            capability_search_provider=capability_search_provider,
             sync_bridge_timeout_ms=sync_bridge_timeout_ms,
         )
 
@@ -611,6 +626,12 @@ class Executor:
                 raise InvalidInputError("Policy evaluator must implement evaluate()")
             _bind_post_validation_policy(self._strategy, evaluator)
         self._policy_evaluator = evaluator
+
+    def set_capability_search_provider(self, provider: CapabilitySearchProvider | None) -> None:
+        """Install a ranker for new discovery queries, or restore lexical matching."""
+        if provider is not None and not callable(getattr(provider, "search", None)):
+            raise InvalidInputError("Capability search provider must implement search()")
+        self._capability_discovery.provider = provider
 
     def use(self, middleware: Middleware) -> Executor:
         """Add class-based middleware with duplicate detection and return self for chaining."""
@@ -1680,6 +1701,57 @@ class Executor:
     # -------------------------------------------------------------------------
     # Introspection
     # -------------------------------------------------------------------------
+
+    def list_callable(
+        self,
+        context: Context | None = None,
+        *,
+        query: str | None = None,
+        prefix: str | None = None,
+        tags: Iterable[str] | None = None,
+        readonly: bool | None = None,
+        limit: int = 20,
+        cursor: str | None = None,
+        include_approval_required: bool = True,
+    ) -> CapabilityPage:
+        """List public modules whose ACL proves visibility for this caller frame."""
+        filters = _Filters.create(query, prefix, tags, readonly, limit, include_approval_required)
+        return self._capability_discovery.list(
+            self, context if context is not None else Context.create(), filters, cursor
+        )
+
+    def get_callable_descriptor(
+        self, module_id: str, context: Context | None = None, *, version_hint: str | None = None
+    ) -> ModuleDescriptor | None:
+        """Return a detached, authorized descriptor for trusted host projections."""
+        return self._capability_discovery.descriptor(
+            self, module_id, context if context is not None else Context.create(), version_hint
+        )
+
+    def get_callable_definition(
+        self, module_id: str, context: Context | None = None, *, version_hint: str | None = None
+    ) -> CallableDefinition | None:
+        """Expand one ACL-visible module to its complete input and output schemas."""
+        descriptor = self.get_callable_descriptor(module_id, context, version_hint=version_hint)
+        if descriptor is None:
+            return None
+        return CallableDefinition(
+            descriptor.module_id, descriptor.version, descriptor.input_schema, descriptor.output_schema
+        )
+
+    def get_callable_definitions(
+        self, module_ids: Iterable[str], context: Context | None = None
+    ) -> list[CallableDefinition]:
+        """Expand visible IDs in request order, suppressing absent and ineligible IDs."""
+        if isinstance(module_ids, (str, bytes)):
+            raise InvalidInputError("Discovery module IDs must be a collection of strings")
+        parent = context if context is not None else Context.create()
+        definitions = []
+        for module_id in dict.fromkeys(module_ids):
+            definition = self.get_callable_definition(module_id, parent)
+            if definition is not None:
+                definitions.append(definition)
+        return definitions
 
     @classmethod
     def register_strategy(cls, name: str, strategy: ExecutionStrategy) -> None:

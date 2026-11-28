@@ -50,10 +50,10 @@ class StubExporter:
 
 
 class TestExtensionManagerInit:
-    def test_has_seven_built_in_points(self) -> None:
+    def test_has_eight_built_in_points(self) -> None:
         mgr = ExtensionManager()
         points = mgr.list_points()
-        assert len(points) == 7
+        assert len(points) == 8
 
     def test_built_in_point_names(self) -> None:
         mgr = ExtensionManager()
@@ -66,6 +66,7 @@ class TestExtensionManagerInit:
             "module_validator",
             "approval_handler",
             "policy_evaluator",
+            "capability_search_provider",
         }
 
     def test_list_points_returns_extension_point_instances(self) -> None:

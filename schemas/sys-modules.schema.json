@@ -30,7 +30,7 @@
       "properties": {
         "enabled": {
           "type": "boolean",
-          "description": "Whether system.manifest.module and system.manifest.full are registered.",
+          "description": "Whether system.manifest.module, system.manifest.full, and system.manifest.search are registered.",
           "default": true
         }
       }

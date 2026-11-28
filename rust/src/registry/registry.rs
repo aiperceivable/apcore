@@ -1580,6 +1580,25 @@ impl Registry {
         ModuleAnnotations::governance_union(Some(&module.annotations()), declared.as_ref())
     }
 
+    /// Read metadata for the active public registration in one locked snapshot.
+    /// The caller performs authorization and invokes no host logic under this lock.
+    pub(crate) fn with_discoverable_descriptor<T>(
+        &self,
+        name: &str,
+        read: impl FnOnce(&ModuleDescriptor, &Arc<dyn Module>) -> T,
+    ) -> Option<T> {
+        let core = self.core.read();
+        if core.closed || core.draining.contains(name) || core.unavailable.contains(name) {
+            return None;
+        }
+        let descriptor = core.descriptors.get(name)?;
+        let module = core.modules.get(name)?;
+        if !descriptor.enabled || !descriptor_is_discoverable(Some(descriptor)) {
+            return None;
+        }
+        Some(read(descriptor, module))
+    }
+
     /// Get the definition (descriptor) for a module by name.
     ///
     /// Returns a cloned `ModuleDescriptor` because the underlying storage

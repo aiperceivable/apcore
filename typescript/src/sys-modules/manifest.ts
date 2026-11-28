@@ -4,14 +4,96 @@
 
 import type { Registry } from '../registry/registry.js';
 import type { Config } from '../config.js';
+import { Context } from '../context.js';
+import type { Executor } from '../executor.js';
 import { InvalidInputError, ModuleNotFoundError } from '../errors.js';
 import type { ModuleDescriptor } from '../registry/types.js';
 import type { ModuleAnnotations } from '../module.js';
-import { annotationsToJSON } from '../module.js';
+import { annotationsToJSON, createAnnotations } from '../module.js';
 import { governanceUnion } from '../schema/annotations.js';
 
 /** D-110: the project name reported when `project.name` is not configured. */
 const DEFAULT_PROJECT_NAME = 'apcore';
+
+/** Expose a page of summaries under the original trusted caller's ACL. */
+export class ManifestSearchModule {
+  static readonly moduleId = 'system.manifest.search';
+
+  readonly description = 'Search public modules visible to the requesting caller';
+  readonly annotations = createAnnotations({ readonly: true, idempotent: true, openWorld: false });
+  readonly inputSchema = {
+    type: 'object',
+    additionalProperties: false,
+    properties: {
+      query: { type: 'string', description: 'Text matched against module names, descriptions, and tags' },
+      prefix: { type: 'string', description: 'Filter by canonical module ID prefix' },
+      tags: { type: 'array', items: { type: 'string' }, description: 'Filter by all of the supplied tags' },
+      readonly: { type: 'boolean', description: 'Filter by the read-only annotation' },
+      limit: { type: 'integer', minimum: 1, maximum: 100, default: 20, description: 'Maximum summaries to return' },
+      cursor: { type: 'string', description: 'Opaque continuation for the same caller and filters' },
+      include_approval_required: { type: 'boolean', default: true, description: 'Include modules that require approval' },
+    },
+  };
+  readonly outputSchema = {
+    type: 'object',
+    additionalProperties: false,
+    required: ['items', 'next_cursor'],
+    properties: {
+      items: {
+        description: 'Visible summaries in result order.',
+        type: 'array',
+        items: {
+          type: 'object',
+          additionalProperties: false,
+          required: ['module_id', 'version', 'description', 'tags', 'readonly', 'access_hint'],
+          properties: {
+            module_id: { type: 'string', description: 'Canonical module ID.' },
+            version: { type: 'string', description: 'Resolved module version.' },
+            description: { type: 'string', description: 'Short, plain-text module description.' },
+            tags: { type: 'array', description: 'Tags declared by the module.', items: { type: 'string' } },
+            readonly: { type: 'boolean', description: 'Whether the module declares read-only behavior.' },
+            access_hint: {
+              enum: ['allowed', 'requires_approval', 'conditional'],
+              description: 'Advisory approval status for the current caller.',
+            },
+          },
+        },
+      },
+      next_cursor: {
+        type: ['string', 'null'],
+        description: 'Opaque continuation for the same caller and filters, or null at the end.',
+      },
+    },
+  };
+
+  constructor(private readonly _executor: Executor) {}
+
+  execute(inputs: Record<string, unknown>, context: Context): Record<string, unknown> {
+    if (context.callChain.at(-1) !== ManifestSearchModule.moduleId) {
+      throw new InvalidInputError('Manifest search requires an invocation context');
+    }
+    const callChain = context.callChain.slice(0, -1);
+    const parent = new Context(
+      context.traceId, callChain.at(-2) ?? null, callChain, context.executor, context.identity,
+      null, context.data, context.cancelToken, context.services, context.globalDeadline,
+    );
+    const page = this._executor.listCallable(parent, {
+      query: inputs.query as string | undefined,
+      prefix: inputs.prefix as string | undefined,
+      tags: inputs.tags as string[] | undefined,
+      readonly: inputs.readonly as boolean | undefined,
+      limit: inputs.limit as number | undefined,
+      cursor: inputs.cursor as string | null | undefined,
+      includeApprovalRequired: inputs.include_approval_required as boolean | undefined,
+    });
+    return {
+      items: page.items.map(({ moduleId, accessHint, ...item }) => ({
+        ...item, module_id: moduleId, access_hint: accessHint,
+      })),
+      next_cursor: page.nextCursor,
+    };
+  }
+}
 
 /**
  * SYS-5: emit `annotations` in the snake_case WIRE shape.

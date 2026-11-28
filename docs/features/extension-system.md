@@ -42,6 +42,7 @@ The Extension System provides a pluggable architecture for customizing and exten
 | `module_validator` | No | ModuleValidator protocol | Custom module validation |
 | `approval_handler` | No | ApprovalHandler protocol | Approval gate handler |
 | `policy_evaluator` | No | PolicyEvaluator protocol | Optional policy over validated execution arguments |
+| `capability_search_provider` | No | CapabilitySearchProvider protocol | Optional ranking of ACL-visible capability IDs |
 
 ### ExtensionPoint
 
@@ -173,8 +174,9 @@ When `apply(registry, executor)` is called, the manager performs the following i
 3. **ACL** → `executor.set_acl(ext)` — replaces the executor's ACL provider.
 4. **Approval Handler** → `executor.set_approval_handler(ext)` — replaces the executor's approval handler.
 5. **Policy Evaluator** → `executor.set_policy_evaluator(ext)` — enables [policy on validated arguments](../spec/protocol-spec.md#741-post-validation-policy).
-6. **Middleware** → `executor.use(mw)` for each registered middleware — appends to the middleware chain.
-7. **Span Exporters** → Locates the `TracingMiddleware` already in the executor's middleware chain and sets its exporter:
+6. **Capability Search Provider** sets the optional ranking provider on the executor.
+7. **Middleware** → `executor.use(mw)` for each registered middleware — appends to the middleware chain.
+8. **Span Exporters** → Locates the `TracingMiddleware` already in the executor's middleware chain and sets its exporter:
    - If a single exporter is registered, it is set directly.
    - If multiple exporters are registered, they are wrapped in a composite exporter that delegates to all of them. A failure in one exporter is logged and does not affect the others.
    - If the chain has no `TracingMiddleware`, a warning is logged and the exporters are not applied — `apply` does not add one.
@@ -274,13 +276,13 @@ Rust, where the manager owns its extensions, that path is
 
 ### Inputs
 - `registry` (Registry, required) — registry to wire extensions into (discoverer, module_validator)
-- `executor` (Executor, required) — executor to wire extensions into (acl, approval_handler, policy_evaluator, middleware, span_exporter)
+- `executor` (Executor, required) receives acl, approval_handler, policy_evaluator, capability_search_provider, middleware, and span_exporter.
 
 ### Errors
 - Errors raised by the Registry / Executor setters propagate (Rust: `Err(ModuleError)`, e.g. a rejected middleware). A registered span exporter with no `TracingMiddleware` in the chain is **not** an error: it is logged as a warning and skipped.
 
 ### Returns
-- On success: void/None/() — all registered extensions wired in the documented order (discoverer → module_validator → acl → approval_handler → policy_evaluator → middleware chain → span exporters)
+- On success, returns void/None/() after wiring each extension in the order below.
 
 ### Side Effects (ordered)
 1. `registry.set_discoverer(ext)` if discoverer registered
@@ -288,8 +290,9 @@ Rust, where the manager owns its extensions, that path is
 3. `executor.set_acl(ext)` if acl registered
 4. `executor.set_approval_handler(ext)` if approval_handler registered
 5. `executor.set_policy_evaluator(ext)` if policy_evaluator registered
-6. `executor.use(mw)` for each middleware in registration order
-7. Locate `TracingMiddleware` in the executor chain; set a single exporter directly or wrap several in a composite exporter; warn and skip if there is none
+6. `executor.set_capability_search_provider(ext)` if capability_search_provider registered
+7. `executor.use(mw)` for each middleware in registration order
+8. Locate `TracingMiddleware` in the executor chain and install the single exporter or a composite. Warn and skip exporter wiring when tracing middleware is absent.
 
 ### Postconditions
 
