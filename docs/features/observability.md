@@ -27,7 +27,7 @@ Only the keys below touch observability. The authoritative per-key status is `co
 | `observability.tracing.sampling_rate` | live | Probability used by `proportional` and `error_first` (default `1.0`) |
 | `observability.tracing.exporter` | live | `stdout` (default) · `otlp` · `jaeger` |
 | `observability.tracing.otlp_endpoint` | live | OTLP target; only valid with `exporter: otlp` |
-| `obs.redaction.sensitive_keys` · `regex_patterns` · `replacement` | live | See [Redaction](./redaction.md#configured-rules-obsredaction) |
+| `obs.redaction.sensitive_keys` · `regex_patterns` · `replacement` · `max_regex_scan_length` | live | See [Redaction](./redaction.md#configured-rules-obsredaction) |
 | `sys_modules.error_history.max_entries_per_module` · `max_total_entries` | live | Limits of the auto-created `ErrorHistory` ([Error History](./error-history.md#configuration)) |
 | `sys_modules.events.thresholds.error_rate` · `latency_p99_ms` | live | Alert thresholds of `PlatformNotifyMiddleware` ([Metrics and Usage](./metrics-and-usage.md#threshold-alerts)) |
 | `observability.metrics.enabled` · `observability.metrics.exporter` | **inert** | Read by nothing; deprecated ([§9.2.4](../spec/protocol-spec.md#924-deprecated-configuration-keys)). Metrics come from a `MetricsCollector` you construct. |

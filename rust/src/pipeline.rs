@@ -297,6 +297,8 @@ pub struct PipelineContext {
     /// Set by `module_lookup` step.
     pub module: Option<Arc<dyn Module>>,
     pub(crate) module_lease: Option<Arc<crate::registry::registry::ModuleExecutionLease>>,
+    pub(crate) call_budget: Option<Arc<crate::CallBudget>>,
+    pub(crate) budget_reservation: Option<crate::call_budget::BudgetReservation>,
     /// The §6.1.8 governance projection of `inputs` — the argument key set and
     /// each key's JSON type, and **never** a value.
     ///
@@ -445,6 +447,7 @@ impl PipelineContext {
             .as_object_mut()
             .and_then(|object| object.remove(crate::policy::APPROVAL_TOKEN_KEY));
         let initial_scope = ScopeInvocation::from_parent(&context, &module_id);
+        let call_budget = context.runtime.budget.clone();
         Self {
             trace: PipelineTrace::new(module_id.clone(), strategy_name.clone()),
             module_id,
@@ -453,6 +456,8 @@ impl PipelineContext {
             context,
             module: None,
             module_lease: None,
+            call_budget,
+            budget_reservation: None,
             governance_projection: None,
             acl_approval_required: false,
             acl_decision: None,
@@ -497,6 +502,34 @@ impl PipelineContext {
             ));
         }
         Ok(())
+    }
+
+    pub(crate) fn budget_permit(
+        &mut self,
+    ) -> Result<Option<Arc<crate::call_budget::BudgetPermit>>, ModuleError> {
+        let Some(budget) = &self.call_budget else {
+            return Ok(None);
+        };
+        if self
+            .context
+            .runtime
+            .budget
+            .as_ref()
+            .is_some_and(|current| Arc::ptr_eq(current, budget))
+        {
+            if let Some(permit) = self
+                .budget_reservation
+                .as_ref()
+                .and_then(|reservation| reservation.permit(&self.module_id))
+            {
+                return Ok(Some(permit));
+            }
+        }
+        self.terminal_gate_failure = true;
+        Err(ModuleError::new(
+            crate::ErrorCode::PipelineConfigurationError,
+            "CallBudget requires the reserved module and its execution context",
+        ))
     }
 
     pub(crate) fn take_approval_credential(&mut self) -> Result<Option<String>, ModuleError> {

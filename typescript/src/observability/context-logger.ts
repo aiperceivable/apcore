@@ -3,7 +3,9 @@
  */
 
 import type { Config } from '../config.js';
+import { DEFAULT_MAX_REGEX_SCAN_LENGTH, isRegexScanLength } from '../config-defaults.js';
 import type { Context } from '../context.js';
+import { InvalidInputError } from '../errors.js';
 import { startMiddlewareTiming, takeMiddlewareTiming } from '../execution-lifetime.js';
 import { Middleware } from '../middleware/base.js';
 import { matchGlob } from '../utils/pattern.js';
@@ -181,6 +183,7 @@ export class RedactionConfig {
   readonly invalidValuePatterns: readonly (readonly [string, string])[];
 
   readonly replacement: string;
+  readonly maxRegexScanLength: number;
   private readonly _additionalFieldMatcher?: (fieldName: string) => boolean;
 
   constructor(
@@ -188,6 +191,8 @@ export class RedactionConfig {
       fieldPatterns?: string[];
       valuePatterns?: (RegExp | string)[];
       replacement?: string;
+      /** Maximum UTF-8 bytes passed to a regex. Longer strings are redacted wholesale. */
+      maxRegexScanLength?: number;
       /** @internal Extra fields treated as sensitive for config updates. */
       additionalFieldMatcher?: (fieldName: string) => boolean;
     } = {},
@@ -198,6 +203,10 @@ export class RedactionConfig {
     this.valuePatterns = compiled;
     this.invalidValuePatterns = invalid;
     this.replacement = options.replacement ?? '***REDACTED***';
+    this.maxRegexScanLength = options.maxRegexScanLength ?? DEFAULT_MAX_REGEX_SCAN_LENGTH;
+    if (!isRegexScanLength(this.maxRegexScanLength)) {
+      throw new InvalidInputError('Maximum regex scan length must be a non-negative safe integer');
+    }
   }
 
   /**
@@ -258,12 +267,17 @@ export class RedactionConfig {
     const valueStrings = Array.isArray(rawValues)
       ? (rawValues as unknown[]).filter((p): p is string => typeof p === 'string')
       : [];
+    const maxRegexScanLength = config.get('obs.redaction.max_regex_scan_length') ?? DEFAULT_MAX_REGEX_SCAN_LENGTH;
+    if (!isRegexScanLength(maxRegexScanLength)) {
+      throw new InvalidInputError('Maximum regex scan length must be a non-negative safe integer');
+    }
     return new RedactionConfig({
       fieldPatterns,
       // Compiled by the constructor — one compile site, one place the
       // requirement-4 diagnostic can fire.
       valuePatterns: valueStrings,
       replacement: typeof replacement === 'string' ? replacement : undefined,
+      maxRegexScanLength,
     });
   }
 
@@ -307,6 +321,7 @@ export class RedactionConfig {
    * apcore-python's `_redact_secrets_recursive`.
    */
   redact(value: unknown, depth: number = 0): unknown {
+    if (typeof value === 'string' && this._valueMatches(value)) return this.replacement;
     return this._redactTree(value, depth, new Set());
   }
 
@@ -408,11 +423,27 @@ export class RedactionConfig {
    * costs no compile per record.
    */
   private _valueMatches(value: string): boolean {
+    if (this.valuePatterns.length === 0) return false;
+    if (exceedsUtf8ByteLength(value, this.maxRegexScanLength)) return true;
     for (const re of this.valuePatterns) {
       if (re.test(value)) return true;
     }
     return false;
   }
+}
+
+function exceedsUtf8ByteLength(value: string, limit: number): boolean {
+  // UTF-8 uses between one and three bytes per UTF-16 code unit, including
+  // surrogate pairs and isolated surrogates represented as replacement characters.
+  if (value.length > limit) return true;
+  if (value.length * 3 <= limit) return false;
+  let bytes = 0;
+  for (const character of value) {
+    const codePoint = character.codePointAt(0)!;
+    bytes += codePoint < 0x80 ? 1 : codePoint < 0x800 ? 2 : codePoint < 0x10000 ? 3 : 4;
+    if (bytes > limit) return true;
+  }
+  return false;
 }
 
 function readSensitiveKeyPatterns(config: Config, legacyKeysUsed: string[]): string[] {

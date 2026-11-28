@@ -115,6 +115,7 @@ bindings:
   pattern: "*.bind.yaml"
 obs:
   redaction:
+    max_regex_scan_length: 2048
     sensitive_keys:
       - vendor_token
     replacement: "[GONE]"
@@ -207,6 +208,7 @@ fn declared_pairs() -> Vec<(&'static str, Value)> {
         // default cannot supply proves the file was read.
         ("bindings.dir", json!("./my-bindings")),
         ("bindings.pattern", json!("*.bind.yaml")),
+        ("obs.redaction.max_regex_scan_length", json!(2048)),
         ("obs.redaction.sensitive_keys", json!(["vendor_token"])),
         ("obs.redaction.replacement", json!("[GONE]")),
     ]
@@ -238,7 +240,7 @@ fn expected_subtrees() -> Vec<(&'static str, Value)> {
         ),
         (
             "obs",
-            json!({"redaction": {"regex_patterns": [], "sensitive_keys": ["vendor_token"], "replacement": "[GONE]"}}),
+            json!({"redaction": {"max_regex_scan_length": 2048, "regex_patterns": [], "sensitive_keys": ["vendor_token"], "replacement": "[GONE]"}}),
         ),
     ]
 }
@@ -398,7 +400,7 @@ fn container_fetches_agree_with_their_leaves() {
     let (_dir, config) = loaded_ns();
     for (section, subtree) in expected_subtrees() {
         let declared_subtree = if section == "obs" {
-            json!({"redaction": {"sensitive_keys": ["vendor_token"], "replacement": "[GONE]"}})
+            json!({"redaction": {"max_regex_scan_length": 2048, "sensitive_keys": ["vendor_token"], "replacement": "[GONE]"}})
         } else {
             subtree.clone()
         };

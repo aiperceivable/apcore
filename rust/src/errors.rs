@@ -65,6 +65,7 @@ pub enum ErrorCode {
     CallDepthExceeded,
     CircularCall,
     CallFrequencyExceeded,
+    CallBudgetExceeded,
     GeneralInvalidInput,
     /// Raised when a `module_id` is empty or fails the canonical ID grammar
     /// (empty / pattern / length / reserved-word checks in
@@ -299,6 +300,7 @@ impl ErrorCode {
         ErrorCode::CallDepthExceeded,
         ErrorCode::CircularCall,
         ErrorCode::CallFrequencyExceeded,
+        ErrorCode::CallBudgetExceeded,
         ErrorCode::GeneralInvalidInput,
         ErrorCode::InvalidModuleId,
         ErrorCode::GeneralInternalError,
@@ -515,6 +517,7 @@ pub fn retryable_for_code(code: ErrorCode) -> Option<bool> {
         | ErrorCode::CallDepthExceeded
         | ErrorCode::CircularCall
         | ErrorCode::CallFrequencyExceeded
+        | ErrorCode::CallBudgetExceeded
         // Resolution and wiring: needs a deployment or code change.
         | ErrorCode::ModuleNotFound
         | ErrorCode::ModuleLoadError
@@ -607,6 +610,7 @@ pub fn user_fixable_for_code(code: ErrorCode) -> Option<bool> {
         | ErrorCode::CallDepthExceeded
         | ErrorCode::CircularCall
         | ErrorCode::CallFrequencyExceeded
+        | ErrorCode::CallBudgetExceeded
         | ErrorCode::GeneralInternalError => Some(false),
         // Unlisted codes (e.g. MODULE_EXECUTE_ERROR) stay unset.
         _ => None,

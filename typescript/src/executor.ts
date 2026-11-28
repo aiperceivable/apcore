@@ -30,6 +30,7 @@ import {
 import {
   BuiltinACLCheck,
   BuiltinApprovalGate,
+  BuiltinCallChainGuard,
   BuiltinContextCreation,
   BuiltinExecute,
   BuiltinModuleLookup,
@@ -41,7 +42,11 @@ import {
   withPostValidationPolicy,
 } from './builtin-steps.js';
 import type { StandardStrategyDeps } from './builtin-steps.js';
-import { awaitExecution, CancelToken, ExecutionCancelledError } from './cancel.js';
+import { awaitContextOperation, CancelToken, ExecutionCancelledError } from './cancel.js';
+import {
+  assertBudgetDispatch, beginBudgetAttempt, budgetStreamProducer, endBudgetAttempt, hasCallBudget,
+  isBudgetControlError, releaseBudgetReservation,
+} from './call-budget.js';
 import { finishCall, trackExecution } from './execution-lifetime.js';
 import type { Config } from './config.js';
 import { buildStrategyFromConfigSync, ConfigurationError } from './pipeline-config.js';
@@ -508,31 +513,6 @@ function bindExecutorToCtx<C>(ctx: C, executor: unknown): C {
     : c._withExecutor(executor)) as C;
 }
 
-/** Bound a stream operation, preserving ownership of work that outlives interruption. */
-async function awaitStreamOperation<T>(
-  start: () => Promise<T>,
-  context: Context,
-  moduleId: string,
-  retryable: boolean,
-): Promise<T> {
-  const token = context.cancelToken;
-  const deadline = context.globalDeadline;
-  const checkInterruption = (): number => {
-    if (context.signal.aborted) throw new ExecutionCancelledError();
-    const remainingMs = deadline === null ? 0 : deadline * 1000 - Date.now();
-    if (deadline !== null && remainingMs <= 0) {
-      token?.cancel();
-      throw new ModuleTimeoutError(moduleId, 0, { retryable });
-    }
-    return Math.ceil(remainingMs);
-  };
-
-  const timeoutMs = checkInterruption();
-  const result = await awaitExecution(start(), token, moduleId, timeoutMs, retryable);
-  checkInterruption();
-  return result;
-}
-
 /** Bound each pull while retaining the physical producer until its queued close settles. */
 async function* streamWithinDeadline(
   stream: AsyncGenerator<Record<string, unknown>>,
@@ -545,7 +525,7 @@ async function* streamWithinDeadline(
   let interrupted = false;
   try {
     for (;;) {
-      const next = await awaitStreamOperation(() => stream.next(), context, moduleId, retryable);
+      const next = await awaitContextOperation(() => stream.next(), context, moduleId, retryable);
       if (next.done) {
         complete = true;
         return;
@@ -1196,6 +1176,23 @@ export class Executor {
       execute.execute === BuiltinExecute.prototype.execute;
   }
 
+  private _assertBudgetStrategy(context: Context, strategy: ExecutionStrategy, moduleId: string): void {
+    if (!hasCallBudget(context)) return;
+    const required = [
+      ['context_creation', BuiltinContextCreation], ['call_chain_guard', BuiltinCallChainGuard], ['execute', BuiltinExecute],
+    ] as const;
+    let previous = -1;
+    for (const [name, type] of required) {
+      const index = strategy.findStepIndex(name);
+      const step = index === undefined ? undefined : strategy.steps[index];
+      if (index === undefined || index <= previous || !step || Object.getPrototypeOf(step) !== type.prototype ||
+        step.execute !== type.prototype.execute || !stepMatchesModule(step, moduleId) || step.ignoreErrors === true) {
+        throw new ConfigurationError('Call budgets require built-in context creation, call-chain guard, and dispatch.');
+      }
+      previous = index;
+    }
+  }
+
   use(middleware: Middleware): Executor {
     this._middlewareManager.add(middleware);
     return this;
@@ -1293,6 +1290,7 @@ export class Executor {
     let ctx = context ?? Context.create();
     ctx = bindExecutorToCtx(ctx, this);
     if (hasScopeCeiling(ctx.identity)) assertScopeGate(ctx, moduleId, this._hasScopeGate(strategy, moduleId));
+    this._assertBudgetStrategy(ctx, strategy, moduleId);
     const pipeCtx: PipelineContext = {
       moduleId,
       inputs: inputs ?? {},
@@ -1314,6 +1312,7 @@ export class Executor {
     try {
       while (true) {
         try {
+          beginBudgetAttempt(pipeCtx);
           beginDeclarationInvocation(pipeCtx, declaration);
           beginScopedInvocation(pipeCtx);
           if (protectedCall) {
@@ -1324,9 +1323,11 @@ export class Executor {
           const [output, trace] = await this._pipelineEngine.run(strategy, pipeCtx);
           assertScopedInvocation(pipeCtx, true);
           assertDeclarationDispatch(pipeCtx);
+          assertBudgetDispatch(pipeCtx);
           if (protectedCall && !policyInvocationOf(pipeCtx)?.dispatched) throw new PolicyEvaluationError(moduleId);
           return [(output ?? {}) as Record<string, unknown>, trace];
         } catch (exc) {
+          releaseBudgetReservation(pipeCtx);
           if (exc instanceof ExecutionCancelledError) throw exc;
           // PipelineStepError is the engine-level contract (protocol-spec §5.16 requirement 1). Unwrap the cause
           // so the executor's public API surfaces the original typed error.
@@ -1343,7 +1344,8 @@ export class Executor {
             unwrapped instanceof MiddlewareChainError ? unwrapped.original : (unwrapped as Error);
           if (underlying instanceof ExecutionCancelledError) throw underlying;
           const wrapped = propagateError(underlying, moduleId, ctxObj);
-          if (isScopedAdmissionError(pipeCtx, underlying) || isDeclarationAdmissionError(pipeCtx, underlying)) {
+          if (isScopedAdmissionError(pipeCtx, underlying) || isDeclarationAdmissionError(pipeCtx, underlying) ||
+            isBudgetControlError(underlying)) {
             throw wrapped;
           }
           if (protectedCall && !policyInvocationOf(pipeCtx)?.dispatched) throw wrapped;
@@ -1357,6 +1359,7 @@ export class Executor {
               executedMw as Middleware[],
             );
             if (recovery instanceof RetrySignal) {
+              endBudgetAttempt(pipeCtx);
               this._resetPipeCtxForRetry(pipeCtx, recovery.inputs);
               this._finishCallContext(pipeCtx.context, ctx);
               pipeCtx.context = ctx;
@@ -1368,6 +1371,7 @@ export class Executor {
         }
       }
     } finally {
+      endBudgetAttempt(pipeCtx);
       discardApprovalToken(pipeCtx);
       if (protectedCall) endPolicyInvocation(pipeCtx);
       this._finishCallContext(pipeCtx.context, ctx);
@@ -1490,6 +1494,7 @@ export class Executor {
     let ctx = context ?? Context.create();
     ctx = bindExecutorToCtx(ctx, this);
     if (hasScopeCeiling(ctx.identity)) assertScopeGate(ctx, moduleId, this._hasScopeGate(strategy, moduleId));
+    this._assertBudgetStrategy(ctx, strategy, moduleId);
     const pipeCtx: PipelineContext = {
       moduleId,
       inputs: inputs ?? {},
@@ -1521,13 +1526,15 @@ export class Executor {
         if (output !== null) tracker.output = copyChunkValue(output) as Record<string, unknown>;
       }
     };
-    const pipeline = this._pipelineEngine.runWithPause(
-      strategy, pipeCtx, () => (protectedCall ? policyInvocationOf(pipeCtx)?.producer : pipeCtx.outputStream) != null, observeStep,
-    );
+    const producer = (): AsyncGenerator<Record<string, unknown>> | null | undefined =>
+      protectedCall ? policyInvocationOf(pipeCtx)?.producer :
+        budgetStreamProducer(pipeCtx) as AsyncGenerator<Record<string, unknown>> | null | undefined;
+    const pipeline = this._pipelineEngine.runWithPause(strategy, pipeCtx, () => producer() != null, observeStep);
 
     try {
       // Run through producer creation, or finish the unary fallback.
       try {
+        beginBudgetAttempt(pipeCtx);
         beginScopedInvocation(pipeCtx);
         if (protectedCall) {
           beginPolicyInvocation(pipeCtx);
@@ -1536,9 +1543,11 @@ export class Executor {
         prepareApprovalInputs(pipeCtx);
         await pipeline.next();
         assertScopedInvocation(pipeCtx, true);
+        assertBudgetDispatch(pipeCtx, true);
         const invocation = policyInvocationOf(pipeCtx);
         if (protectedCall && !invocation?.dispatched && !invocation?.producer) throw new PolicyEvaluationError(moduleId);
       } catch (exc) {
+        releaseBudgetReservation(pipeCtx);
         if (exc instanceof ExecutionCancelledError) throw exc;
         const ctxObj = pipeCtx.context;
         // Unwrap PipelineStepError to expose the original typed cause (protocol-spec §5.16 requirement 1).
@@ -1551,7 +1560,7 @@ export class Executor {
           unwrapped instanceof MiddlewareChainError ? unwrapped.original : (unwrapped as Error);
         if (underlying instanceof ExecutionCancelledError) throw underlying;
         const wrapped = propagateError(underlying, moduleId, ctxObj);
-        if (isScopedAdmissionError(pipeCtx, underlying)) throw wrapped;
+        if (isScopedAdmissionError(pipeCtx, underlying) || isBudgetControlError(underlying)) throw wrapped;
         if (protectedCall && !policyInvocationOf(pipeCtx)?.dispatched) throw wrapped;
         if (pipeCtx.executedMiddlewares && pipeCtx.executedMiddlewares.length > 0) {
           const recovery = await this._middlewareManager.executeOnError(
@@ -1578,8 +1587,7 @@ export class Executor {
 
       // If no outputStream, pipeline already executed normally — yield single result
       if (tracker) pipeCtx.context.cancelToken?.check();
-      const outputStream = protectedCall ? policyInvocationOf(pipeCtx)?.producer
-        : pipeCtx.outputStream as AsyncGenerator<Record<string, unknown>> | null;
+      const outputStream = producer();
       if (outputStream == null) {
         const output = pipeCtx.output ?? {};
         if (tracker && tracker.output === null) tracker.output = copyChunkValue(output) as Record<string, unknown>;
@@ -1626,10 +1634,11 @@ export class Executor {
           chunkIndex += 1;
         }
       } catch (exc) {
+        releaseBudgetReservation(pipeCtx);
         if (exc instanceof ExecutionCancelledError) throw exc;
         const ctxObj = pipeCtx.context;
         const wrapped = propagateError(exc as Error, moduleId, ctxObj);
-        if (isScopedAdmissionError(pipeCtx, exc)) throw wrapped;
+        if (isScopedAdmissionError(pipeCtx, exc) || isBudgetControlError(exc)) throw wrapped;
         if (protectedCall && !policyInvocationOf(pipeCtx)?.dispatched) throw wrapped;
         if (exc instanceof ModuleTimeoutError && ctxObj.signal.aborted) throw wrapped;
         if (pipeCtx.executedMiddlewares && pipeCtx.executedMiddlewares.length > 0) {
@@ -1659,7 +1668,7 @@ export class Executor {
           await pipeline.next();
         } else {
           const context = pipeCtx.context;
-          await awaitStreamOperation(
+          await awaitContextOperation(
             () => pipeline.next(),
             context, moduleId, isModuleIdempotent(pipeCtx.module),
           );
@@ -1719,6 +1728,7 @@ export class Executor {
         }
       }
     } finally {
+      endBudgetAttempt(pipeCtx);
       discardApprovalToken(pipeCtx);
       if (protectedCall) endPolicyInvocation(pipeCtx);
       this._finishCallContext(pipeCtx.context, ctx);

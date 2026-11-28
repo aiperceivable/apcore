@@ -13,6 +13,7 @@
 
 import { drainExecutions, linkExecutionParent, trackExecution } from './execution-lifetime.js';
 import { ModuleError, ModuleTimeoutError } from './errors.js';
+import type { Context } from './context.js';
 
 export class ExecutionCancelledError extends ModuleError {
   // Retryable with a fresh CancelToken (protocol-spec §8.6, D-135): the
@@ -203,4 +204,29 @@ export async function awaitExecution<T>(
     if (timer !== undefined) clearTimeout(timer);
     if (onAbort) token?.signal.removeEventListener('abort', onAbort);
   }
+}
+
+/** @internal Wait within a context's cancellation scope and global deadline. */
+export async function awaitContextOperation<T>(
+  start: () => Promise<T>,
+  context: Pick<Context, 'cancelToken' | 'globalDeadline' | 'signal'>,
+  moduleId: string,
+  retryable: boolean,
+): Promise<T> {
+  const token = context.cancelToken;
+  const deadline = context.globalDeadline;
+  const checkInterruption = (): number => {
+    if (context.signal.aborted) throw new ExecutionCancelledError();
+    const remainingMs = deadline === null ? 0 : deadline * 1000 - Date.now();
+    if (deadline !== null && remainingMs <= 0) {
+      token?.cancel();
+      throw new ModuleTimeoutError(moduleId, 0, { retryable });
+    }
+    return Math.ceil(remainingMs);
+  };
+
+  const timeoutMs = checkInterruption();
+  const result = await awaitExecution(start(), token, moduleId, timeoutMs, retryable);
+  checkInterruption();
+  return result;
 }

@@ -2,10 +2,15 @@
 
 from __future__ import annotations
 
+import asyncio
 import threading
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
+from contextlib import suppress
+from typing import TypeVar
 
 from apcore.errors import ModuleError
+
+R = TypeVar("R")
 
 
 class ExecutionCancelledError(ModuleError):
@@ -87,3 +92,61 @@ class CancelToken:
         """Reset the token for reuse."""
         with self._lock:
             self._cancelled = False
+
+
+class _AwaitDeadlineExpired(TimeoutError):
+    """The framework's deadline elapsed while an asynchronous callback ran."""
+
+
+async def _await_with_cancellation(
+    operation: Callable[[], Awaitable[R]], token: CancelToken | None, timeout: float | None
+) -> R:
+    """Bound an async operation independently of its cancellation cooperation."""
+    if token is not None:
+        token.check()
+    if timeout is not None and timeout <= 0:
+        raise _AwaitDeadlineExpired()
+    loop = asyncio.get_running_loop()
+    expires_at = loop.time() + timeout if timeout is not None else None
+    cancelled = loop.create_future()
+
+    def report_cancellation() -> None:
+        if not cancelled.done():
+            cancelled.set_result(None)
+
+    def signal_cancellation() -> None:
+        with suppress(RuntimeError):
+            loop.call_soon_threadsafe(report_cancellation)
+
+    async def run() -> R:
+        if token is not None:
+            token.check()
+        if expires_at is not None and loop.time() >= expires_at:
+            raise _AwaitDeadlineExpired()
+        return await operation()
+
+    unsubscribe = token._listen(signal_cancellation) if token is not None else None
+    task = asyncio.create_task(run())
+    try:
+        await asyncio.wait((task, cancelled), timeout=timeout, return_when=asyncio.FIRST_COMPLETED)
+        if token is not None:
+            token.check()
+        if cancelled.done():
+            raise ExecutionCancelledError()
+        if expires_at is not None and (not task.done() or loop.time() >= expires_at):
+            raise _AwaitDeadlineExpired()
+        return task.result()
+    finally:
+        if unsubscribe is not None:
+            unsubscribe()
+        cancelled.cancel()
+        if not task.done():
+            task.cancel()
+            task.add_done_callback(_consume_task_result)
+        else:
+            _consume_task_result(task)
+
+
+def _consume_task_result(task: asyncio.Future[R]) -> None:
+    if not task.cancelled():
+        task.exception()

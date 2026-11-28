@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 use crate::errors::{ErrorCode, ModuleError};
+use crate::observability::redaction::{regex_scan_length, MAX_REGEX_SCAN_LENGTH};
 
 /// Configuration mode detected from YAML content.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -232,6 +233,7 @@ pub const FRAMEWORK_CONFIG_KEYS: &[&str] = &[
     "logging.format",
     "logging.level",
     "middleware.disabled",
+    "obs.redaction.max_regex_scan_length",
     "obs.redaction.regex_patterns",
     "obs.redaction.replacement",
     "obs.redaction.sensitive_keys",
@@ -1426,6 +1428,15 @@ impl Config {
         // linear in the input), so this fires on patterns that compile
         // perfectly well in Python and JavaScript: exactly the configuration
         // that redacts elsewhere and silently does nothing here.
+        if self
+            .get(MAX_REGEX_SCAN_LENGTH)
+            .as_ref()
+            .is_some_and(|length| regex_scan_length(length).is_none())
+        {
+            errors.push(format!(
+                "{MAX_REGEX_SCAN_LENGTH} must be a nonnegative safe integer"
+            ));
+        }
         if let Some(serde_json::Value::Array(patterns)) = self.get("obs.redaction.regex_patterns") {
             for (index, entry) in patterns.iter().enumerate() {
                 let Some(pattern) = entry.as_str() else {
@@ -3092,6 +3103,7 @@ fn init_builtin_namespaces() {
                 defaults: Some(serde_json::json!({
                     "redaction": {
                         "regex_patterns": [],
+                        "max_regex_scan_length": crate::observability::redaction::DEFAULT_MAX_REGEX_SCAN_LENGTH,
                         "sensitive_keys": crate::observability::redaction::DEFAULT_SENSITIVE_KEYS,
                         "replacement": crate::observability::redaction::DEFAULT_REPLACEMENT
                     }

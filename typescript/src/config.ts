@@ -21,7 +21,7 @@ import {
 import { appendFilesystemPath } from './utils/filesystem-path.js';
 import { jsonSchemaToTypeBox } from './schema/loader-pure.js';
 import { SchemaValidator } from './schema/validator.js';
-import { DEFAULTS, getDefault } from './config-defaults.js';
+import { DEFAULT_MAX_REGEX_SCAN_LENGTH, DEFAULTS, isRegexScanLength } from './config-defaults.js';
 import { collectUndeclaredFrameworkKeys, PATH_TYPED_CONFIG_KEYS } from './config-key-surface.js';
 import { negotiateDocumentVersion } from './version.js';
 
@@ -139,6 +139,7 @@ export const CONSTRAINTS: Record<string, [(v: unknown) => boolean, string]> = {
   ],
   'executor.max_call_depth': [(v) => isInteger(v) && v >= 1, 'must be a positive integer'],
   'executor.max_module_repeat': [(v) => isInteger(v) && v >= 1, 'must be a positive integer'],
+  'obs.redaction.max_regex_scan_length': [isRegexScanLength, 'must be a non-negative safe integer'],
   'sys_modules.error_history.max_entries_per_module': [
     (v) => isInteger(v) && v >= 1,
     'must be a positive integer',
@@ -1480,6 +1481,10 @@ export class Config {
       ...uncompilableRegexPatternErrors(this.get('obs.redaction.regex_patterns')),
       ...otlpEndpointMismatchErrors(this),
     ];
+    const scanLength = this.get('obs.redaction.max_regex_scan_length');
+    if (this._mode === 'namespace' && this._data['obs'] != null && scanLength != null && !isRegexScanLength(scanLength)) {
+      errors.push("Invalid value for 'obs.redaction.max_regex_scan_length': must be a non-negative safe integer");
+    }
     for (const field of REQUIRED_FIELDS) {
       const value = this.getDeclared(field);
       if (value != null && typeof value !== 'string') {
@@ -1774,6 +1779,7 @@ Config.registerNamespace({
   defaults: {
     redaction: {
       regex_patterns: [] as string[],
+      max_regex_scan_length: DEFAULT_MAX_REGEX_SCAN_LENGTH,
       sensitive_keys: [..._DEFAULT_OBS_REDACTION_SENSITIVE_KEYS],
       replacement: '***REDACTED***',
     },

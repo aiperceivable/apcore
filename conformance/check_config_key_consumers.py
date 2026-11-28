@@ -1387,6 +1387,18 @@ def _sensitive_keys() -> str | None:
     return None
 
 
+@probe("obs.redaction.max_regex_scan_length")
+def _max_regex_scan_length() -> str | None:
+    """The executor redacts values above the configured UTF-8 byte limit."""
+    out = _capture_point(
+        {"sensitive_keys": [], "regex_patterns": ["^secret$"], "max_regex_scan_length": 4},
+        {"probe_field": "ééé", "other_field": "éé"},
+    )
+    if out.get("probe_field") != "***REDACTED***" or out.get("other_field") != "éé":
+        return "executor did not enforce the configured UTF-8 regex scan limit"
+    return None
+
+
 @probe("obs.redaction.regex_patterns")
 def _regex_patterns() -> str | None:
     """A VALUE matching the key is redacted at the capture point; one that is not, is not."""

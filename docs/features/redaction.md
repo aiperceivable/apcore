@@ -50,6 +50,7 @@ With these inputs, `context.redacted_inputs` holds `{"username": "alice", "passw
 |---|---|---|---|
 | `obs.redaction.sensitive_keys` | list of strings | the [default list](#default-sensitive_keys) | Field-name rules |
 | `obs.redaction.regex_patterns` | list of strings | `[]` | Regular expressions tested against string values |
+| `obs.redaction.max_regex_scan_length` | integer | `65536` | UTF-8 byte limit for a value before regex matching |
 | `obs.redaction.replacement` | string | `***REDACTED***` | The marker written in place of a redacted value |
 
 ```yaml
@@ -108,6 +109,8 @@ access_key  private_key  authorization  auth  credential  cookie  session  beare
 
 - Each pattern is searched for anywhere in the value (**unanchored**) and **case-insensitively**; write `^…$` to require a whole-value match.
 - Only **string** values are tested. Numbers, booleans, `null`, objects and arrays are never converted to strings to be tested; objects and arrays are walked, so a string inside them is still tested at its own position.
+- With a regex rule active, a string above the configured byte limit uses the
+  replacement marker. A string exactly at the limit still goes through matching.
 - Keep patterns inside the portable subset of [§9.2.3](../spec/protocol-spec.md#923-pattern-valued-values) — no lookaround, no backreferences, no inline flag groups such as `(?i)` — so they mean the same thing in all three SDKs.
 - A pattern that does not compile is reported when the configuration is read (naming the pattern and the engine's error) and redacts nothing. It is never silently dropped.
 

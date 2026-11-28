@@ -13,6 +13,14 @@
  * existing `import { getDefault } from './config.js'` paths keep working.
  */
 
+/** @internal Maximum UTF-8 bytes scanned by a configured redaction regex. */
+export const DEFAULT_MAX_REGEX_SCAN_LENGTH = 65_536;
+
+/** @internal Validate a programmatic or configured regex scan length. */
+export function isRegexScanLength(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
+}
+
 /**
  * Default configuration values for legacy mode.
  *

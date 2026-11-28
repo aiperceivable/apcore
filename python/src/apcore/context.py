@@ -3,16 +3,18 @@
 from __future__ import annotations
 
 import logging
+import time
 import uuid
-from collections.abc import Sequence
-from copy import deepcopy
+from collections.abc import Awaitable, Callable, Sequence
+from copy import copy, deepcopy
 from dataclasses import dataclass, field, replace
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Any, Generic, Mapping, Protocol, TypeVar, runtime_checkable
+from typing import TYPE_CHECKING, Any, Generic, Literal, Mapping, Protocol, TypeVar, runtime_checkable
 
-from apcore.cancel import CancelToken
+from apcore.call_budget import CallBudget, _CallReservation
+from apcore.cancel import CancelToken, _AwaitDeadlineExpired, _await_with_cancellation
 from apcore.context_keys import TRACING_SAMPLED, _current_trace_span, _middleware_data
-from apcore.errors import InvalidInputError
+from apcore.errors import InvalidInputError, ModuleTimeoutError
 from apcore.trace_context import _valid_inbound_parent_id
 
 if TYPE_CHECKING:
@@ -21,9 +23,18 @@ if TYPE_CHECKING:
     from apcore.trace_context import TraceParent
 
 
-__all__ = ["Context", "Identity", "ContextFactory", "GovernanceProjection"]
+__all__ = [
+    "Context",
+    "Identity",
+    "ContextFactory",
+    "GovernanceProjection",
+    "ProgressReporter",
+    "ElicitationHandler",
+    "ElicitationResult",
+]
 
 T = TypeVar("T")
+R = TypeVar("R")
 _MAX_DELEGATION_DEPTH = 8
 
 
@@ -322,6 +333,25 @@ class GovernanceProjection:
         return self.types.get(key)
 
 
+@dataclass(frozen=True)
+class ElicitationResult:
+    """A transport-neutral reply to a request for input."""
+
+    action: Literal["accept", "decline", "cancel"]
+    content: dict[str, Any] | None = None
+
+    def __post_init__(self) -> None:
+        if self.action == "accept":
+            if not isinstance(self.content, dict) or not all(isinstance(key, str) for key in self.content):
+                raise InvalidInputError("Accepted elicitation content must be an object")
+        elif self.action not in ("decline", "cancel") or self.content is not None:
+            raise InvalidInputError("Declined or cancelled elicitation must have no content")
+
+
+ProgressReporter = Callable[[float, float | None, str | None], Awaitable[None]]
+ElicitationHandler = Callable[[str, dict[str, Any] | None], Awaitable[ElicitationResult]]
+
+
 @dataclass
 class Context(Generic[T]):
     """Module execution context."""
@@ -347,6 +377,10 @@ class Context(Generic[T]):
     _local_parent_span: Any = field(default=None, init=False, repr=False, compare=False)
     _parent_sampled: bool | None = field(default=None, init=False, repr=False, compare=False)
     _inbound_trace_parent: TraceParent | None = field(default=None, init=False, repr=False, compare=False)
+    _progress_reporter: ProgressReporter | None = field(default=None, init=False, repr=False, compare=False)
+    _elicitation_handler: ElicitationHandler | None = field(default=None, init=False, repr=False, compare=False)
+    _call_budget: CallBudget | None = field(default=None, init=False, repr=False, compare=False)
+    _budget_reservation: _CallReservation | None = field(default=None, init=False, repr=False, compare=False)
 
     @classmethod
     def create(
@@ -423,6 +457,64 @@ class Context(Generic[T]):
         ):
             context._inbound_trace_parent = trace_parent
         return context
+
+    def with_progress_reporter(self, callback: ProgressReporter | None) -> Context[T]:
+        """Return a context with its own progress callback binding."""
+        context = self._with_local_binding()
+        context._progress_reporter = callback
+        return context
+
+    def with_elicitation_handler(self, callback: ElicitationHandler | None) -> Context[T]:
+        """Return a context with its own request-for-input callback binding."""
+        context = self._with_local_binding()
+        context._elicitation_handler = callback
+        return context
+
+    def with_budget(self, budget: CallBudget | None) -> Context[T]:
+        """Return a context that gives future calls and their children this budget."""
+        if budget is not None and not isinstance(budget, CallBudget):
+            raise InvalidInputError("Expected a CallBudget or None")
+        context = self._with_local_binding()
+        context._call_budget = budget
+        context._budget_reservation = None
+        return context
+
+    def record_cost(self, actual: int) -> None:
+        """Replace this attempt's estimated cost with its one actual cost report."""
+        if self._call_budget is not None:
+            reservation = self._budget_reservation
+            if reservation is None:
+                raise InvalidInputError("Actual cost can only be recorded during an active budgeted call")
+            reservation.record_cost(actual)
+
+    def _with_local_binding(self) -> Context[T]:
+        context = copy(self)
+        context.call_chain = list(self.call_chain)
+        return context
+
+    async def report_progress(self, progress: float, total: float | None = None, message: str | None = None) -> None:
+        """Report progress to the attached host callback when one is available."""
+        callback = self._progress_reporter
+        if callback is not None:
+            await self._wait_for_interaction(lambda: callback(progress, total, message))
+
+    async def elicit(self, message: str, requested_schema: dict[str, Any] | None = None) -> ElicitationResult | None:
+        """Ask the host for optional structured input."""
+        callback = self._elicitation_handler
+        if callback is None:
+            return None
+        result = await self._wait_for_interaction(lambda: callback(message, requested_schema))
+        if not isinstance(result, ElicitationResult):
+            raise InvalidInputError("Expected an ElicitationResult from the handler")
+        return result
+
+    async def _wait_for_interaction(self, callback: Callable[[], Awaitable[R]]) -> R:
+        remaining = self.global_deadline - time.time() if self.global_deadline is not None else None
+        try:
+            return await _await_with_cancellation(callback, self.cancel_token, remaining)
+        except _AwaitDeadlineExpired:
+            module_id = self.call_chain[-1] if self.call_chain else ""
+            raise ModuleTimeoutError(module_id, int(max(0, remaining or 0) * 1000)) from None
 
     def bind_executor(self, executor: Any) -> None:
         """SDK-internal contract member. Bind the Executor to this Context.
@@ -520,6 +612,9 @@ class Context(Generic[T]):
         child._local_parent_span = _current_trace_span(self, include_parent=True)
         child._parent_sampled = _middleware_data(self).get(TRACING_SAMPLED.name, self._parent_sampled)
         child._inbound_trace_parent = self._inbound_trace_parent
+        child._progress_reporter = self._progress_reporter
+        child._elicitation_handler = self._elicitation_handler
+        child._call_budget = self._call_budget
         return child
 
 

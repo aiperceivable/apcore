@@ -787,6 +787,13 @@
           "description": "Declarative redaction rules applied by ContextLogger and the executor.",
           "additionalProperties": false,
           "properties": {
+            "max_regex_scan_length": {
+              "type": "integer",
+              "description": "Maximum UTF-8 bytes scanned per string value when a regex rule is configured. Replace the whole value when it exceeds the limit.",
+              "minimum": 0,
+              "maximum": 9007199254740991,
+              "default": 65536
+            },
             "regex_patterns": {
               "type": "array",
               "description": "Regular expressions matched case-insensitively against STRING field VALUES by UNANCHORED SEARCH — a value matches when the pattern occurs anywhere within it; write ^...$ for a whole-value match. A matching value is replaced by `replacement`. The rule applies to strings ONLY: a number, boolean, null, object or array is never tested and is never stringified in order to test it (protocol-spec 10.6.1 requirement 2) — the three host languages render the same non-string value three different ways, so a rule defined over that rendering would be three rules. Containers are descended into, so a string inside one is still reached. Patterns SHOULD stay inside the portable subset (no lookaround, no backreferences, no inline (?i) flags): those are exactly where the three engines disagree. A pattern that does not compile MUST NOT be dropped silently — see protocol-spec 9.2.3 requirement 6 and 10.6.1.",

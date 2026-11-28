@@ -18,7 +18,7 @@ use crate::builtin_steps::{
     build_internal_strategy, build_minimal_strategy, build_performance_strategy,
     build_standard_strategy, build_testing_strategy, BuiltinPostValidationPolicy,
 };
-use crate::cancel::CancelToken;
+use crate::cancel::{deadline_remaining, wait_for_cancellation, CancelToken};
 use crate::config::Config;
 use crate::context::Context;
 use crate::errors::{ErrorCode, ModuleError};
@@ -458,14 +458,6 @@ async fn next_stream_chunk(
     }
 }
 
-fn stream_deadline_remaining(deadline: f64) -> Option<std::time::Duration> {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs_f64();
-    std::time::Duration::try_from_secs_f64((deadline - now).max(0.0)).ok()
-}
-
 fn stream_timeout_error(
     token: Option<&CancelToken>,
     module_id: &str,
@@ -484,8 +476,15 @@ fn stream_timeout_error(
 pub(crate) async fn open_stream(
     ctx: &PipelineContext,
     module: &Arc<dyn crate::module::Module>,
-) -> Result<Option<crate::module::ChunkStream>, ModuleError> {
-    let context = ctx.context.clone();
+    permit: Option<Arc<crate::call_budget::BudgetPermit>>,
+) -> Result<
+    (
+        Option<crate::module::ChunkStream>,
+        Option<crate::call_budget::ActiveBudget>,
+    ),
+    ModuleError,
+> {
+    let mut context = ctx.context.clone();
     let token = context.cancel_token.clone();
     let deadline = context.global_deadline;
     let opening_module = Arc::clone(module);
@@ -500,7 +499,7 @@ pub(crate) async fn open_stream(
             token.check_for(&module_id)?;
         }
         if deadline
-            .and_then(stream_deadline_remaining)
+            .and_then(deadline_remaining)
             .is_some_and(|remaining| remaining.is_zero())
         {
             return Err(stream_timeout_error(
@@ -509,11 +508,18 @@ pub(crate) async fn open_stream(
                 opening_module.as_ref(),
             ));
         }
+        let active = permit
+            .as_ref()
+            .map(crate::call_budget::BudgetPermit::start)
+            .transpose()?;
+        if let Some(active) = active.as_ref() {
+            active.bind(&mut context);
+        }
         let producer = match opening_module.as_streaming() {
             Some(typed) => Some(typed.stream_typed(inputs, &context)),
             None => opening_module.stream(inputs, &context),
         };
-        Ok(producer)
+        Ok((producer, active))
     };
     let opening = match token.as_ref() {
         Some(token) => token.spawn_blocking_tracked(open),
@@ -530,20 +536,30 @@ pub(crate) async fn open_stream(
     }
 }
 
+pub(crate) fn with_stream_budget(
+    producer: crate::module::ChunkStream,
+    active: Option<crate::call_budget::ActiveBudget>,
+) -> crate::module::ChunkStream {
+    let Some(active) = active else {
+        return producer;
+    };
+    Box::pin(async_stream::stream! {
+        let _active = active;
+        let mut producer = producer;
+        while let Some(chunk) = producer.next().await {
+            yield chunk;
+        }
+    })
+}
+
 async fn wait_stream_interruption(
     token: Option<&CancelToken>,
     global_deadline: Option<f64>,
     module_id: &str,
     module: &dyn crate::module::Module,
 ) -> ModuleError {
-    let cancellation = async {
-        match token {
-            Some(token) => token.cancelled().await,
-            None => std::future::pending().await,
-        }
-    };
     let timeout = async {
-        let remaining = global_deadline.and_then(stream_deadline_remaining);
+        let remaining = global_deadline.and_then(deadline_remaining);
         match remaining {
             Some(delta) if delta.is_zero() => {}
             Some(delta) => tokio::time::sleep(delta).await,
@@ -552,7 +568,7 @@ async fn wait_stream_interruption(
     };
     tokio::select! {
         biased;
-        () = cancellation => {
+        () = wait_for_cancellation(token) => {
             // The unary fallback's execute step signals its token on timeout.
             // Preserve that error if the pipeline is still unwinding hooks.
             token.and_then(CancelToken::timeout_error).cloned().unwrap_or_else(|| {
@@ -1423,6 +1439,7 @@ impl Executor {
         Self::validate_module_id(module_id)?;
         let mut parent = context.cloned().unwrap_or_else(Context::anonymous);
         self.ensure_scope_gate(strategy, module_id, &parent)?;
+        Self::ensure_budget_strategy(strategy, module_id, &parent)?;
         parent.bind_executor(self.instance_handle())?;
         let started = std::time::Instant::now();
         let mut previous_steps = Vec::new();
@@ -1442,6 +1459,7 @@ impl Executor {
                     (output.unwrap_or(Value::Null), trace)
                 }
                 Err(error) => {
+                    attempt.budget_reservation.take();
                     let error = Self::call_error(module_id, &attempt, error);
                     match Self::recover_call(module_id, &attempt, &error).await {
                         Some(OnErrorOutcome::Recovery(output)) => (output, attempt.trace),
@@ -1474,13 +1492,32 @@ impl Executor {
         propagate_module_error(error, module_id, &ctx.context)
     }
 
+    fn ensure_budget_strategy(
+        strategy: &ExecutionStrategy,
+        module_id: &str,
+        context: &Context<Value>,
+    ) -> Result<(), ModuleError> {
+        if context.runtime.budget.is_some()
+            && !crate::pipeline_config::builtin_budget_steps_apply(strategy, module_id)
+        {
+            return Err(ModuleError::new(
+                ErrorCode::PipelineConfigurationError,
+                "CallBudget requires the built-in call-chain guard and execute steps",
+            ));
+        }
+        Ok(())
+    }
+
     async fn recover_call(
         module_id: &str,
         ctx: &PipelineContext,
         error: &ModuleError,
     ) -> Option<OnErrorOutcome> {
         if ctx.blocks_error_recovery()
-            || error.code == ErrorCode::ExecutionCancelled
+            || matches!(
+                error.code,
+                ErrorCode::ExecutionCancelled | ErrorCode::CallBudgetExceeded
+            )
             || ctx.executed_middlewares.is_empty()
         {
             return None;
@@ -2065,6 +2102,7 @@ impl Executor {
         if let Some(stream) = &mut setup.pipe_ctx.stream {
             stream.producer = None;
         }
+        setup.pipe_ctx.budget_reservation.take();
         let interrupted = matches!(
             raw_error.code,
             ErrorCode::ExecutionCancelled | ErrorCode::ModuleTimeout
@@ -2308,6 +2346,7 @@ impl Executor {
         // D-103: no synthetic principal for a call that supplied none.
         let context = ctx.unwrap_or_else(Context::<Value>::anonymous);
         self.ensure_scope_gate(&self.strategy, module_id, &context)?;
+        Self::ensure_budget_strategy(&self.strategy, module_id, &context)?;
 
         let mut pipe_ctx = PipelineContext::new(module_id, inputs, context, self.strategy.name());
         pipe_ctx.validate_approval_credential()?;
@@ -2331,6 +2370,7 @@ impl Executor {
         {
             Ok(pair) => pair,
             Err(e) => {
+                pipe_ctx.budget_reservation.take();
                 let underlying = Self::call_error(module_id, &pipe_ctx, e);
                 match Self::recover_call(module_id, &pipe_ctx, &underlying).await {
                     Some(OnErrorOutcome::Recovery(value)) => {

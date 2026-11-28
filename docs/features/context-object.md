@@ -34,7 +34,7 @@ For caller-identity semantics see [Identity System](./identity-system.md). For `
 | Framework engine dependency | `trace_id`, `caller_id`, `call_chain`, `executor` | Removing any one breaks the framework |
 | Almost always needed | `identity` | ACL is first-class; it needs a standardized "who" |
 | Logging safety | `redacted_inputs`, `redacted_output` | Payload copies safe to log |
-| Optional extensions | `cancel_token`, `services`, `global_deadline` | Cooperative cancellation, DI, call-tree budget |
+| Optional extensions | `cancel_token`, `services`, `global_deadline` | Cooperative cancellation, dependency injection, and an absolute deadline |
 | Generic bag | `data` | Pipeline state, locale, feature flags |
 
 ### Field Constraints
@@ -152,10 +152,132 @@ For cross-process transfer (distributed execution, task queues) a Context serial
 TypeScript's `serialize()` / `deserialize()` remain as deprecated aliases of `toJSON()` / `fromJSON()`.
 
 - Serialized: `_context_version: 1`, `trace_id`, `caller_id`, `call_chain`, `identity`, `data` (keys not starting with `_`), and `redacted_inputs` / `redacted_output` when set.
-- Not serialized (runtime-only): `executor`, `cancel_token`, `services`, `global_deadline`.
+- Not serialized (runtime-only): `executor`, `cancel_token`, `services`, `global_deadline`, and the invocation attachments described below.
 - A `_context_version` greater than 1 logs a warning and deserialization proceeds best-effort.
 
 After deserialization `executor` is null; the receiving Executor binds itself on the first call ([Executor binding to Context](./core-executor.md#contract-executor-binding-to-context)), synthesizes a fresh local `CancelToken`, and recomputes `global_deadline` from its own configuration. `services` is re-injected by the application.
+
+### In-process invocation attachments
+
+A host can derive a context with a shared call budget, a progress reporter,
+or an elicitation handler. Child calls inherit the attachments. Reattach them
+locally when reconstructing a context from serialized data.
+
+A budget counts invocations that start business execution. Pending approval,
+input rejection, and cancellation before dispatch release their reservations.
+Each dispatched retry consumes a call. A host can assign a cost estimate in
+integer units to each module. During execution, `record_cost` or `recordCost`
+replaces the estimate once with the actual total for that attempt. A reported
+overrun remains charged and returns `CALL_BUDGET_EXCEEDED`. Preflight leaves
+the budget unchanged.
+
+=== "Python"
+
+    <!-- executable-example: invocation-budget -->
+    ```python
+    from apcore import APCore, CallBudget, Context
+
+    client = APCore()
+    budget = CallBudget(max_calls=8, max_cost=20, estimated_costs={"reports.render": 2})
+    context = Context.create().with_budget(budget)
+
+
+    @client.module("reports.render", description="Render a report")
+    def render(context: Context) -> dict[str, bool]:
+        context.record_cost(3)
+        return {"rendered": True}
+
+
+    assert client.call("reports.render", {}, context) == {"rendered": True}
+    assert (budget.snapshot().calls_used, budget.snapshot().cost_used) == (1, 3)
+    client.close()
+    ```
+
+    Use `with_progress_reporter` and `with_elicitation_handler` to attach
+    callbacks. Modules await `context.report_progress(...)` or
+    `context.elicit(...)` during execution.
+
+=== "TypeScript"
+
+    <!-- executable-example: invocation-budget -->
+    ```typescript
+    import assert from 'node:assert/strict';
+    import { APCore, CallBudget, Context } from 'apcore-js';
+
+    const client = new APCore();
+    const budget = new CallBudget({ maxCalls: 8, maxCost: 20, estimatedCosts: { 'reports.render': 2 } });
+    const context = Context.create().withBudget(budget);
+    await client.register('reports.render', {
+      description: 'Render a report',
+      inputSchema: { type: 'object' },
+      outputSchema: { type: 'object', properties: { rendered: { type: 'boolean' } } },
+      execute(_input: unknown, context: Context) {
+        context.recordCost(3);
+        return { rendered: true };
+      },
+    });
+    assert.deepEqual(await client.call('reports.render', {}, context), { rendered: true });
+    assert.deepEqual(budget.snapshot(), { callsUsed: 1, callsReserved: 0, costUsed: 3 });
+    await client.shutdown();
+    ```
+
+    Use `withProgressReporter` and `withElicitationHandler` to attach
+    callbacks. Modules await `context.reportProgress(...)` or
+    `context.elicit(...)` during execution.
+
+=== "Rust"
+
+    <!-- executable-example: invocation-budget -->
+    ```rust
+    use apcore::{APCore, CallBudget, Context, ModuleError};
+    use schemars::JsonSchema;
+    use serde::{Deserialize, Serialize};
+    use serde_json::Value;
+    use std::{collections::HashMap, sync::Arc};
+
+    #[derive(Deserialize, JsonSchema, Serialize)]
+    struct RenderInput {}
+
+    #[derive(Deserialize, JsonSchema, Serialize)]
+    struct RenderOutput {
+        rendered: bool,
+    }
+
+    /// Render a report.
+    #[apcore::module(id = "reports.render")]
+    async fn render(_input: RenderInput, context: &Context<Value>) -> Result<RenderOutput, ModuleError> {
+        context.record_cost(3)?;
+        Ok(RenderOutput { rendered: true })
+    }
+
+    #[tokio::main]
+    async fn main() -> Result<(), ModuleError> {
+        let client = APCore::new();
+        render::DECLARATION.register(&client)?;
+        let budget = Arc::new(CallBudget::new(
+            Some(8),
+            Some(20),
+            HashMap::from([("reports.render".into(), 2)]),
+        )?);
+        let context = Context::<Value>::anonymous().with_budget(Some(Arc::clone(&budget)));
+        let result = render::HANDLE.invoke(&client, RenderInput {}, Some(&context)).await?;
+        assert!(result.rendered);
+        assert_eq!((budget.snapshot().calls_used, budget.snapshot().cost_used), (1, 3));
+        Ok(())
+    }
+    ```
+
+    Use `with_progress_reporter` and `with_elicitation_handler` to attach
+    callbacks. Modules await `context.report_progress(...)` or
+    `context.elicit(...)` during execution.
+
+Progress reporting has no effect when the host supplies no reporter.
+Elicitation without a handler returns an empty optional result. With a
+handler, the response indicates acceptance, decline, or cancellation.
+Execution cancellation and the invocation deadline also apply to the callbacks.
+
+Rust code that constructs a `Context { ... }` struct literal can migrate to
+`Context::create(...)` or `Context::anonymous()` and apply the derivation methods.
 
 ## Edge Cases
 

@@ -119,6 +119,22 @@ pub(crate) fn builtin_scope_gate_applies(strategy: &ExecutionStrategy, module_id
     false
 }
 
+pub(crate) fn builtin_budget_steps_apply(strategy: &ExecutionStrategy, module_id: &str) -> bool {
+    let mut guard_ready = false;
+    for step in strategy.steps().iter().map(Box::as_ref) {
+        if !step_applies(step, module_id) {
+            continue;
+        }
+        if step.name() == "execute" {
+            return guard_ready && is_builtin_step::<BuiltinExecute>(step) && !step.ignore_errors();
+        }
+        if is_builtin_step::<crate::BuiltinCallChainGuard>(step) {
+            guard_ready = !step.ignore_errors();
+        }
+    }
+    false
+}
+
 fn builtin_step_applies<T: Step>(step: &dyn Step, module_id: &str) -> bool {
     step_applies(step, module_id) && is_builtin_step::<T>(step)
 }

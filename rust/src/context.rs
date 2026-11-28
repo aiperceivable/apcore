@@ -5,12 +5,15 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
+use std::fmt;
 
 use parking_lot::RwLock;
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 
+use crate::call_budget::{BudgetPermit, CallBudget};
 use crate::cancel::CancelToken;
 use crate::errors::ModuleError;
+use crate::interaction::{ElicitationHandler, ProgressReporter};
 use crate::trace_context::TraceParent;
 
 /// Maximum number of active delegation edges an identity may carry.
@@ -385,6 +388,34 @@ impl std::hash::Hash for Identity {
 /// Note: deserialization creates a new `Arc` (not shared with the original).
 pub type SharedData = Arc<RwLock<HashMap<String, serde_json::Value>>>;
 
+#[doc(hidden)]
+#[derive(Clone, Default)]
+pub struct ContextRuntime {
+    pub(crate) progress_reporter: Option<ProgressReporter>,
+    pub(crate) elicitation_handler: Option<ElicitationHandler>,
+    pub(crate) budget: Option<Arc<CallBudget>>,
+    pub(crate) active_budget: Weak<BudgetPermit>,
+}
+
+impl ContextRuntime {
+    fn child(&self) -> Self {
+        Self {
+            active_budget: Weak::new(),
+            ..self.clone()
+        }
+    }
+}
+
+impl fmt::Debug for ContextRuntime {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ContextRuntime")
+            .field("progress_reporter", &self.progress_reporter.is_some())
+            .field("elicitation_handler", &self.elicitation_handler.is_some())
+            .field("budget", &self.budget.is_some())
+            .finish_non_exhaustive()
+    }
+}
+
 /// Generic execution context carrying identity, services, and data.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Context<T> {
@@ -419,6 +450,10 @@ pub struct Context<T> {
     /// Opaque; use [`Context::executor`] to call through it.
     #[serde(skip)]
     pub executor: Option<Arc<dyn std::any::Any + Send + Sync>>,
+    /// Local attachments. Use the context derivation methods to configure them.
+    #[serde(skip)]
+    #[doc(hidden)]
+    pub runtime: ContextRuntime,
 }
 
 fn default_shared_data() -> SharedData {
@@ -456,6 +491,7 @@ impl<T: Default> Context<T> {
             cancel_token: None,
             global_deadline: None,
             executor: None,
+            runtime: ContextRuntime::default(),
         }
     }
 
@@ -474,6 +510,7 @@ impl<T: Default> Context<T> {
             cancel_token: None,
             global_deadline: None,
             executor: None,
+            runtime: ContextRuntime::default(),
         }
     }
 
@@ -503,6 +540,7 @@ impl<T: Default> Context<T> {
             cancel_token: self.cancel_token.clone(),
             global_deadline: self.global_deadline,
             executor: self.executor.clone(),
+            runtime: self.runtime.child(),
         }
     }
 
@@ -675,6 +713,7 @@ impl<T: Default> Context<T> {
             cancel_token: None,
             global_deadline: None,
             executor: None,
+            runtime: ContextRuntime::default(),
         })
     }
 
@@ -771,6 +810,7 @@ impl<T: Default> Context<T> {
             cancel_token,
             global_deadline,
             executor: None,
+            runtime: ContextRuntime::default(),
         }
     }
 
@@ -940,6 +980,7 @@ impl<T: Default> ContextBuilder<T> {
             cancel_token: self.cancel_token,
             global_deadline: self.global_deadline,
             executor: None,
+            runtime: ContextRuntime::default(),
         }
     }
 }

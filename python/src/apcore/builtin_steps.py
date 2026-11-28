@@ -25,6 +25,7 @@ import pydantic
 from apcore._post_validation_policy import _evaluate_policy, _PolicyInvocation, _safe_rule_id
 from apcore.acl import ACL
 from apcore.approval import ApprovalRequest, ApprovalResult, ScopedApprovalHandler
+from apcore.call_budget import _CallReservation
 from apcore.cancel import CancelToken, ExecutionCancelledError
 from apcore.context import Context, GovernanceProjection, _identity_audit_fields
 from apcore.context_keys import _current_trace_span
@@ -389,6 +390,14 @@ class BuiltinCallChainGuard(BaseStep):
             max_call_depth=self._max_call_depth,
             max_module_repeat=self._max_module_repeat,
         )
+        if ctx._call_budget is not None:
+            if ctx.dry_run:
+                ctx._call_budget._check(ctx.module_id)
+            else:
+                if ctx.execution_scope is None:
+                    raise ConfigurationError("CallBudget requires an execution scope")
+                reservation = ctx._budget_reservation = ctx._call_budget._reserve(ctx.module_id)
+                ctx.execution_scope.callback(reservation.release)
         return StepResult(action="continue")
 
 
@@ -431,6 +440,7 @@ def _redact_payload(data: dict[str, Any] | None, schema_model: Any, rules: Redac
         sensitive_keys=rules.sensitive_keys,
         regex_patterns=rules.compiled_regex_patterns,
         replacement=rules.replacement,
+        max_regex_scan_length=rules.max_regex_scan_length,
     )
 
 
@@ -1522,6 +1532,20 @@ class BuiltinExecute(BaseStep):
             token.cancel()
         return error
 
+    @staticmethod
+    def _start_budgeted_dispatch(ctx: PipelineContext) -> _CallReservation:
+        context = ctx.context
+        reservation = ctx._budget_reservation
+        if reservation is None or not isinstance(context, Context) or context._call_budget is not ctx._call_budget:
+            raise ConfigurationError("CallBudget requires a reserved invocation and its execution context")
+        if context.cancel_token is not None:
+            context.cancel_token.check()
+        if context.global_deadline is not None and time.time() >= context.global_deadline:
+            raise ModuleTimeoutError(ctx.module_id, 0, retryable=_is_idempotent(ctx.module))
+        reservation.start()
+        context._budget_reservation = reservation
+        return reservation
+
     async def execute(self, ctx: PipelineContext) -> StepResult:
         module = ctx.module
         if module is None:
@@ -1559,6 +1583,13 @@ class BuiltinExecute(BaseStep):
             except StreamingInterfaceError:
                 pass  # No compatible streaming method. Execute once as a fallback.
             else:
+                if ctx._call_budget is not None:
+                    if ctx._budget_reservation is None or ctx.execution_scope is None:
+                        raise ConfigurationError("CallBudget requires a reserved streaming invocation")
+                    ctx.execution_scope.callback(ctx._budget_reservation.finish)
+                    ctx._budget_stream_pending = inspect.isasyncgenfunction(module.stream)
+                    if not ctx._budget_stream_pending:
+                        self._start_budgeted_dispatch(ctx)
                 stream = module.stream(inputs, ctx.context)
                 if inspect.isawaitable(stream):
                     stream = await stream
@@ -1597,10 +1628,15 @@ class BuiltinExecute(BaseStep):
                     managed_reload = True
             is_async = inspect.iscoroutinefunction(execute)
             if is_async:
-                coro = execute(inputs, ctx.context)
+                coro = (
+                    _execute_budgeted_async_module(execute, inputs, ctx)
+                    if ctx._call_budget is not None
+                    else execute(inputs, ctx.context)
+                )
             else:
                 loop = asyncio.get_event_loop()
-                coro = loop.run_in_executor(None, _execute_sync_module, execute, inputs, ctx.context)
+                budgeted_ctx = ctx if ctx._call_budget is not None else None
+                coro = loop.run_in_executor(None, _execute_sync_module, execute, inputs, ctx.context, budgeted_ctx)
 
             task = ctx.module_task = asyncio.ensure_future(coro)
             # Consume late failures even when the call was cancelled while
@@ -1630,6 +1666,10 @@ class BuiltinExecute(BaseStep):
             if not isinstance(output, dict):
                 raise ModuleExecuteError(module_id=ctx.module_id, message="Return value must be Map")
             ctx.output = output
+        except asyncio.CancelledError:
+            if ctx._budget_reservation is not None:
+                ctx._budget_reservation.release()
+            raise
         except asyncio.TimeoutError:
             timeout_ms = int((timeout_s or 0) * 1000)
             raise ModuleTimeoutError(
@@ -1646,16 +1686,35 @@ class _SyncExecutionFailure:
     error: BaseException
 
 
-def _execute_sync_module(
-    execute: Callable[[dict[str, Any], Context], Any], inputs: dict[str, Any], context: Context
+async def _execute_budgeted_async_module(
+    execute: Callable[[dict[str, Any], Context], Awaitable[Any]], inputs: dict[str, Any], ctx: PipelineContext
 ) -> Any:
+    reservation = BuiltinExecute._start_budgeted_dispatch(ctx)
     try:
+        return await execute(inputs, ctx.context)
+    finally:
+        reservation.finish()
+
+
+def _execute_sync_module(
+    execute: Callable[[dict[str, Any], Context], Any],
+    inputs: dict[str, Any],
+    context: Context,
+    budgeted_ctx: PipelineContext | None = None,
+) -> Any:
+    reservation = None
+    try:
+        if budgeted_ctx is not None:
+            reservation = BuiltinExecute._start_budgeted_dispatch(budgeted_ctx)
         return execute(inputs, context)
     except BaseException as error:
         # The sync bridge can park or close the loop before its next-turn
         # callbacks run. Transfer a value so a late worker failure can be
         # discarded while an active waiter still receives the original error.
         return _SyncExecutionFailure(error)
+    finally:
+        if reservation is not None:
+            reservation.finish()
 
 
 def _discard_late_execution(task: asyncio.Future[Any]) -> None:

@@ -37,6 +37,7 @@ def main() -> None:
         (STREAM_GUIDE, "stream-config", "yaml", "governed-stream/apcore.yaml"),
         (STREAM_GUIDE, "stream-acl", "yaml", "governed-stream/acl/global_acl.yaml"),
         ("docs/features/module-interface.md", "typed-module", args.language, f"typed-module/example.{ext}"),
+        ("docs/features/context-object.md", "invocation-budget", args.language, f"invocation-budget/example.{ext}"),
     )
     try:
         files = [(args.destination / target, example(source, label, lang)) for source, label, lang, target in sources]

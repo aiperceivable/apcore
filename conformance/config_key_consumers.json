@@ -177,6 +177,10 @@
       "reason": "No code path reads it.",
       "tracking": "https://github.com/aiperceivable/apcore/issues/118"
     },
+    "obs.redaction.max_regex_scan_length": {
+      "status": "live",
+      "probe": "obs.redaction.max_regex_scan_length"
+    },
     "obs.redaction.regex_patterns": {
       "status": "live",
       "probe": "obs.redaction.regex_patterns"

@@ -61,6 +61,16 @@ pub const DEFAULT_SENSITIVE_KEYS: &[&str] = &[
 /// these, apcore-typescript reads them first.
 const CANONICAL_SENSITIVE_KEYS: &str = "obs.redaction.sensitive_keys";
 const CANONICAL_REGEX_PATTERNS: &str = "obs.redaction.regex_patterns";
+pub(crate) const MAX_REGEX_SCAN_LENGTH: &str = "obs.redaction.max_regex_scan_length";
+pub(crate) const DEFAULT_MAX_REGEX_SCAN_LENGTH: usize = 65_536;
+const MAX_PORTABLE_SCAN_LENGTH: u64 = (1 << 53) - 1;
+
+pub(crate) fn regex_scan_length(value: &Value) -> Option<usize> {
+    let limit = value
+        .as_u64()
+        .filter(|limit| *limit <= MAX_PORTABLE_SCAN_LENGTH)?;
+    Some(usize::try_from(limit).unwrap_or(usize::MAX))
+}
 const CANONICAL_REPLACEMENT: &str = "obs.redaction.replacement";
 
 /// The keys this SDK read before the canonical namespace was honoured. Still
@@ -142,6 +152,7 @@ pub struct RedactionConfig {
     /// Plain substring patterns, pre-normalized via [`normalize_key_for_match`].
     field_substrings: Vec<String>,
     value_patterns: Vec<Regex>,
+    max_regex_scan_length: Option<usize>,
     replacement: String,
 }
 
@@ -173,6 +184,7 @@ impl RedactionConfig {
             field_patterns: Vec::new(),
             field_substrings: Vec::new(),
             value_patterns: Vec::new(),
+            max_regex_scan_length: None,
             replacement: DEFAULT_REPLACEMENT.to_string(),
         }
     }
@@ -324,6 +336,10 @@ impl RedactionConfig {
         }
 
         cfg.value_patterns = value_patterns;
+        cfg.max_regex_scan_length = config
+            .get(MAX_REGEX_SCAN_LENGTH)
+            .as_ref()
+            .and_then(regex_scan_length);
         cfg.replacement = replacement
             .as_ref()
             .and_then(|v| v.as_str())
@@ -414,10 +430,16 @@ impl RedactionConfig {
             .any(|sub| normalized.contains(sub))
     }
 
-    /// Check whether a value matches any value regex.
+    /// Check whether a string must be redacted by the regex rules.
+    /// Strings over the scan limit are redacted in full without running a pattern.
     #[must_use]
     pub fn value_matches(&self, value: &str) -> bool {
-        self.value_patterns.iter().any(|r| r.is_match(value))
+        !self.value_patterns.is_empty()
+            && (value.len()
+                > self
+                    .max_regex_scan_length
+                    .unwrap_or(DEFAULT_MAX_REGEX_SCAN_LENGTH)
+                || self.value_patterns.iter().any(|r| r.is_match(value)))
     }
 
     /// The configured replacement string.
@@ -433,6 +455,7 @@ pub struct RedactionConfigBuilder {
     field_patterns: Vec<String>,
     sensitive_keys: Vec<String>,
     value_patterns: Vec<String>,
+    max_regex_scan_length: Option<usize>,
     replacement: Option<String>,
 }
 
@@ -448,6 +471,8 @@ pub enum RedactionConfigError {
         #[source]
         source: regex::Error,
     },
+    #[error("max_regex_scan_length must be a nonnegative safe integer")]
+    InvalidScanLength,
 }
 
 impl RedactionConfigBuilder {
@@ -470,6 +495,13 @@ impl RedactionConfigBuilder {
     {
         self.value_patterns
             .extend(patterns.into_iter().map(Into::into));
+        self
+    }
+
+    /// Limit regex scanning to this many UTF-8 bytes per string.
+    #[must_use]
+    pub fn max_regex_scan_length(mut self, bytes: usize) -> Self {
+        self.max_regex_scan_length = Some(bytes);
         self
     }
 
@@ -503,6 +535,11 @@ impl RedactionConfigBuilder {
     /// [`RedactionConfig::add_sensitive_key`] does — the case fold has to
     /// reach the pattern, not only the field name.
     pub fn try_build(self) -> Result<RedactionConfig, RedactionConfigError> {
+        if self.max_regex_scan_length.is_some_and(|length| {
+            u64::try_from(length).map_or(true, |length| length > MAX_PORTABLE_SCAN_LENGTH)
+        }) {
+            return Err(RedactionConfigError::InvalidScanLength);
+        }
         let field_patterns: Vec<String> = self
             .field_patterns
             .into_iter()
@@ -528,6 +565,7 @@ impl RedactionConfigBuilder {
             field_patterns,
             field_substrings: Vec::new(),
             value_patterns,
+            max_regex_scan_length: self.max_regex_scan_length,
             replacement: self
                 .replacement
                 .unwrap_or_else(|| DEFAULT_REPLACEMENT.to_string()),
@@ -543,6 +581,53 @@ impl RedactionConfigBuilder {
     #[must_use]
     pub fn build(self) -> RedactionConfig {
         self.try_build().expect("invalid redaction pattern")
+    }
+}
+
+#[cfg(test)]
+mod regex_scan_limit_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn limits_the_default_scan_to_65536_utf8_bytes() {
+        let regex = RedactionConfig::builder()
+            .value_patterns(["sensitive"])
+            .build();
+        let boundary = "\u{00e9}".repeat(32_768);
+        let oversized = format!("{boundary}x");
+        let mut value = json!({
+            "within": boundary,
+            "nested": [oversized],
+            "trace_id": oversized,
+        });
+        regex.redact(&mut value);
+        assert_eq!(value["within"], boundary);
+        assert_eq!(value["nested"][0], regex.replacement());
+        assert_eq!(value["trace_id"], oversized);
+        let mut value = json!(oversized);
+        RedactionConfig::new().redact(&mut value);
+        assert_eq!(value, oversized);
+    }
+
+    #[test]
+    fn reads_the_configured_scan_limit_and_uses_the_configured_replacement() {
+        let mut config = Config::in_memory();
+        config.set("obs.redaction.regex_patterns", json!(["sensitive"]));
+        config.set("obs.redaction.max_regex_scan_length", json!(4));
+        config.set("obs.redaction.replacement", json!("[HIDDEN]"));
+        let mut value = json!([
+            "1234",
+            "12345",
+            "\u{00e9}\u{00e9}",
+            "\u{00e9}\u{00e9}x",
+            12345
+        ]);
+        RedactionConfig::from_config(&config).redact(&mut value);
+        assert_eq!(
+            value,
+            json!(["1234", "[HIDDEN]", "\u{00e9}\u{00e9}", "[HIDDEN]", 12345])
+        );
     }
 }
 

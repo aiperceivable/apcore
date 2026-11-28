@@ -2,7 +2,7 @@
 # It does not certify every fixture required by Level 1 or Level 2.
 implementation:
   name: apcore-typescript
-  version: "1.0.0-alpha.6"
+  version: "1.0.0-beta.1"
   language: typescript
   spec_version: "1.65.0"
   maintainer: AI Perceivable

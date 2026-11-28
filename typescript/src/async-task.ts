@@ -5,7 +5,7 @@
 import { uuidV4 as uuidv4 } from './utils/uuid.js';
 import { CancelToken } from './cancel.js';
 import type { Context } from './context.js';
-import { ErrorCodes, ModuleError, TaskLimitExceededError } from './errors.js';
+import { CallBudgetExceededError, ErrorCodes, ModuleError, TaskLimitExceededError } from './errors.js';
 import type { Executor } from './executor.js';
 
 export enum TaskStatus {
@@ -687,7 +687,7 @@ export class AsyncTaskManager {
             return;
           }
 
-          if (retry && info.retryCount < retry.maxRetries) {
+          if (retry && info.retryCount < retry.maxRetries && !(attempt.error instanceof CallBudgetExceededError)) {
             const delay = retry.computeDelayMs(info.retryCount);
             const pending = await this._saveRunnerState(taskId, internal, (current) => ({
               ...current, status: TaskStatus.PENDING, retryCount: current.retryCount + 1,
@@ -788,19 +788,6 @@ export class AsyncTaskManager {
       // removes `executor` from Context.create()'s public surface.
       return CtxClass.create(undefined, undefined, cancelToken);
     }
-    // Shallow clone (preserve identity/data/etc.) and overwrite cancelToken.
-    const cloned = new CtxClass(
-      callerContext.traceId,
-      callerContext.callerId,
-      [...callerContext.callChain],
-      callerContext.executor,
-      callerContext.identity,
-      callerContext.redactedInputs,
-      callerContext.data,
-      cancelToken,
-      callerContext.services,
-      callerContext.globalDeadline,
-    );
-    return cloned;
+    return callerContext._withCancellationScope(cancelToken);
   }
 }

@@ -86,6 +86,7 @@ export const FRAMEWORK_CONFIG_KEYS: readonly string[] = [
   "logging.format",
   "logging.level",
   "middleware.disabled",
+  "obs.redaction.max_regex_scan_length",
   "obs.redaction.regex_patterns",
   "obs.redaction.replacement",
   "obs.redaction.sensitive_keys",

@@ -46,6 +46,7 @@ jobs:
           python3 "$GITHUB_WORKSPACE/conformance/extract_doc_examples.py" python "$temporary"
           (cd quick-start && "$temporary/venv/bin/python" -I example.py)
           (cd typed-module && "$temporary/venv/bin/python" -I example.py)
+          (cd invocation-budget && "$temporary/venv/bin/python" -I example.py)
           python -m venv "$temporary/full"
           "$temporary/full/bin/python" -m pip install "${wheel[0]}[all]"
           "$temporary/full/bin/python" -m pip check
@@ -118,10 +119,15 @@ jobs:
           [[bin]]
           name = "typed-module"
           path = "typed-module/example.rs"
+
+          [[bin]]
+          name = "invocation-budget"
+          path = "invocation-budget/example.rs"
           EOF
           (cd quick-start && cargo run --quiet --manifest-path ../Cargo.toml --bin quick-start)
           (cd governed-stream && cargo run --locked --quiet --manifest-path ../Cargo.toml --bin governed-stream)
           (cd typed-module && cargo run --locked --quiet --manifest-path ../Cargo.toml --bin typed-module)
+          (cd invocation-budget && cargo run --locked --quiet --manifest-path ../Cargo.toml --bin invocation-budget)
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: core-rust-distribution
@@ -170,10 +176,11 @@ jobs:
           node --input-type=module -e 'import {APCore} from "apcore-js/full"; import {Config} from "apcore-js/config"; import {createFilesystemDiscoveryPlugin} from "apcore-js/discovery"; if (!new APCore({config: new Config(), plugins: [createFilesystemDiscoveryPlugin()]}).registry) throw new Error("invalid full assembly");'
           python3 "$GITHUB_WORKSPACE/conformance/extract_doc_examples.py" typescript "$temporary"
           ./node_modules/.bin/tsc --strict --module NodeNext --target ES2022 --rootDir . --outDir compiled \
-            quick-start/example.ts governed-stream/example.ts typed-module/example.ts
+            quick-start/example.ts governed-stream/example.ts typed-module/example.ts invocation-budget/example.ts
           (cd quick-start && node ../compiled/quick-start/example.js)
           (cd governed-stream && node ../compiled/governed-stream/example.js)
           (cd typed-module && node ../compiled/typed-module/example.js)
+          (cd invocation-budget && node ../compiled/invocation-budget/example.js)
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: core-npm-distribution

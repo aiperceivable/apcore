@@ -234,6 +234,7 @@ fn make_ctx(id: Option<(&str, &str)>) -> Context<serde_json::Value> {
         cancel_token: None,
         global_deadline: None,
         executor: None,
+        runtime: apcore::ContextRuntime::default(),
     }
 }
 

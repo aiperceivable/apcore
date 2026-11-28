@@ -1,0 +1,101 @@
+{
+  "description": "Shared call-tree accounting through the public governed call entry point.",
+  "test_cases": [
+    {
+      "id": "settle_actual_cost_and_exhaust_call_count",
+      "module_id": "budget.fixture",
+      "max_calls": 2,
+      "max_cost": 5,
+      "estimated_cost": 2,
+      "calls": [
+        {
+          "actual_cost": 3
+        },
+        {
+          "actual_cost": 1
+        },
+        {
+          "actual_cost": 0
+        }
+      ],
+      "expected": [
+        {
+          "calls_used": 1,
+          "calls_reserved": 0,
+          "cost_used": 3,
+          "error_code": null
+        },
+        {
+          "calls_used": 2,
+          "calls_reserved": 0,
+          "cost_used": 4,
+          "error_code": null
+        },
+        {
+          "calls_used": 2,
+          "calls_reserved": 0,
+          "cost_used": 4,
+          "error_code": "CALL_BUDGET_EXCEEDED"
+        }
+      ]
+    },
+    {
+      "id": "keep_the_charge_for_an_actual_overrun",
+      "module_id": "budget.fixture",
+      "max_calls": null,
+      "max_cost": 3,
+      "estimated_cost": 1,
+      "calls": [
+        {
+          "actual_cost": 4
+        },
+        {
+          "actual_cost": 0
+        }
+      ],
+      "expected": [
+        {
+          "calls_used": 1,
+          "calls_reserved": 0,
+          "cost_used": 4,
+          "error_code": "CALL_BUDGET_EXCEEDED"
+        },
+        {
+          "calls_used": 1,
+          "calls_reserved": 0,
+          "cost_used": 4,
+          "error_code": "CALL_BUDGET_EXCEEDED"
+        }
+      ]
+    },
+    {
+      "id": "keep_the_estimate_if_the_module_does_not_report_cost",
+      "module_id": "budget.fixture",
+      "max_calls": 3,
+      "max_cost": 3,
+      "estimated_cost": 2,
+      "calls": [
+        {
+          "actual_cost": null
+        },
+        {
+          "actual_cost": null
+        }
+      ],
+      "expected": [
+        {
+          "calls_used": 1,
+          "calls_reserved": 0,
+          "cost_used": 2,
+          "error_code": null
+        },
+        {
+          "calls_used": 1,
+          "calls_reserved": 0,
+          "cost_used": 2,
+          "error_code": "CALL_BUDGET_EXCEEDED"
+        }
+      ]
+    }
+  ]
+}

@@ -22,8 +22,17 @@ from apcore.approval import (
     ScopedApprovalHandler,
 )
 from apcore.cancel import CancelToken, ExecutionCancelledError
+from apcore.call_budget import CallBudget, CallBudgetSnapshot
 from apcore.capabilities import AccessHint, CallableDefinition, CapabilityPage, CapabilitySearchProvider, ModuleSummary
-from apcore.context import Context, ContextFactory, GovernanceProjection, Identity
+from apcore.context import (
+    Context,
+    ContextFactory,
+    ElicitationHandler,
+    ElicitationResult,
+    GovernanceProjection,
+    Identity,
+    ProgressReporter,
+)
 from apcore.context_key import ContextKey
 from apcore.context_keys import (
     LOGGING_START,
@@ -111,6 +120,7 @@ from apcore.errors import (
     BindingSchemaModeConflictError,
     BindingStrictSchemaIncompatibleError,
     CallDepthExceededError,
+    CallBudgetExceededError,
     CallFrequencyExceededError,
     CircularCallError,
     CircularDependencyError,
@@ -593,6 +603,9 @@ __all__ = [
     "ApprovalResult",
     "AutoApproveHandler",
     "BoundModule",
+    "CallBudget",
+    "CallBudgetExceededError",
+    "CallBudgetSnapshot",
     "CancelToken",
     "AccessHint",
     "CallableDefinition",
@@ -601,6 +614,8 @@ __all__ = [
     "ModuleSummary",
     "VisibilityDecision",
     "Context",
+    "ElicitationHandler",
+    "ElicitationResult",
     "ErrorCodes",
     "ExecutionPolicy",
     "PolicyDeniedError",
@@ -618,6 +633,7 @@ __all__ = [
     "PipelineEngine",
     "PreflightResult",
     "PreviewResult",
+    "ProgressReporter",
     "Registry",
     "ReloadOptions",
     "SchemaExporter",

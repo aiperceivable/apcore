@@ -24,6 +24,38 @@ describe('RedactionConfig key alignment (CRITICAL #4)', () => {
     warnSpy.mockRestore();
   });
 
+  it('redacts over-cap strings without running any regex, using UTF-8 byte length', () => {
+    const config = new Config();
+    config.set('obs.redaction.regex_patterns', ['^match$']);
+    config.set('obs.redaction.max_regex_scan_length', 4);
+    config.set('obs.redaction.replacement', '<hidden>');
+    const redaction = RedactionConfig.fromConfig(config);
+    const test = vi.spyOn(redaction.valuePatterns[0], 'test');
+    expect(redaction.redact({ notes: ['å🙂', '🙂'], item: 'still too long' })).toEqual({
+      notes: ['<hidden>', '🙂'], item: '<hidden>',
+    });
+    expect(test).toHaveBeenCalledExactlyOnceWith('🙂');
+    expect(redaction.redact('also too long')).toBe('<hidden>');
+    expect(new RedactionConfig({ maxRegexScanLength: 0 }).apply({ item: 'unchanged' })).toEqual({ item: 'unchanged' });
+  });
+
+  it('uses a 65,536-byte limit by default while leaving same-size strings scannable', () => {
+    const redaction = new RedactionConfig({ valuePatterns: ['^match$'] });
+    const test = vi.spyOn(redaction.valuePatterns[0], 'test');
+    const atLimit = 'é'.repeat(32_768);
+    const redacted = redaction.apply({ atLimit, overLimit: `${atLimit}x` });
+    expect(redacted.atLimit).toBe(atLimit);
+    expect(redacted.overLimit === '***REDACTED***').toBe(true);
+    expect(test).toHaveBeenCalledExactlyOnceWith(atLimit);
+  });
+
+  it('rejects non-integer or negative redaction limits from programmatic and file config', () => {
+    expect(() => new RedactionConfig({ maxRegexScanLength: -1 })).toThrow('non-negative safe integer');
+    const config = new Config({ version: '1.0', project: { name: 'check-scan-limit' } });
+    config.set('obs.redaction.max_regex_scan_length', 2.5);
+    expect(() => config.validate()).toThrow('obs.redaction.max_regex_scan_length');
+  });
+
   it('reads canonical obs.redaction.* keys (sensitive_keys, regex_patterns, replacement)', () => {
     const config = new Config();
     config.set('obs.redaction.sensitive_keys', ['_secret_*', 'apiKey', 'authorization']);

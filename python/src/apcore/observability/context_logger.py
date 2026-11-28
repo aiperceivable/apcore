@@ -23,10 +23,13 @@ from apcore.utils.redaction import PROTECTED_LOG_FIELDS as _PROTECTED_LOG_FIELDS
 # this surface; the two separator-folding helpers it used to call are internal
 # to the canonical matcher and are no longer duplicated here at all.
 from apcore.utils.redaction import (
+    DEFAULT_MAX_REGEX_SCAN_LENGTH,
     REDACTED_VALUE,
     ValuePattern,
     _key_matches as _key_matches_sensitive,
     _value_matches,
+    _regex_scan_too_long,
+    _validate_regex_scan_length,
     compile_value_regexes,
 )
 
@@ -108,6 +111,7 @@ class RedactionConfig:
     sensitive_keys: list[str] = field(default_factory=list)
     regex_patterns: list[str] = field(default_factory=list)
     replacement: str = REDACTED_VALUE
+    max_regex_scan_length: int = DEFAULT_MAX_REGEX_SCAN_LENGTH
 
     compiled_regex_patterns: list[re.Pattern[str]] = field(init=False, repr=False, compare=False)
     invalid_regex_patterns: list[tuple[str, str]] = field(init=False, repr=False, compare=False)
@@ -122,6 +126,7 @@ class RedactionConfig:
         broken pattern was told nothing — the reload case and the multi-tenant
         case, which are the two where an operator most needs telling.
         """
+        _validate_regex_scan_length(self.max_regex_scan_length)
         self.compiled_regex_patterns, self.invalid_regex_patterns = compile_value_regexes(self.regex_patterns)
 
     @classmethod
@@ -132,6 +137,7 @@ class RedactionConfig:
         - ``obs.redaction.regex_patterns`` (list[str])
         - ``obs.redaction.sensitive_keys`` (list[str])
         - ``obs.redaction.replacement`` (str)
+        - ``obs.redaction.max_regex_scan_length`` (UTF-8 bytes)
 
         Falls back to the namespace defaults registered in
         :mod:`apcore.config` when keys are missing.  Empty lists are
@@ -155,6 +161,7 @@ class RedactionConfig:
             sensitive_keys=list(sensitive_keys),
             regex_patterns=list(regex_patterns),
             replacement=str(replacement),
+            max_regex_scan_length=config.get("obs.redaction.max_regex_scan_length", DEFAULT_MAX_REGEX_SCAN_LENGTH),
         )
 
     @classmethod
@@ -215,9 +222,16 @@ def _apply_redaction_config(data: dict[str, Any], config: RedactionConfig) -> di
         field_match = any(match_glob(pattern, key) for pattern in config.field_patterns)
         # §10.6.1 requirement 2 binds the legacy value rule as much as
         # `regex_patterns`: string values only, never a stringified number or container.
-        value_match = isinstance(value, str) and any(re.search(pattern, value) for pattern in config.value_patterns)
+        value_match = (
+            isinstance(value, str)
+            and bool(config.value_patterns)
+            and (
+                _regex_scan_too_long(value, config.max_regex_scan_length)
+                or any(re.search(pattern, value) for pattern in config.value_patterns)
+            )
+        )
         sensitive_key_match = _key_matches_sensitive(key, config.sensitive_keys)
-        regex_value_match = _value_matches(value, config.compiled_regex_patterns)
+        regex_value_match = _value_matches(value, config.compiled_regex_patterns, config.max_regex_scan_length)
         if field_match or value_match or sensitive_key_match or regex_value_match:
             result[key] = config.replacement
         else:
@@ -266,7 +280,11 @@ def _redact_secrets_recursive(
             protected = isinstance(k, str) and k in PROTECTED_LOG_FIELDS
             if not protected and isinstance(k, str) and _key_matches_sensitive(k, config.sensitive_keys):
                 out[k] = config.replacement
-            elif not protected and isinstance(v, str) and _value_matches(v, config.compiled_regex_patterns):
+            elif (
+                not protected
+                and isinstance(v, str)
+                and _value_matches(v, config.compiled_regex_patterns, config.max_regex_scan_length)
+            ):
                 out[k] = config.replacement
             elif protected and not isinstance(v, (dict, list)):
                 # Only the protected field's OWN scalar value is immune; a
@@ -280,7 +298,7 @@ def _redact_secrets_recursive(
         # Array elements have no key of their own, so none of them is protected
         # — including elements directly under a protected key.
         return [_redact_secrets_recursive(item, depth + 1, config) for item in value]
-    if isinstance(value, str) and _value_matches(value, config.compiled_regex_patterns):
+    if isinstance(value, str) and _value_matches(value, config.compiled_regex_patterns, config.max_regex_scan_length):
         return config.replacement
     return value
 

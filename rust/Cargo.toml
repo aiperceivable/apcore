@@ -1,6 +1,6 @@
 [package]
 name = "apcore"
-version = "1.0.0-alpha.6"
+version = "1.0.0-beta.1"
 edition = "2021"
 # Minimum supported Rust version. Verified with `cargo +1.86 check --all-features`.
 # The binding language constraint is `std::task::Waker::noop()` (used by the
@@ -156,7 +156,7 @@ path = "tests/test_otlp_proxy_routing.rs"
 required-features = ["events"]
 
 [dependencies]
-apcore-macros = { version = "=1.0.0-alpha.6", path = "apcore-macros", optional = true }
+apcore-macros = { version = "=1.0.0-beta.1", path = "apcore-macros", optional = true }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

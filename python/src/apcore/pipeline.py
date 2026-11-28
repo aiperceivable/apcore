@@ -14,11 +14,19 @@ from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any, Callable, Protocol, runtime_checkable
 
 from apcore.context import Identity, _APPROVAL_TOKEN_KEY
-from apcore.errors import ACLDeniedError, InvalidInputError, ModuleError, ModuleTimeoutError, PolicyEvaluationError
+from apcore.errors import (
+    ACLDeniedError,
+    CallBudgetExceededError,
+    InvalidInputError,
+    ModuleError,
+    ModuleTimeoutError,
+    PolicyEvaluationError,
+)
 from apcore.middleware.manager import MiddlewareChainError
 from apcore.utils.pattern import match_pattern
 
 if TYPE_CHECKING:
+    from apcore.call_budget import CallBudget, _CallReservation
     from apcore._post_validation_policy import _PolicyInvocation
     from apcore.module import ModuleAnnotations
     from apcore.streaming import _StreamObservation
@@ -148,6 +156,9 @@ class PipelineContext:
     _policy_enabled: bool = field(default=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
+        self._call_budget: CallBudget | None = getattr(self.context, "_call_budget", None)
+        self._budget_reservation: _CallReservation | None = None
+        self._budget_stream_pending = False
         # Keep the resume credential outside the public dataclass state.
         self._approval_token: str | None = None
         self._running_pipeline = False
@@ -1003,7 +1014,8 @@ class PipelineEngine:
                 fail_closed = (
                     getattr(step, "_fail_closed_on_error", False)
                     or ctx._policy_pending
-                    or isinstance(exc, PolicyEvaluationError)
+                    or isinstance(exc, (PolicyEvaluationError, CallBudgetExceededError))
+                    or (ctx._call_budget is not None and isinstance(exc, ConfigurationError))
                     or (scoped_frame is not None and isinstance(exc, ACLDeniedError))
                 )
                 recovery: Any = None

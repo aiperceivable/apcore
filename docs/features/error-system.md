@@ -275,8 +275,9 @@ Class names are the Python / TypeScript names; where the two differ, both are gi
 | `CALL_DEPTH_EXCEEDED` | `CallDepthExceededError` | Exceeds max nesting depth (`details`: `depth`, `max_depth`, `call_chain`) |
 | `CIRCULAR_CALL` | `CircularCallError` | Circular call detected (`details`: `module_id`, `call_chain`) |
 | `CALL_FREQUENCY_EXCEEDED` | `CallFrequencyExceededError` | Module called too many times (`details`: `module_id`, `count`, `max_repeat`, `call_chain`) |
+| `CALL_BUDGET_EXCEEDED` | `CallBudgetExceededError` (Python and TypeScript), `ErrorCode::CallBudgetExceeded` (Rust) | The call tree exceeded its call or cost limit. The nonretryable error reports the `dimension` as `calls` or `cost`. |
 
-See [Call Chain Guard](./call-chain-guard.md) for when each is raised.
+See [Call Chain Guard](./call-chain-guard.md) and [Call-tree budgets](./context-object.md#in-process-invocation-attachments) for the execution boundaries.
 
 #### Binding Errors
 

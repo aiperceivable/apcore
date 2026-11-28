@@ -12,10 +12,12 @@ use async_trait::async_trait;
 use futures_util::{stream, StreamExt};
 use serde_json::{json, Value};
 
+mod call_budget;
 mod capability_discovery;
 #[path = "conformance_env.rs"]
 mod conformance_env;
 mod post_validation_policy;
+mod realtime_context;
 
 #[derive(Default)]
 struct Report {

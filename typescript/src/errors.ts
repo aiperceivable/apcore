@@ -1047,6 +1047,16 @@ export class PolicyDeniedError extends ModuleError {
   }
 }
 
+/** A call tree exhausted its call-count or cost limit. */
+export class CallBudgetExceededError extends ModuleError {
+  static override readonly DEFAULT_RETRYABLE = false;
+
+  constructor(dimension: 'calls' | 'cost') {
+    super(ErrorCodes.CALL_BUDGET_EXCEEDED, `The invocation exceeded its ${dimension} budget.`, { dimension });
+    this.name = 'CallBudgetExceededError';
+  }
+}
+
 export class PolicyEvaluationError extends ModuleError {
   static override readonly DEFAULT_RETRYABLE = true;
 
@@ -1589,6 +1599,7 @@ export const ErrorCodes = Object.freeze({
   CALL_DEPTH_EXCEEDED: 'CALL_DEPTH_EXCEEDED',
   CIRCULAR_CALL: 'CIRCULAR_CALL',
   CALL_FREQUENCY_EXCEEDED: 'CALL_FREQUENCY_EXCEEDED',
+  CALL_BUDGET_EXCEEDED: 'CALL_BUDGET_EXCEEDED',
   GENERAL_INVALID_INPUT: 'GENERAL_INVALID_INPUT',
   GENERAL_INTERNAL_ERROR: 'GENERAL_INTERNAL_ERROR',
   INVALID_MODULE_ID: 'INVALID_MODULE_ID',

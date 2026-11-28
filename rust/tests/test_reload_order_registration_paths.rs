@@ -170,6 +170,7 @@ fn make_ctx() -> Context<Value> {
         cancel_token: None,
         global_deadline: None,
         executor: None,
+        runtime: apcore::ContextRuntime::default(),
     }
 }
 

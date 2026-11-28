@@ -22,6 +22,7 @@ logger = logging.getLogger(__name__)
 ValuePattern = Union[str, "re.Pattern[str]"]
 
 REDACTED_VALUE: str = "***REDACTED***"
+DEFAULT_MAX_REGEX_SCAN_LENGTH = 65_536
 
 # Correlation identifiers that MUST NEVER be redacted, whatever the configured
 # ``sensitive_keys`` or ``regex_patterns`` say.
@@ -61,6 +62,7 @@ def redact_sensitive(
     sensitive_keys: list[str] | None = None,
     regex_patterns: Sequence[ValuePattern] | None = None,
     replacement: str | None = None,
+    max_regex_scan_length: int = DEFAULT_MAX_REGEX_SCAN_LENGTH,
 ) -> dict[str, Any]:
     """Redact fields marked with x-sensitive in the schema.
 
@@ -91,10 +93,13 @@ def redact_sensitive(
             tested and never stringified (requirement 2).
         replacement: Optional replacement token; defaults to
             :data:`REDACTED_VALUE`.
+        max_regex_scan_length: UTF-8 byte cap for regex scans. Oversized
+            strings are fully replaced whenever a value regex is active.
 
     Returns:
         A new dict with sensitive values replaced. Original data is not modified.
     """
+    _validate_regex_scan_length(max_regex_scan_length)
     keys = sensitive_keys if sensitive_keys is not None else _default_sensitive_keys()
     # Compiled ONCE here rather than at every node of the walk below
     # (PROTOCOL_SPEC 10.6.1 requirement 5), which is also what keeps the
@@ -104,7 +109,7 @@ def redact_sensitive(
 
     redacted = copy.deepcopy(data)
     _redact_fields(redacted, schema_dict, token=token)
-    _redact_by_keys_and_regex(redacted, keys, value_regexes, token)
+    _redact_by_keys_and_regex(redacted, keys, value_regexes, token, max_regex_scan_length)
     return redacted
 
 
@@ -312,7 +317,23 @@ def _key_matches(key: str, sensitive_keys: list[str]) -> bool:
     return False
 
 
-def _value_matches(value: Any, value_regexes: Sequence[re.Pattern[str]]) -> bool:
+def _validate_regex_scan_length(value: Any) -> None:
+    if type(value) is not int or not 0 <= value <= (1 << 53) - 1:
+        raise ValueError("max_regex_scan_length must be a non-negative safe integer (UTF-8 bytes)")
+
+
+def _regex_scan_too_long(value: str, limit: int) -> bool:
+    if len(value) > limit:
+        return True
+    try:
+        return len(value.encode("utf-8")) > limit
+    except UnicodeEncodeError:
+        return True
+
+
+def _value_matches(
+    value: Any, value_regexes: Sequence[re.Pattern[str]], max_regex_scan_length: int = DEFAULT_MAX_REGEX_SCAN_LENGTH
+) -> bool:
     """Case-insensitive regex search over *value*, when *value* is a string.
 
     PROTOCOL_SPEC §10.6.1 requirement 2: the value rule applies to **string
@@ -329,6 +350,8 @@ def _value_matches(value: Any, value_regexes: Sequence[re.Pattern[str]]) -> bool
     """
     if not isinstance(value, str) or not value_regexes:
         return False
+    if _regex_scan_too_long(value, max_regex_scan_length):
+        return True
     for pat in value_regexes:
         if pat.search(value) is not None:
             return True
@@ -391,6 +414,7 @@ def _redact_by_keys_and_regex(
     sensitive_keys: list[str],
     value_regexes: Sequence[re.Pattern[str]],
     token: str,
+    max_regex_scan_length: int,
 ) -> None:
     """In-place redaction by name (substring/glob) or value (regex), at any depth.
 
@@ -415,13 +439,13 @@ def _redact_by_keys_and_regex(
         if not protected and _key_matches(key, sensitive_keys):
             data[key] = token
             continue
-        if not protected and _value_matches(value, value_regexes):
+        if not protected and _value_matches(value, value_regexes, max_regex_scan_length):
             data[key] = token
             continue
         if isinstance(value, dict):
-            _redact_by_keys_and_regex(value, sensitive_keys, value_regexes, token)
+            _redact_by_keys_and_regex(value, sensitive_keys, value_regexes, token, max_regex_scan_length)
         elif isinstance(value, list):
-            _redact_in_list(value, sensitive_keys, value_regexes, token)
+            _redact_in_list(value, sensitive_keys, value_regexes, token, max_regex_scan_length)
 
 
 def _redact_in_list(
@@ -429,14 +453,15 @@ def _redact_in_list(
     sensitive_keys: list[str],
     value_regexes: Sequence[re.Pattern[str]],
     token: str,
+    max_regex_scan_length: int,
 ) -> None:
     """Traverse a list, redacting dict children and recursing into nested lists."""
     for index, item in enumerate(items):
         if item is None:
             continue
         if isinstance(item, dict):
-            _redact_by_keys_and_regex(item, sensitive_keys, value_regexes, token)
+            _redact_by_keys_and_regex(item, sensitive_keys, value_regexes, token, max_regex_scan_length)
         elif isinstance(item, list):
-            _redact_in_list(item, sensitive_keys, value_regexes, token)
-        elif _value_matches(item, value_regexes):
+            _redact_in_list(item, sensitive_keys, value_regexes, token, max_regex_scan_length)
+        elif _value_matches(item, value_regexes, max_regex_scan_length):
             items[index] = token

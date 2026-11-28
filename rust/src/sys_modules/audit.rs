@@ -225,6 +225,7 @@ mod tests {
             cancel_token: None,
             global_deadline: None,
             executor: None,
+            runtime: crate::ContextRuntime::default(),
         }
     }
 

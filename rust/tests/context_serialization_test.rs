@@ -30,6 +30,7 @@ fn make_ctx() -> Context<()> {
         cancel_token: None,
         global_deadline: None,
         executor: None,
+        runtime: apcore::ContextRuntime::default(),
     }
 }
 
@@ -229,6 +230,7 @@ fn make_top_level_ctx() -> Context<()> {
         cancel_token: None,
         global_deadline: None,
         executor: None,
+        runtime: apcore::ContextRuntime::default(),
     }
 }
 

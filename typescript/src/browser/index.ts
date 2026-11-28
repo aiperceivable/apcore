@@ -29,6 +29,8 @@ export type { Discoverer, ModuleValidator } from '../registry/registry.js';
 // ---- Context / identity / cancel -----------------------------------------
 export { CancelToken, ExecutionCancelledError } from '../cancel.js';
 export { Context, Identity, createIdentity } from '../context.js';
+export { CallBudget } from '../call-budget.js';
+export type { CallBudgetOptions, CallBudgetSnapshot } from '../call-budget.js';
 export { ContextKey } from '../context-key.js';
 export {
   TRACING_SPANS,
@@ -38,7 +40,7 @@ export {
   REDACTED_OUTPUT,
   RETRY_COUNT_BASE,
 } from '../context-keys.js';
-export type { IdentityOptions, ContextFactory } from '../context.js';
+export type { IdentityOptions, ContextFactory, ElicitationHandler, ElicitationResult, ProgressReporter } from '../context.js';
 export { TraceContext } from '../trace-context.js';
 export type { TraceParent } from '../trace-context.js';
 
@@ -95,6 +97,7 @@ export type {
 // ---- Errors --------------------------------------------------------------
 export {
   ModuleError,
+  CallBudgetExceededError,
   ConfigNotFoundError,
   ConfigError,
   ACLRuleError,

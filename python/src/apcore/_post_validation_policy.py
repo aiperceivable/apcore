@@ -9,7 +9,6 @@ import math
 import re
 import struct
 import time
-from contextlib import suppress
 from copy import copy, deepcopy
 from typing import TYPE_CHECKING, Any, Annotated, get_args, get_origin
 from uuid import UUID, SafeUUID
@@ -18,6 +17,7 @@ from pydantic import AliasPath, BaseModel, RootModel
 from pydantic.fields import FieldInfo
 
 from apcore.errors import PolicyEvaluationError
+from apcore.cancel import _AwaitDeadlineExpired, _await_with_cancellation
 from apcore.context import _APPROVAL_TOKEN_KEY
 from apcore.decorator import FunctionModule
 from apcore.policy import PolicyEvaluationRequest, PolicyEvaluator, PolicyVerdict
@@ -209,45 +209,13 @@ async def _evaluate_policy(
     deadline: float | None,
 ) -> PolicyVerdict:
     """Bound a trusted provider independently of its cancellation cooperation."""
-    if token is not None:
-        token.check()
     remaining = _EVALUATOR_TIMEOUT_SECONDS
     if deadline is not None:
         remaining = min(remaining, deadline - time.time())
-    if remaining <= 0:
-        raise PolicyEvaluationError()
-
-    loop = asyncio.get_running_loop()
-    expires_at = loop.time() + remaining
-    cancelled = loop.create_future()
-
-    def report_cancellation() -> None:
-        if not cancelled.done():
-            cancelled.set_result(None)
-
-    def signal_cancellation() -> None:
-        with suppress(RuntimeError):
-            loop.call_soon_threadsafe(report_cancellation)
-
-    unsubscribe = token._listen(signal_cancellation) if token is not None else None
-    task = asyncio.create_task(_read_verdict(evaluator, request))
     try:
-        await asyncio.wait((task, cancelled), timeout=remaining, return_when=asyncio.FIRST_COMPLETED)
-        if token is not None:
-            token.check()
-        # A non-yielding evaluator can finish before the loop services its timer.
-        if not task.done() or loop.time() >= expires_at:
-            raise PolicyEvaluationError()
-        return task.result()
-    finally:
-        if unsubscribe is not None:
-            unsubscribe()
-        cancelled.cancel()
-        if not task.done():
-            task.cancel()
-            task.add_done_callback(_consume_result)
-        elif not task.cancelled():
-            task.exception()
+        return await _await_with_cancellation(lambda: _read_verdict(evaluator, request), token, remaining)
+    except _AwaitDeadlineExpired:
+        raise PolicyEvaluationError() from None
 
 
 async def _read_verdict(evaluator: PolicyEvaluator, request: PolicyEvaluationRequest) -> PolicyVerdict:
@@ -258,11 +226,6 @@ async def _read_verdict(evaluator: PolicyEvaluator, request: PolicyEvaluationReq
     except (Exception, asyncio.CancelledError):
         pass
     raise PolicyEvaluationError()
-
-
-def _consume_result(task: asyncio.Future[PolicyVerdict]) -> None:
-    if not task.cancelled():
-        task.exception()
 
 
 def _safe_rule_id(rule_id: str | None) -> str | None:

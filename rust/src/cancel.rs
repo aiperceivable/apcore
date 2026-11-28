@@ -516,6 +516,21 @@ impl Default for CancelToken {
     }
 }
 
+pub(crate) fn deadline_remaining(deadline: f64) -> Option<std::time::Duration> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs_f64();
+    std::time::Duration::try_from_secs_f64((deadline - now).max(0.0)).ok()
+}
+
+pub(crate) async fn wait_for_cancellation(token: Option<&CancelToken>) {
+    match token {
+        Some(token) => token.cancelled().await,
+        None => std::future::pending().await,
+    }
+}
+
 #[cfg(test)]
 mod child_token_tests {
     use super::CancelToken;

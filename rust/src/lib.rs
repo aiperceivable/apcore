@@ -17,6 +17,7 @@ pub mod approval;
 pub mod async_task;
 pub mod bindings;
 pub mod builtin_steps;
+mod call_budget;
 pub mod cancel;
 pub mod capability;
 pub mod client;
@@ -30,6 +31,7 @@ pub mod errors;
 pub mod events;
 pub mod executor;
 pub mod extensions;
+mod interaction;
 pub mod lifecycle;
 pub mod middleware;
 pub mod module;
@@ -86,12 +88,15 @@ pub use builtin_steps::{
     BuiltinExecute, BuiltinInputValidation, BuiltinMiddlewareAfter, BuiltinMiddlewareBefore,
     BuiltinModuleLookup, BuiltinOutputValidation, BuiltinReturnResult,
 };
+pub use call_budget::{CallBudget, CallBudgetSnapshot};
 pub use cancel::{CancelToken, ExecutionCancelledError};
 pub use client::{APCore, APCoreOptions, APCoreStartupError, TypedModuleOptions};
 pub use config::{
     Config, ConfigMode, EnvStyle, ExecutorConfig, MetricsConfig, MountSource, NamespaceInfo,
     NamespaceRegistration, ObservabilityConfig, TracingConfig, RESERVED_NAMESPACES,
 };
+#[doc(hidden)]
+pub use context::ContextRuntime;
 pub use context::{Context, ContextFactory, Identity};
 pub use context_key::ContextKey;
 pub use context_keys::{
@@ -120,6 +125,9 @@ pub use executor::{
     list_strategies, redact_sensitive, register_strategy, Executor, GovernanceState, REDACTED_VALUE,
 };
 pub use extensions::{ExtensionKind, ExtensionManager, ExtensionPoint};
+pub use interaction::{
+    ElicitationHandler, ElicitationRequest, ElicitationResult, ProgressReporter, ProgressUpdate,
+};
 pub use lifecycle::{
     DrainAbortReason, DrainAbortedContext, DrainContext, DrainReasonKind, DrainTimeoutPolicy,
     LifecycleCompensation, LifecycleEventFlush, LifecycleFailure, LifecycleHook, LifecycleKind,

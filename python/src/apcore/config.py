@@ -30,6 +30,7 @@ from apcore.errors import (
 )
 
 from apcore.version import _negotiate_document_version
+from apcore.utils.redaction import DEFAULT_MAX_REGEX_SCAN_LENGTH, _validate_regex_scan_length
 
 __all__ = ["Config", "discover_config_file"]
 
@@ -313,6 +314,7 @@ _FRAMEWORK_CONFIG_KEYS: frozenset[str] = frozenset(
         "logging.format",
         "logging.level",
         "middleware.disabled",
+        "obs.redaction.max_regex_scan_length",
         "obs.redaction.regex_patterns",
         "obs.redaction.replacement",
         "obs.redaction.sensitive_keys",
@@ -1949,6 +1951,10 @@ class Config:
         if strict:
             errors.extend(_collect_unknown_framework_keys(data, prefix=prefix))
         errors.extend(_collect_uncompilable_regex_patterns(data))
+        try:
+            _validate_regex_scan_length(self.get("obs.redaction.max_regex_scan_length", DEFAULT_MAX_REGEX_SCAN_LENGTH))
+        except ValueError as exc:
+            errors.append(f"Invalid value for 'obs.redaction.max_regex_scan_length': {exc}")
         if errors:
             raise ConfigError(
                 message=f"Configuration validation failed ({len(errors)} error(s)):\n"
@@ -2112,6 +2118,7 @@ Config.register_namespace(
     defaults={
         "redaction": {
             "regex_patterns": [],
+            "max_regex_scan_length": DEFAULT_MAX_REGEX_SCAN_LENGTH,
             "sensitive_keys": list(_DEFAULT_OBS_REDACTION_SENSITIVE_KEYS),
             "replacement": "***REDACTED***",
         },

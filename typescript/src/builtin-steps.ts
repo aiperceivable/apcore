@@ -17,6 +17,7 @@ import { createApprovalRequest, createApprovalResult, takeApprovalToken } from '
 import type { Config } from './config.js';
 import { getDefault } from './config-defaults.js';
 import { CancelToken, awaitExecution } from './cancel.js';
+import { assertBudgetDispatch, bindBudgetContext, commitBudgetCall, recordBudgetProducer, reserveBudgetCall } from './call-budget.js';
 import { Context } from './context.js';
 import { assertDeclarationInvocation, recordDeclarationDispatch } from './declaration-invocation.js';
 import { authorityKeyOf, hasScopeCeiling } from './identity.js';
@@ -154,6 +155,7 @@ export class BuiltinContextCreation implements Step {
       );
     }
 
+    bindBudgetContext(ctx, derived);
     ctx.context = derived;
     if (invocation) {
       invocation.context = derived;
@@ -206,6 +208,7 @@ export class BuiltinCallChainGuard implements Step {
 
     // Call chain safety guard — throws CallDepthExceededError, CircularCallError, etc.
     guardCallChain(ctx.moduleId, ctx.context.callChain, this._maxCallDepth, this._maxModuleRepeat);
+    reserveBudgetCall(ctx);
 
     return { action: 'continue' };
   }
@@ -994,21 +997,17 @@ export class BuiltinExecute implements Step {
     if (invocation?.stream ?? ctx.stream) {
       const candidate = ctx.module as Module;
       if (isStreamingModule(candidate)) {
-        if (invocation) {
-          const protectedProducer = this._streamWithLease(ctx, () => {
-            assertScopedInvocation(ctx, true);
-            assertPolicyBinding(ctx, invocation);
-            invocation.dispatched = true;
-            return candidate.stream(inputs, context);
-          });
-          invocation.producer = protectedProducer;
-          ctx.outputStream = protectedProducer;
-        } else {
-          ctx.outputStream = this._streamWithLease(ctx, () => {
-            assertScopedInvocation(ctx, true);
-            return candidate.stream(ctx.inputs, ctx.context);
-          });
-        }
+        const producer = this._streamWithLease(ctx, () => {
+          assertScopedInvocation(ctx, true);
+          if (invocation) assertPolicyBinding(ctx, invocation);
+        }, () => {
+          if (!invocation) return candidate.stream(ctx.inputs, ctx.context);
+          invocation.dispatched = true;
+          return candidate.stream(inputs, context);
+        });
+        if (invocation) invocation.producer = producer;
+        ctx.outputStream = producer;
+        recordBudgetProducer(ctx, producer);
         return { action: 'continue' };
       }
       // fallback: execute normally and wrap as single-chunk
@@ -1049,7 +1048,9 @@ export class BuiltinExecute implements Step {
 
     const release = moduleExecutionLeases.get(ctx)?.();
     let executionPromise: Promise<Record<string, unknown>>;
+    let settleBudget: (() => void) | undefined;
     try {
+      settleBudget = commitBudgetCall(ctx);
       recordDeclarationDispatch(ctx);
       if (invocation) invocation.dispatched = true;
       executionPromise = Promise.resolve(
@@ -1061,10 +1062,14 @@ export class BuiltinExecute implements Step {
         ).call(mod, inputs, ctx.context),
       );
     } catch (error) {
+      settleBudget?.();
       release?.();
       throw error;
     }
-    if (release) void executionPromise.then(release, release);
+    if (release || settleBudget) {
+      const settle = (): void => { settleBudget?.(); release?.(); };
+      void executionPromise.then(settle, settle);
+    }
 
     const output = await awaitExecution(
       executionPromise,
@@ -1073,6 +1078,7 @@ export class BuiltinExecute implements Step {
       timeoutMs,
       isModuleIdempotent(mod),
     );
+    assertBudgetDispatch(ctx);
     if (output == null) {
       throw new ModuleExecuteError(ctx.moduleId, 'Return value cannot be None');
     }
@@ -1087,12 +1093,27 @@ export class BuiltinExecute implements Step {
 
   private async *_streamWithLease(
     ctx: PipelineContext,
+    assertAuthorized: () => void,
     createStream: () => AsyncGenerator<Record<string, unknown>>,
   ): AsyncGenerator<Record<string, unknown>> {
+    ctx.context.cancelToken?.check();
+    assertAuthorized();
     const release = moduleExecutionLeases.get(ctx)?.();
+    let settleBudget: (() => void) | undefined;
     try {
-      yield* createStream();
+      settleBudget = commitBudgetCall(ctx);
+      const stream = createStream();
+      if (!settleBudget) {
+        yield* stream;
+        return;
+      }
+      for await (const chunk of stream) {
+        assertBudgetDispatch(ctx);
+        yield chunk;
+      }
+      assertBudgetDispatch(ctx);
     } finally {
+      settleBudget?.();
       release?.();
     }
   }

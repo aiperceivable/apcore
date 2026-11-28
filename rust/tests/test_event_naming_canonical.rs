@@ -112,6 +112,7 @@ fn build_ctx_with_caller(caller_id: Option<String>, identity_id: Option<&str>) -
         cancel_token: None,
         global_deadline: None,
         executor: None,
+        runtime: apcore::ContextRuntime::default(),
     }
 }
 

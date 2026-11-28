@@ -20,7 +20,9 @@ from apcore._sync_bridge import _SyncBridge
 from apcore.acl import ACL
 from apcore.approval import ApprovalHandler
 from apcore.builtin_steps import (
+    BuiltinCallChainGuard,
     BuiltinContextCreation,
+    BuiltinExecute,
     BuiltinModuleLookup,
     _bind_post_validation_policy,
     _is_idempotent,
@@ -38,6 +40,7 @@ from apcore.context import Context
 from apcore.context_keys import _current_trace_span
 from apcore.errors import (
     ACLDeniedError,
+    CallBudgetExceededError,
     CallDepthExceededError,
     CallFrequencyExceededError,
     CircularCallError,
@@ -70,6 +73,7 @@ from apcore.module import (
 from apcore.policy import ExecutionPolicy, PolicyEvaluator, strip_approval_token
 from apcore.pipeline import (
     AbortReason,
+    ConfigurationError,
     ExecutionStrategy,
     GovernanceState,
     PipelineAbortError,
@@ -1118,6 +1122,7 @@ class Executor:
             effective_strategy = _bind_post_validation_policy(effective_strategy, evaluator)
         if context is None:
             context = Context.create()
+        self._check_budget_strategy(effective_strategy, module_id, context)
         context.bind_executor(self)
 
         invocation_deadline: float | None = None
@@ -1222,7 +1227,7 @@ class Executor:
         # typed cause is what middleware on_error handlers and the final
         # caller observe — not the chain-machinery wrapper.
         original = exc.original if isinstance(exc, MiddlewareChainError) else exc
-        if (
+        if isinstance(original, CallBudgetExceededError) or (
             isinstance(original, ACLDeniedError)
             and getattr(getattr(ctx_obj, "identity", None), "scopes", None) is not None
         ):
@@ -1330,6 +1335,7 @@ class Executor:
         # to the Context before pipeline step 1.
         if context is None:
             context = Context.create()
+        self._check_budget_strategy(strategy, module_id, context)
         context.bind_executor(self)
         context = copy(context)
         observation.cancel_token = CancelToken(parent=context.cancel_token)
@@ -1504,6 +1510,9 @@ class Executor:
         index = 0
         while True:
             self._check_stream_context(ctx)
+            if ctx._budget_stream_pending:
+                BuiltinExecute._start_budgeted_dispatch(ctx)
+                ctx._budget_stream_pending = False
             try:
                 chunk = await anext(source)
             except StopAsyncIteration:
@@ -1706,6 +1715,19 @@ class Executor:
         # §6.6.5.5 (D-129): a per-call strategy is still a way this executor gets
         # a strategy, so its gates receive the executor's providers too.
         return self._bind_providers(resolved)
+
+    @staticmethod
+    def _check_budget_strategy(strategy: ExecutionStrategy, module_id: str, context: Any) -> None:
+        if getattr(context, "_call_budget", None) is None:
+            return
+        required = (BuiltinContextCreation, BuiltinCallChainGuard, BuiltinExecute)
+        active = tuple(
+            type(step)
+            for step in strategy.steps
+            if isinstance(step, required) and (step.match_modules is None or _any_match(step.match_modules, module_id))
+        )
+        if active != required:
+            raise ConfigurationError("CallBudget requires the stock context, call-chain guard, and execute steps")
 
     # -------------------------------------------------------------------------
     # Introspection

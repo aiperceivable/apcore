@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import threading
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Literal
 
 __all__ = [
     "ModuleError",
@@ -34,6 +34,7 @@ __all__ = [
     "ModuleNotFoundError",
     "ModuleDisabledError",
     "ModuleTimeoutError",
+    "CallBudgetExceededError",
     "SchemaValidationError",
     "SchemaNotFoundError",
     "SchemaParseError",
@@ -473,6 +474,19 @@ class ModuleDisabledError(ModuleError):
             message=f"Module '{module_id}' is disabled",
             details={"module_id": module_id},
             **kwargs,
+        )
+
+
+class CallBudgetExceededError(ModuleError):
+    """Raised when a guarded call reaches a call or cost budget limit."""
+
+    _default_retryable: bool | None = False
+
+    def __init__(self, dimension: Literal["calls", "cost"]) -> None:
+        super().__init__(
+            code="CALL_BUDGET_EXCEEDED",
+            message=f"Call budget exceeded ({dimension})",
+            details={"dimension": dimension},
         )
 
 
@@ -943,8 +957,7 @@ class BindingSchemaInferenceFailedError(ModuleError):
         super().__init__(
             code="BINDING_SCHEMA_INFERENCE_FAILED",
             message=(
-                f"{loc}{mod_part}auto schema inference failed for target '{target}'. "
-                f"{rem} See protocol-spec §5.12.5"
+                f"{loc}{mod_part}auto schema inference failed for target '{target}'. {rem} See protocol-spec §5.12.5"
             ),
             details={
                 "target": target,
@@ -1455,6 +1468,7 @@ class ErrorCodes:
     SCHEMA_CIRCULAR_REF = "SCHEMA_CIRCULAR_REF"
     SCHEMA_MAX_DEPTH_EXCEEDED = "SCHEMA_MAX_DEPTH_EXCEEDED"
     CALL_DEPTH_EXCEEDED = "CALL_DEPTH_EXCEEDED"
+    CALL_BUDGET_EXCEEDED = "CALL_BUDGET_EXCEEDED"
     CIRCULAR_CALL = "CIRCULAR_CALL"
     CALL_FREQUENCY_EXCEEDED = "CALL_FREQUENCY_EXCEEDED"
     GENERAL_INVALID_INPUT = "GENERAL_INVALID_INPUT"

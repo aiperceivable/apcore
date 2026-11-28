@@ -3,8 +3,9 @@
  */
 
 import { uuidV4 as uuidv4 } from './utils/uuid.js';
-import type { CancelToken } from './cancel.js';
-import { ContextBindingError } from './errors.js';
+import { awaitContextOperation, type CancelToken } from './cancel.js';
+import { attachBudget, inheritBudget, recordBudgetCost, type CallBudget } from './call-budget.js';
+import { ContextBindingError, InvalidInputError } from './errors.js';
 import { copyObservationState, inheritObservationParent, setRemoteSpanParent } from './execution-lifetime.js';
 import { ContextLogger } from './observability/context-logger.js';
 import type { TraceParent } from './trace-context.js';
@@ -13,6 +14,18 @@ import { hasScopeCeiling, identityFromWire, identityToWire, type Identity } from
 
 export { Identity, createIdentity } from './identity.js';
 export type { IdentityOptions } from './identity.js';
+
+/** An invocation-local provider for progress updates. */
+export type ProgressReporter = (progress: number, total?: number, message?: string) => void | Promise<void>;
+
+/** The result of a real-time elicitation request. */
+export type ElicitationResult =
+  | { readonly action: 'accept'; readonly content: Record<string, unknown> }
+  | { readonly action: 'decline' | 'cancel' };
+
+/** An invocation-local provider for structured input. */
+export type ElicitationHandler = (message: string, requestedSchema?: Record<string, unknown>) =>
+  ElicitationResult | Promise<ElicitationResult>;
 
 export class Context<T = null> {
   readonly traceId: string;
@@ -26,6 +39,8 @@ export class Context<T = null> {
   readonly services: T;
   readonly cancelToken: CancelToken | null;
   readonly globalDeadline: number | null;
+  private _progressReporter: ProgressReporter | null = null;
+  private _elicitationHandler: ElicitationHandler | null = null;
   private _logger: ContextLogger | null = null;
   /** One notice per process: this accessor can be hit once per module call. */
   private static _loggerDeprecationWarned = false;
@@ -163,21 +178,7 @@ export class Context<T = null> {
         'Context already bound to a different Executor instance',
       );
     }
-    const bound = new Context<T>(
-      this.traceId,
-      this.callerId,
-      [...this.callChain],
-      executor,
-      this.identity,
-      this.redactedInputs,
-      this.data,
-      this.cancelToken,
-      this.services,
-      this.globalDeadline,
-      this.redactedOutput,
-    );
-    copyObservationState(this, bound);
-    return bound;
+    return this._derive({ executor });
   }
 
   /** @deprecated Use {@link withExecutor}. Retained for older callers; will be removed in a future major. */
@@ -197,21 +198,7 @@ export class Context<T = null> {
    * first call's remaining time — or fail immediately, having already expired.
    */
   _withGlobalDeadline(globalDeadline: number | null): Context<T> {
-    const bound = new Context<T>(
-      this.traceId,
-      this.callerId,
-      [...this.callChain],
-      this.executor,
-      this.identity,
-      this.redactedInputs,
-      this.data,
-      this.cancelToken,
-      this.services,
-      globalDeadline,
-      this.redactedOutput,
-    );
-    copyObservationState(this, bound);
-    return bound;
+    return this._derive({ globalDeadline });
   }
 
   /**
@@ -237,21 +224,83 @@ export class Context<T = null> {
 
   /** @internal Carry an invocation-owned token without changing call-chain identity. */
   _withCancellationScope(cancelToken: CancelToken): Context<T> {
+    return this._derive({ cancelToken });
+  }
+
+  /** Derive a context that shares a call-tree budget, or clear it with null. */
+  withBudget(budget: CallBudget | null): Context<T> {
+    const context = this._derive();
+    attachBudget(context, budget);
+    return context;
+  }
+
+  /** Settle the active invocation's estimated cost with its actual cost once. */
+  recordCost(actual: number): void {
+    recordBudgetCost(this, actual);
+  }
+
+  /** Derive a context with a progress reporter, or clear it with null. */
+  withProgressReporter(reporter: ProgressReporter | null): Context<T> {
+    if (reporter !== null && typeof reporter !== 'function') throw new InvalidInputError('Progress reporter must be a function');
+    const context = this._derive();
+    context._progressReporter = reporter;
+    return context;
+  }
+
+  /** Derive a context with an elicitation handler, or clear it with null. */
+  withElicitationHandler(handler: ElicitationHandler | null): Context<T> {
+    if (handler !== null && typeof handler !== 'function') throw new InvalidInputError('Elicitation handler must be a function');
+    const context = this._derive();
+    context._elicitationHandler = handler;
+    return context;
+  }
+
+  /** Report progress if the invocation has a reporter. */
+  async reportProgress(progress: number, total?: number, message?: string): Promise<void> {
+    const reporter = this._progressReporter;
+    if (reporter !== null) await this._runInteraction(async () => reporter(progress, total, message));
+  }
+
+  /** Request structured input if the invocation has an elicitation handler. */
+  async elicit(message: string, requestedSchema?: Record<string, unknown>): Promise<ElicitationResult | null> {
+    const handler = this._elicitationHandler;
+    if (handler === null) return null;
+    const result = await this._runInteraction(async () => handler(message, requestedSchema));
+    if (result?.action === 'decline' || result?.action === 'cancel') return { action: result.action };
+    if (result?.action === 'accept' && isRecord(result.content)) return { action: 'accept', content: result.content };
+    throw new InvalidInputError('Elicitation handler returned an invalid result');
+  }
+
+  private _runInteraction<R>(start: () => Promise<R>): Promise<R> {
+    const moduleId = this.callChain.at(-1) ?? 'context';
+    return awaitContextOperation(start, this, moduleId, false);
+  }
+
+  private _derive({
+    executor = this.executor, cancelToken = this.cancelToken, globalDeadline = this.globalDeadline,
+  }: { executor?: unknown; cancelToken?: CancelToken | null; globalDeadline?: number | null } = {}): Context<T> {
     const bound = new Context<T>(
       this.traceId,
       this.callerId,
       [...this.callChain],
-      this.executor,
+      executor,
       this.identity,
       this.redactedInputs,
       this.data,
       cancelToken,
       this.services,
-      this.globalDeadline,
+      globalDeadline,
       this.redactedOutput,
     );
+    this._inheritCapabilities(bound);
+    inheritBudget(this, bound, true);
     copyObservationState(this, bound);
     return bound;
+  }
+
+  private _inheritCapabilities(target: Context<T>): void {
+    target._progressReporter = this._progressReporter;
+    target._elicitationHandler = this._elicitationHandler;
   }
 
   /**
@@ -441,9 +490,17 @@ export class Context<T = null> {
       this.services,
       this.globalDeadline,
     );
+    this._inheritCapabilities(child);
+    inheritBudget(this, child, false);
     inheritObservationParent(this, child);
     return child;
   }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  if (value === null || typeof value !== 'object') return false;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
 }
 
 /**

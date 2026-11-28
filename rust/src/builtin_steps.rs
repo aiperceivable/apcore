@@ -1,7 +1,7 @@
 // APCore Protocol — Built-in execution pipeline steps
 // Spec reference: docs/features/execution-pipeline.md (Built-in steps)
 
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
 use async_trait::async_trait;
 use serde_json::Value;
@@ -308,6 +308,11 @@ impl Step for BuiltinCallChainGuard {
             config.executor.max_call_depth as usize,
             config.executor.max_module_repeat as usize,
         )?;
+        if !ctx.dry_run && ctx.budget_reservation.is_none() {
+            if let Some(budget) = ctx.call_budget.as_ref() {
+                ctx.budget_reservation = Some(budget.reserve(&ctx.module_id)?);
+            }
+        }
         Ok(StepResult::continue_step())
     }
 }
@@ -1229,12 +1234,18 @@ impl Step for BuiltinExecute {
             .as_ref()
             .ok_or_else(|| missing_pipeline_input("module"))?
             .clone();
+        let permit = ctx.budget_permit()?;
+        let mut started_budget = None;
         if ctx.stream.is_some() {
-            let producer = crate::executor::open_stream(ctx, &module).await?;
+            let (producer, active_budget) =
+                crate::executor::open_stream(ctx, &module, permit.clone()).await?;
             if let (Some(stream), Some(producer)) = (&mut ctx.stream, producer) {
-                stream.producer = Some(parking_lot::Mutex::new(producer));
+                stream.producer = Some(parking_lot::Mutex::new(
+                    crate::executor::with_stream_budget(producer, active_budget),
+                ));
                 return Ok(StepResult::continue_step());
             }
+            started_budget = active_budget;
         }
         let config = ctx
             .config
@@ -1273,48 +1284,7 @@ impl Step for BuiltinExecute {
             token.check_for(&ctx.module_id)?;
         }
 
-        let execute_result = if timeout_ms > 0 {
-            // Own the invocation: timeout must not drop module code before cleanup.
-            let inputs = ctx.inputs.clone();
-            let context = ctx.context.clone();
-            let token = context.cancel_token.clone();
-            // Read the retry-safety flag before `module` moves into the task.
-            let retryable = module.annotations().idempotent;
-            let lease = ctx.module_lease.clone();
-            let execution = async move {
-                let _lease = lease;
-                let result = module.execute(inputs, &context).await;
-                if let Err(error) = &result {
-                    tracing::debug!(
-                        code = %error.wire_code(),
-                        "Module invocation finished with an error"
-                    );
-                }
-                result
-            };
-            let invocation = if let Some(token) = token {
-                token.spawn_tracked(execution)
-            } else {
-                tokio::spawn(execution)
-            };
-            match tokio::time::timeout(Duration::from_millis(timeout_ms), invocation).await {
-                Ok(Ok(result)) => result,
-                Ok(Err(error)) => Err(ModuleError::new(
-                    ErrorCode::GeneralInternalError,
-                    format!("Module execution task failed: {error}"),
-                )),
-                Err(_elapsed) => {
-                    let error = ModuleError::module_timeout(&ctx.module_id, timeout_ms)
-                        .with_retryable(retryable);
-                    if let Some(token) = &ctx.context.cancel_token {
-                        token.cancel_after_timeout(&error);
-                    }
-                    Err(error)
-                }
-            }
-        } else {
-            module.execute(ctx.inputs.clone(), &ctx.context).await
-        };
+        let execute_result = execute_unary(module, ctx, timeout_ms, permit, started_budget).await;
 
         match execute_result {
             Ok(output) if output.is_object() => {
@@ -1329,29 +1299,104 @@ impl Step for BuiltinExecute {
                 ErrorCode::ModuleExecuteError,
                 "Return value must be Map",
             )),
-            Err(e) => {
-                // Cancellation short-circuit (D-20): an ExecutionCancelled
-                // error MUST bypass the on_error middleware chain even at the
-                // step level, so a recovering on_error middleware cannot
-                // swallow it into a success before reaching the executor-level
-                // guard in `Executor::call` / `call_with_trace`. Propagate it
-                // untouched. Mirrors apcore-python `_handle_error`
-                // (`_unwrap_cancellation` before any on_error recovery).
-                // Spec: docs/features/core-executor.md §Cancellation Short-Circuit
-                if matches!(e.code, ErrorCode::ExecutionCancelled) {
-                    return Err(e);
-                }
-                // A-D-010 / A-D-012: do NOT run step-level on_error recovery
-                // here. The executor-level loop is the sole recovery site (it
-                // runs `execute_on_error_outcome` over `ctx.executed_middlewares`
-                // and honors Recovery + Retry). Step-level recovery double-fired
-                // on_error and silently dropped RetrySignals. Mirrors
-                // apcore-python `BuiltinExecute` (raises; no step-level on_error)
-                // and apcore-typescript.
-                Err(e)
-            }
+            // The executor owns the error recovery and retry loop.
+            Err(error) => Err(error),
         }
     }
+}
+
+async fn execute_unary(
+    module: Arc<dyn crate::Module>,
+    ctx: &PipelineContext,
+    timeout_ms: u64,
+    permit: Option<Arc<crate::call_budget::BudgetPermit>>,
+    started_budget: Option<crate::call_budget::ActiveBudget>,
+) -> Result<Value, ModuleError> {
+    if timeout_ms > 0 {
+        // Own the invocation: timeout must not drop module code before cleanup.
+        let inputs = ctx.inputs.clone();
+        let context = ctx.context.clone();
+        let token = context.cancel_token.clone();
+        // Read the retry-safety flag before `module` moves into the task.
+        let retryable = module.annotations().idempotent;
+        let lease = ctx.module_lease.clone();
+        let execution = async move {
+            let _lease = lease;
+            let result =
+                execute_with_budget(module.as_ref(), inputs, &context, permit, started_budget)
+                    .await;
+            if let Err(error) = &result {
+                tracing::debug!(
+                    code = %error.wire_code(),
+                    "Module invocation finished with an error"
+                );
+            }
+            result
+        };
+        let invocation = if let Some(token) = token {
+            token.spawn_tracked(execution)
+        } else {
+            tokio::spawn(execution)
+        };
+        match tokio::time::timeout(Duration::from_millis(timeout_ms), invocation).await {
+            Ok(Ok(result)) => result,
+            Ok(Err(error)) => Err(ModuleError::new(
+                ErrorCode::GeneralInternalError,
+                format!("Module execution task failed: {error}"),
+            )),
+            Err(_elapsed) => {
+                let error = ModuleError::module_timeout(&ctx.module_id, timeout_ms)
+                    .with_retryable(retryable);
+                if let Some(token) = &ctx.context.cancel_token {
+                    token.cancel_after_timeout(&error);
+                }
+                Err(error)
+            }
+        }
+    } else {
+        execute_with_budget(
+            module.as_ref(),
+            ctx.inputs.clone(),
+            &ctx.context,
+            permit,
+            started_budget,
+        )
+        .await
+    }
+}
+
+async fn execute_with_budget(
+    module: &dyn crate::Module,
+    inputs: Value,
+    context: &crate::Context<Value>,
+    permit: Option<Arc<crate::call_budget::BudgetPermit>>,
+    started_budget: Option<crate::call_budget::ActiveBudget>,
+) -> Result<Value, ModuleError> {
+    if started_budget.is_none() && permit.is_none() {
+        return module.execute(inputs, context).await;
+    }
+    if let Some(token) = &context.cancel_token {
+        token.check()?;
+    }
+    if context
+        .global_deadline
+        .and_then(crate::cancel::deadline_remaining)
+        .is_some_and(|remaining| remaining.is_zero())
+    {
+        let module_id = context.call_chain.last().map_or("", String::as_str);
+        return Err(ModuleError::module_timeout(module_id, 0)
+            .with_retryable(module.annotations().idempotent));
+    }
+    let active = if let Some(started) = started_budget {
+        started
+    } else {
+        permit
+            .ok_or_else(|| missing_pipeline_input("budget_reservation"))?
+            .start()?
+    };
+    let mut context = context.clone();
+    active.bind(&mut context);
+    module.execute(inputs, &context).await
 }
 
 #[async_trait]
