@@ -12,8 +12,8 @@
   ],
   "progress": {
     "total_tasks": 5,
-    "completed": 3,
-    "in_progress": 2,
+    "completed": 4,
+    "in_progress": 1,
     "pending": 0
   },
   "tasks": [
@@ -39,7 +39,7 @@
       "id": "surfaces",
       "file": "tasks/surfaces.md",
       "title": "Guarded media reference pilot",
-      "status": "in_progress"
+      "status": "completed"
     },
     {
       "id": "verification",

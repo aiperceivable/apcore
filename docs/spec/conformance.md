@@ -326,7 +326,7 @@ The following requirements are not met by the SDK implementations in this reposi
 
 ## 8. Conformance Test Fixtures
 
-The repository ships **101 cross-language fixture files** under `conformance/fixtures/` covering **1269 test cases**. `conformance-integrity` checks these two numbers, §8.1's per-fixture counts and its Total row against the fixtures themselves. Each fixture is consumed by all three SDK test runners (§5.2). An SDK declaring a conformance level **MUST** pass every fixture whose tested feature is required at that level (§5.3).
+The repository ships **102 cross-language fixture files** under `conformance/fixtures/` covering **1272 test cases**. `conformance-integrity` checks these two numbers, §8.1's per-fixture counts and its Total row against the fixtures themselves. Each fixture is consumed by all three SDK test runners (§5.2). An SDK declaring a conformance level **MUST** pass every fixture whose tested feature is required at that level (§5.3).
 
 ### 8.1 Fixture Inventory
 
@@ -353,6 +353,7 @@ The repository ships **101 cross-language fixture files** under `conformance/fix
 | [`binding_errors`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/binding_errors.json) | 6 | Binding error message conformance (protocol-spec §5.12.8) |
 | [`binding_file_validation`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/binding_file_validation.json) | 9 | Binding files fail loudly: unknown keys, a one-sided schema pair and an invalid `auto_schema` are `BINDING_FILE_INVALID`; an uninferable schema is `BINDING_SCHEMA_INFERENCE_FAILED` in every mode (spec §5.12.2, §5.12.5, D-139) |
 | [`binding_schema_ref_scope`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/binding_schema_ref_scope.json) | 6 | Binding-relative Schema references and typed failures for invalid references and documents (spec §5.12.4) |
+| [`call_budget`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/call_budget.json) | 3 | Call-tree reservations, actual-cost settlement, and count and cost exhaustion |
 | [`call_chain`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/call_chain.json) | 11 | Call-chain safety guard (Algorithm A20) |
 | [`config_defaults`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/config_defaults.json) | 18 | Config default values cross-SDK identity (spec §9.1.1) |
 | [`config_env`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/config_env.json) | 13 | Env-var → Config path mapping (Algorithm A12-NS, spec §9.8) |
@@ -433,7 +434,7 @@ The repository ships **101 cross-language fixture files** under `conformance/fix
 | [`usage_contract`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/usage_contract.json) | 11 | `system.usage.*` value semantics no schema can assert (spec §6.7.1) |
 | [`usage_exporter`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/usage_exporter.json) | 3 | `UsageExporter` push interface (D-55) |
 | [`version_negotiation`](https://github.com/aiperceivable/apcore/blob/main/conformance/fixtures/version_negotiation.json) | 12 | Version negotiation (Algorithm A14) |
-| **Total** | **1269** | **101 fixtures** |
+| **Total** | **1272** | **102 fixtures** |
 
 ### 8.2 Loading Fixtures from a Test Runner
 
