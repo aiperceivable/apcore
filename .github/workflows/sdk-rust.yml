@@ -74,7 +74,7 @@ jobs:
           CONFORMANCE_SPEC_REPO: ${{ github.workspace }}
 
       - name: Run tests
-        run: cargo test --locked --all-features
+        run: cargo test --locked --workspace --all-features
         env:
           CONFORMANCE_SPEC_REPO: ${{ github.workspace }}
 

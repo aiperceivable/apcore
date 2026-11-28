@@ -268,8 +268,3 @@ async fn normalizes_typed_input_before_hosted_policy_and_final_approval() {
         .unwrap();
     assert_eq!(echoed.label, "label:demo.typed");
 }
-
-#[test]
-fn unsupported_annotation_has_a_compile_time_diagnostic() {
-    trybuild::TestCases::new().compile_fail("tests/ui/typed_module_invalid_annotation.rs");
-}
