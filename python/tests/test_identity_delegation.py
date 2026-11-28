@@ -13,7 +13,15 @@ from apcore.builtin_steps import build_standard_strategy
 from apcore.context import Context, Identity
 from apcore.errors import ACLDeniedError, ApprovalDeniedError, ApprovalPendingError, InvalidInputError
 from apcore.executor import Executor
-from apcore.pipeline import ExecutionStrategy, PipelineContext, _ScopedFrame
+from apcore.pipeline import (
+    BaseStep,
+    ExecutionStrategy,
+    PipelineContext,
+    PipelineState,
+    StepResult,
+    _ScopedFrame,
+    _ScopedSteps,
+)
 from apcore.policy import PolicyEvaluationRequest, PolicyVerdict
 from apcore.registry import Registry
 from apcore.sys_modules.identity import _audit_payload_extras
@@ -131,12 +139,66 @@ def test_scoped_discovery_requires_an_acl_gate_before_dispatch() -> None:
         assert executor.get_callable_descriptor("test.run", Context.create(Identity("ordinary"))) is not None
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("replace_dispatch", [False, True])
+async def test_scoped_strategy_requires_stock_dispatch(replace_dispatch: bool) -> None:
+    class HostDispatch(BaseStep):
+        async def execute(self, ctx: PipelineContext) -> StepResult:
+            return StepResult("continue")
+
+    registry = Registry()
+    registry.register("test.run", _Module())
+    steps = build_standard_strategy(registry=registry).steps
+    dispatch = next(index for index, step in enumerate(steps) if step.name == "execute")
+    steps = steps[:dispatch]
+    if replace_dispatch:
+        steps.append(HostDispatch("execute"))
+    strategy = ExecutionStrategy("host-dispatch", steps)
+
+    with Executor(registry, acl=ACL([_allow({"scopes": ["read"]})]), strategy=strategy) as executor:
+        scoped = Context.create(Identity("actor", scopes=["read"]))
+        with pytest.raises(ACLDeniedError):
+            await executor.call_async("test.run", {}, scoped)
+        assert not (await executor.validate_async("test.run", {}, scoped)).valid
+        assert executor.get_callable_descriptor("test.run", scoped) is None
+
+
+@pytest.mark.asyncio
+async def test_scoped_strategy_requires_dispatch_before_returning_output() -> None:
+    class FinishEarly(BaseStep):
+        async def execute(self, ctx: PipelineContext) -> StepResult:
+            return StepResult("skip_to", skip_to="return_result")
+
+    with _executor(_allow({"scopes": ["read"]})) as executor:
+        executor.current_strategy.insert_before("execute", FinishEarly("finish_early"))
+        context = Context.create(Identity("actor", scopes=["read"]))
+        with pytest.raises(ACLDeniedError):
+            await executor.call_async("test.run", {}, context)
+
+
+@pytest.mark.asyncio
+async def test_scoped_lookup_binds_module_before_step_observers() -> None:
+    class ClearLookupOutput:
+        def after_step(self, step_name: str, state: PipelineState, result: StepResult) -> None:
+            if step_name == "module_lookup":
+                state.context.module = None
+
+    with _executor(_allow({"scopes": ["read"]})) as executor:
+        executor.current_strategy.add_step_middleware(ClearLookupOutput())
+        context = Context.create(Identity("actor", scopes=["read"]))
+        with pytest.raises(ACLDeniedError):
+            await executor.call_async("test.run", {}, context)
+        with pytest.raises(ACLDeniedError):
+            async for _ in executor.stream("test.run", {}, context):
+                pytest.fail("A scoped stream must retain its selected module")
+
+
 @pytest.mark.parametrize("field", ["caller_id", "call_chain"])
 def test_scoped_guard_requires_the_original_child_frame(field: str) -> None:
     identity = Identity("actor", scopes=["read"])
     parent = Context.create(identity).child("test.parent")
     pipeline = PipelineContext("test.run", {}, parent)
-    frame = _ScopedFrame.capture(pipeline, identity, gate_index=0)
+    frame = _ScopedFrame.capture(pipeline, identity, _ScopedSteps(0, 1, 2))
     pipeline.context = parent.child("test.run")
     frame.require_match(pipeline)
 
