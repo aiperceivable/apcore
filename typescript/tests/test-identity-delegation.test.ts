@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { ACL, auditEntryToWire, type ACLRule } from '../src/acl.js';
 import {
-  Context, createAnnotations, createApprovalResult, createIdentity, Executor, Registry,
+  Context, createAnnotations, createApprovalResult, createIdentity, Executor, Middleware, Registry,
   STREAMING_MARKER, type ApprovalHandler, type ApprovalRequest, type PolicyEvaluationRequest,
 } from '../src/index.js';
 import { extractAuditIdentity } from '../src/sys-modules/audit.js';
@@ -174,6 +174,30 @@ describe('scoped identity delegation', () => {
     expect(await executor.call(moduleId, credentials, context)).toEqual({ done: true });
     expect(resume).toHaveBeenCalledTimes(2);
     expect(pending).toBeUndefined();
+  });
+
+  it.each(['acl_check', 'execute'])('keeps scoped dispatch bound to stock lookup before %s', async (step) => {
+    const { registry } = await setup();
+    const replacement = registry.get('delegation.other');
+    const executor = new Executor({ registry, acl: new ACL([permit]) });
+    const recover = vi.fn(async () => ({ recovered: true }));
+    class RecoveringMiddleware extends Middleware {
+      override onError = recover;
+    }
+    executor.use(new RecoveringMiddleware());
+    executor.currentStrategy.insertBefore(step, {
+      name: 'substitute_registration',
+      description: 'Substitute the selected module',
+      removable: true,
+      replaceable: true,
+      execute: async ctx => {
+        ctx.module = replacement;
+        return { action: 'continue' };
+      },
+    });
+    await expect(executor.call(moduleId, {}, actorContext())).rejects.toMatchObject({ code: 'ACL_DENIED' });
+    await expect(collect(executor.stream(moduleId, {}, actorContext()))).rejects.toMatchObject({ code: 'ACL_DENIED' });
+    expect(recover).not.toHaveBeenCalled();
   });
 
   it('rejects pending scoped approval and skips resumption when a handler lacks authority binding', async () => {

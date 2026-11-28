@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
+from typing import Any
+
 import pytest
 
 from apcore.acl import ACL, ACLRule
 from apcore.approval import ApprovalRequest, ApprovalResult
+from apcore.builtin_steps import build_standard_strategy
 from apcore.context import Context, Identity
 from apcore.errors import ACLDeniedError, ApprovalDeniedError, ApprovalPendingError, InvalidInputError
 from apcore.executor import Executor
+from apcore.pipeline import ExecutionStrategy, PipelineContext, _ScopedFrame
 from apcore.policy import PolicyEvaluationRequest, PolicyVerdict
 from apcore.registry import Registry
 from apcore.sys_modules.identity import _audit_payload_extras
@@ -106,6 +111,56 @@ async def test_scoped_executor_and_discovery_require_first_stock_scope_grant() -
             with pytest.raises(ACLDeniedError):
                 async for _ in executor.stream("test.run", {}, Context.create(caller)):
                     pytest.fail("Scoped principal streamed without a scope grant")
+
+
+def test_scoped_discovery_requires_an_acl_gate_before_dispatch() -> None:
+    registry = Registry()
+    registry.register("test.run", _Module())
+    acl = ACL([_allow({"scopes": ["read"]}), _allow()])
+    steps = build_standard_strategy(registry=registry).steps
+    acl_index = next(index for index, step in enumerate(steps) if step.name == "acl_check")
+    acl_gate = steps.pop(acl_index)
+    dispatch_index = next(index for index, step in enumerate(steps) if step.name == "execute")
+    steps.insert(dispatch_index + 1, acl_gate)
+    strategy = ExecutionStrategy("late-acl", steps)
+
+    with Executor(registry, acl=acl, strategy=strategy) as executor:
+        scoped = Context.create(Identity("actor", scopes=["read"]))
+        assert executor.get_callable_descriptor("test.run", scoped) is None
+        assert not executor.list_callable(scoped).items
+        assert executor.get_callable_descriptor("test.run", Context.create(Identity("ordinary"))) is not None
+
+
+@pytest.mark.parametrize("field", ["caller_id", "call_chain"])
+def test_scoped_guard_requires_the_original_child_frame(field: str) -> None:
+    identity = Identity("actor", scopes=["read"])
+    parent = Context.create(identity).child("test.parent")
+    pipeline = PipelineContext("test.run", {}, parent)
+    frame = _ScopedFrame.capture(pipeline, identity, gate_index=0)
+    pipeline.context = parent.child("test.run")
+    frame.require_match(pipeline)
+
+    other_child = Context.create(identity).child("test.other").child("test.run")
+    setattr(pipeline.context, field, getattr(other_child, field))
+    with pytest.raises(ACLDeniedError):
+        frame.require_match(pipeline)
+
+
+@pytest.mark.asyncio
+async def test_scoped_nested_call_and_stream_keep_the_child_frame() -> None:
+    class StreamingModule(_Module):
+        async def stream(self, inputs: dict[str, Any], context: Context) -> AsyncIterator[dict[str, Any]]:
+            yield {"caller": context.caller_id, "chain": context.call_chain}
+
+    registry = Registry()
+    registry.register("test.run", StreamingModule())
+    grant = ACLRule(["test.parent"], ["test.run"], "allow", conditions={"scopes": ["read"]})
+    caller = Context.create(Identity("actor", scopes=["read"])).child("test.parent")
+
+    with Executor(registry, acl=ACL([grant])) as executor:
+        assert await executor.call_async("test.run", {}, caller) == {"actor": "actor"}
+        chunks = [chunk async for chunk in executor.stream("test.run", {}, caller)]
+        assert chunks == [{"caller": "test.parent", "chain": ["test.parent", "test.run"]}]
 
 
 def test_audit_recursively_redacts_identity_attributes() -> None:

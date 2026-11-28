@@ -51,7 +51,7 @@ import { buildStrategyFromConfigSync, ConfigurationError } from './pipeline-conf
 import { type EventEmitter, createEvent } from './events/emitter.js';
 import { Context } from './context.js';
 import { hasScopeCeiling } from './identity.js';
-import { assertScopeGate, assertScopedInvocation, beginScopedInvocation, isStockScopeAcl } from './scoped-invocation.js';
+import { assertScopeGate, assertScopedInvocation, beginScopedInvocation, isScopedAdmissionError, isStockScopeAcl } from './scoped-invocation.js';
 import { governanceUnion } from './schema/annotations.js';
 import { sourceSchemaFor } from './schema/loader-pure.js';
 import { RedactionConfig } from './observability/context-logger.js';
@@ -1323,6 +1323,7 @@ export class Executor {
             unwrapped instanceof MiddlewareChainError ? unwrapped.original : (unwrapped as Error);
           if (underlying instanceof ExecutionCancelledError) throw underlying;
           const wrapped = propagateError(underlying, moduleId, ctxObj);
+          if (isScopedAdmissionError(pipeCtx, underlying)) throw wrapped;
           if (protectedCall && !policyInvocationOf(pipeCtx)?.dispatched) throw wrapped;
           const executedMw = pipeCtx.executedMiddlewares;
           if (executedMw && executedMw.length > 0) {
@@ -1528,6 +1529,7 @@ export class Executor {
           unwrapped instanceof MiddlewareChainError ? unwrapped.original : (unwrapped as Error);
         if (underlying instanceof ExecutionCancelledError) throw underlying;
         const wrapped = propagateError(underlying, moduleId, ctxObj);
+        if (isScopedAdmissionError(pipeCtx, underlying)) throw wrapped;
         if (protectedCall && !policyInvocationOf(pipeCtx)?.dispatched) throw wrapped;
         if (pipeCtx.executedMiddlewares && pipeCtx.executedMiddlewares.length > 0) {
           const recovery = await this._middlewareManager.executeOnError(
@@ -1605,6 +1607,7 @@ export class Executor {
         if (exc instanceof ExecutionCancelledError) throw exc;
         const ctxObj = pipeCtx.context;
         const wrapped = propagateError(exc as Error, moduleId, ctxObj);
+        if (isScopedAdmissionError(pipeCtx, exc)) throw wrapped;
         if (protectedCall && !policyInvocationOf(pipeCtx)?.dispatched) throw wrapped;
         if (exc instanceof ModuleTimeoutError && ctxObj.signal.aborted) throw wrapped;
         if (pipeCtx.executedMiddlewares && pipeCtx.executedMiddlewares.length > 0) {

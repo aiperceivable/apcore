@@ -466,6 +466,63 @@ fn read_scoped_acl() -> ACL {
 
 struct AlternateFlow;
 
+struct SubstituteRegistration(Arc<dyn Module>);
+
+#[async_trait]
+impl Step for SubstituteRegistration {
+    fn name(&self) -> &'static str {
+        "substitute_registration"
+    }
+
+    fn description(&self) -> &'static str {
+        "Substitute the selected module"
+    }
+
+    fn removable(&self) -> bool {
+        true
+    }
+
+    fn replaceable(&self) -> bool {
+        true
+    }
+
+    fn pure(&self) -> bool {
+        true
+    }
+
+    async fn execute(&self, ctx: &mut PipelineContext) -> Result<StepResult, ModuleError> {
+        ctx.module = Some(Arc::clone(&self.0));
+        Ok(StepResult::continue_step())
+    }
+}
+
+#[tokio::test]
+async fn scoped_invocation_remains_bound_to_stock_module_lookup() {
+    let target = "demo.policy";
+    let replacement = probe_registry("2.0.0").get(target).unwrap().unwrap();
+    let context = delegated_context("subject", &["read"]);
+    for before in ["acl_check", "execute"] {
+        let mut strategy = apcore::builtin_steps::build_standard_strategy();
+        strategy
+            .insert_before(
+                before,
+                Box::new(SubstituteRegistration(Arc::clone(&replacement))),
+            )
+            .unwrap();
+        let mut executor =
+            Executor::with_strategy(probe_registry("1.0.0"), Config::in_memory(), strategy);
+        executor.set_acl(read_scoped_acl());
+        let call = executor.call(target, json!({}), Some(&context), None).await;
+        assert_eq!(call.unwrap_err().code, ErrorCode::ACLDenied);
+        let stream = executor
+            .stream(target, json!({}), Some(&context), None)
+            .next()
+            .await
+            .unwrap();
+        assert_eq!(stream.unwrap_err().code, ErrorCode::ACLDenied);
+    }
+}
+
 #[async_trait]
 impl Step for AlternateFlow {
     fn name(&self) -> &'static str {

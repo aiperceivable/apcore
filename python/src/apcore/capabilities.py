@@ -16,7 +16,7 @@ from apcore.acl import ACL, VisibilityDecision
 from apcore.builtin_steps import BuiltinACLCheck, BuiltinApprovalGate, BuiltinContextCreation, BuiltinModuleLookup
 from apcore.context import Context, Identity
 from apcore.errors import InvalidInputError, PolicyEvaluationError
-from apcore.pipeline import _any_match
+from apcore.pipeline import _any_match, _scoped_gate_index
 from apcore.policy import ExecutionPolicy
 from apcore.schema.annotations import governance_union
 
@@ -304,10 +304,17 @@ class _CapabilityDiscovery:
     def _visible(
         executor: Executor, module_id: str, context: Context, version_hint: str | None
     ) -> tuple[_Registration, VisibilityDecision] | None:
+        strategy = executor.current_strategy
+        if (
+            context.identity is not None
+            and context.identity.scopes is not None
+            and _scoped_gate_index(strategy, module_id) is None
+        ):
+            return None
         context_ready = False
         lookup = None
         gate = None
-        for step in executor.current_strategy.steps:
+        for step in strategy.steps:
             patterns = getattr(step, "match_modules", None)
             if patterns is not None and not _any_match(patterns, module_id):
                 continue

@@ -674,31 +674,61 @@ async def _invoke_step_cleanup_hooks(
             continue
 
 
+@dataclass(frozen=True)
+class _ScopedFrame:
+    identity: Identity
+    module_id: str
+    caller_id: str | None
+    call_chain: tuple[str, ...]
+    gate_index: int
+
+    @classmethod
+    def capture(cls, ctx: PipelineContext, identity: Identity, gate_index: int) -> _ScopedFrame:
+        chain = tuple(ctx.context.call_chain)
+        return cls(identity, ctx.module_id, chain[-1] if chain else None, (*chain, ctx.module_id), gate_index)
+
+    def require_match(self, ctx: PipelineContext) -> None:
+        context = ctx.context
+        if (
+            context.identity is not self.identity
+            or ctx.module_id != self.module_id
+            or context.caller_id != self.caller_id
+            or tuple(context.call_chain) != self.call_chain
+        ):
+            raise ACLDeniedError(self.caller_id, self.module_id)
+
+    def require_grant(self, ctx: PipelineContext, module: Any) -> None:
+        self.require_match(ctx)
+        if not ctx._acl_allowed or ctx.module is not module:
+            raise ACLDeniedError(self.caller_id, self.module_id)
+
+
+def _scoped_gate_index(strategy: ExecutionStrategy, module_id: str) -> int | None:
+    """Find the stock scope gate before dispatch for execution and discovery."""
+    from apcore.acl import ACL
+    from apcore.builtin_steps import BuiltinACLCheck, BuiltinContextCreation, BuiltinModuleLookup
+
+    context_ready = False
+    lookup_ready = False
+    for index, step in enumerate(strategy.steps):
+        patterns = getattr(step, "match_modules", None)
+        if patterns is not None and not _any_match(patterns, module_id):
+            continue
+        if step.name == "execute":
+            break
+        if type(step) is BuiltinContextCreation:
+            context_ready = True
+        elif type(step) is BuiltinModuleLookup:
+            lookup_ready = context_ready
+        elif isinstance(step, BuiltinACLCheck):
+            if type(step) is BuiltinACLCheck and type(step.acl) is ACL and lookup_ready and step.pure:
+                return index
+            break
+    return None
+
+
 class PipelineEngine:
     """Executes a pipeline strategy step by step."""
-
-    @staticmethod
-    def _scoped_gate_index(strategy: ExecutionStrategy, ctx: PipelineContext) -> int:
-        from apcore.acl import ACL
-        from apcore.builtin_steps import BuiltinACLCheck, BuiltinContextCreation, BuiltinModuleLookup
-
-        context_ready = False
-        lookup_ready = False
-        for index, step in enumerate(strategy.steps):
-            patterns = getattr(step, "match_modules", None)
-            if patterns is not None and not _any_match(patterns, ctx.module_id):
-                continue
-            if step.name == "execute":
-                break
-            if type(step) is BuiltinContextCreation:
-                context_ready = True
-            elif type(step) is BuiltinModuleLookup:
-                lookup_ready = context_ready
-            elif isinstance(step, BuiltinACLCheck):
-                if type(step) is BuiltinACLCheck and type(step.acl) is ACL and lookup_ready and step.pure:
-                    return index
-                break
-        raise ACLDeniedError(ctx.context.caller_id, ctx.module_id)
 
     async def run(
         self,
@@ -744,18 +774,20 @@ class PipelineEngine:
         effective_run_until = run_until or ctx.run_until
         observation = ctx._stream_observation
         identity = getattr(ctx.context, "identity", None)
-        gate_index = None
+        scoped_frame = None
         if isinstance(identity, Identity) and identity.scopes is not None and not ctx._acl_allowed:
-            gate_index = self._scoped_gate_index(strategy, ctx)
-        scoped_target = ctx.module_id
+            gate_index = _scoped_gate_index(strategy, ctx.module_id)
+            if gate_index is None:
+                raise ACLDeniedError(ctx.context.caller_id, ctx.module_id)
+            scoped_frame = _ScopedFrame.capture(ctx, identity, gate_index)
         scoped_module = None
         i = 0
 
         # Index-based loop (not for-each) to support skip_to.
         while i < len(steps):
             step = steps[i]
-            if gate_index is not None and i > gate_index and not ctx._acl_allowed and not ctx.dry_run:
-                raise ACLDeniedError(ctx.context.caller_id, scoped_target)
+            if scoped_frame is not None and i > scoped_frame.gate_index and not ctx._acl_allowed and not ctx.dry_run:
+                raise ACLDeniedError(scoped_frame.caller_id, scoped_frame.module_id)
             if observation is not None and observation.defer_step(step.name, ctx):
                 i += 1
                 continue
@@ -872,15 +904,12 @@ class PipelineEngine:
                 observation.before_step(step.name, ctx)
             recovered = False
             try:
-                if gate_index is not None and i >= gate_index:
-                    if (
-                        ctx.context.identity is not identity
-                        or ctx.module_id != scoped_target
-                        or (i > gate_index and ctx.module is not scoped_module)
-                    ):
-                        raise ACLDeniedError(ctx.context.caller_id, scoped_target)
-                    if i == gate_index:
+                if scoped_frame is not None and i >= scoped_frame.gate_index:
+                    if i == scoped_frame.gate_index:
+                        scoped_frame.require_match(ctx)
                         scoped_module = ctx.module
+                    else:
+                        scoped_frame.require_grant(ctx, scoped_module)
                 if timeout_ms > 0:
                     result = await asyncio.wait_for(
                         step.execute(ctx),
@@ -952,7 +981,7 @@ class PipelineEngine:
                     getattr(step, "_fail_closed_on_error", False)
                     or ctx._policy_pending
                     or isinstance(exc, PolicyEvaluationError)
-                    or (gate_index is not None and isinstance(exc, ACLDeniedError))
+                    or (scoped_frame is not None and isinstance(exc, ACLDeniedError))
                 )
                 recovery: Any = None
                 if error_mws:
@@ -1117,16 +1146,16 @@ class PipelineEngine:
                     context=ctx,
                 )
                 if effective_run_until(state):
-                    if gate_index is not None and not ctx._acl_allowed:
-                        raise ACLDeniedError(ctx.context.caller_id, scoped_target)
+                    if scoped_frame is not None:
+                        scoped_frame.require_grant(ctx, scoped_module)
                     trace.success = True
                     trace.total_duration_ms = (time.monotonic() - start) * 1000
                     return ctx.output, trace
 
             i += 1
 
-        if gate_index is not None and not ctx._acl_allowed and not ctx.dry_run:
-            raise ACLDeniedError(ctx.context.caller_id, scoped_target)
+        if scoped_frame is not None and not ctx.dry_run:
+            scoped_frame.require_grant(ctx, scoped_module)
         trace.success = not any(item.result.action == "abort" for item in trace.steps if not item.skipped)
         trace.total_duration_ms = (time.monotonic() - start) * 1000
         # Use ctx.output — it's the most up-to-date (middleware_after may modify it)

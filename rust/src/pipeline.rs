@@ -392,6 +392,7 @@ struct ScopeInvocation {
     module_id: String,
     caller_id: String,
     call_chain: Vec<String>,
+    resolved_module: Option<Arc<dyn Module>>,
     /// Set only by the stock ACL gate after a scope-constrained grant.
     granted: bool,
 }
@@ -407,6 +408,7 @@ impl ScopeInvocation {
                 .caller_id
                 .unwrap_or_else(|| crate::acl::EXTERNAL_CALLER.into()),
             call_chain: prospective.call_chain,
+            resolved_module: None,
             granted: false,
         })
     }
@@ -421,6 +423,11 @@ impl ScopeInvocation {
                     .as_deref()
                     .unwrap_or(crate::acl::EXTERNAL_CALLER)
             && self.call_chain == ctx.context.call_chain
+            && self
+                .resolved_module
+                .as_ref()
+                .zip(ctx.module.as_ref())
+                .is_some_and(|(expected, actual)| Arc::ptr_eq(expected, actual))
     }
 }
 
@@ -529,20 +536,23 @@ impl PipelineContext {
             || self.reject_unconsumed_scoped_approval().is_err()
     }
 
-    pub(crate) fn record_scope_grant(&mut self) {
-        let granted = self.initial_scope.as_ref().is_some_and(|initial| {
-            self.context
-                .identity
-                .as_ref()
-                .and_then(crate::Identity::authority_key)
-                .is_some_and(|current| initial.matches(self, &current))
-        });
+    pub(crate) fn record_scope_lookup(&mut self, module: &Arc<dyn Module>) {
         if let Some(initial) = &mut self.initial_scope {
-            initial.granted = granted;
+            initial.resolved_module = Some(Arc::clone(module));
+        }
+    }
+
+    pub(crate) fn record_scope_grant(&mut self) {
+        if let Some(initial) = &mut self.initial_scope {
+            initial.granted = true;
         }
     }
 
     pub(crate) fn require_scope_grant(&self) -> Result<(), ModuleError> {
+        self.require_scope_binding(true)
+    }
+
+    pub(crate) fn require_scope_binding(&self, grant_required: bool) -> Result<(), ModuleError> {
         let current = self
             .context
             .identity
@@ -550,7 +560,9 @@ impl PipelineContext {
             .and_then(crate::Identity::authority_key);
         let admitted = match (&self.initial_scope, &current) {
             (None, None) => true,
-            (Some(initial), Some(current)) => initial.granted && initial.matches(self, current),
+            (Some(initial), Some(current)) => {
+                (!grant_required || initial.granted) && initial.matches(self, current)
+            }
             _ => false,
         };
         if admitted {

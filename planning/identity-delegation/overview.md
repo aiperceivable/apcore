@@ -21,7 +21,7 @@ The Python and TypeScript Core runs include ACL tests. The Rust aggregate run se
 3. Apply the same authority contract to the [MCP and A2A adapters](./tasks/surfaces.md).
 4. Run the [dual-repository verification](./tasks/verification.md) against fixed source and package candidates.
 
-## Local candidate verification
+## Initial local candidate verification
 
 The Core distribution source is `6a4aa25b93526f09ca698aa9ffb982f94e613158` on `core-alpha5`. The verified Surfaces source is `417116190fe2815c0204ffacd70744cc55f43f3c` on `surfaces-alpha5`. The Core distribution files used for the Surfaces runs have the following SHA-256 digests.
 
@@ -47,3 +47,7 @@ All three SDKs exercise the 17 shared delegation cases. The fixture drivers and 
 Signed MCP requests exercise current actor and root subject isolation, authority-bound session reuse, durable task disclosure, and atomic approval consumption. The Python SSE smoke test rejected another subject and narrower scopes, then accepted equivalent refreshed credentials. A2A task and push operations enforce current scope, including against Rust task records after restarting the server. The Python Golden Path passed through direct calls and an MCP client with both wheels installed.
 
 The A2A authentication guide records the owner-key migration for existing IDs beginning with `apcore:`. The candidate is at the local verification stage.
+
+## Pull request review
+
+The review follow-up aligns scoped discovery and dispatch on the active stock pipeline, binds the resolved registration throughout a scoped invocation, and lets the MCP task bridge register the owner before the first asynchronous task-store write. The Surfaces workflows pin the updated Core source and distribution for verification.

@@ -19,7 +19,7 @@ import { getDefault } from './config-defaults.js';
 import { CancelToken, awaitExecution } from './cancel.js';
 import { Context } from './context.js';
 import { authorityKeyOf, hasScopeCeiling } from './identity.js';
-import { assertScopedInvocation, isStockScopeAcl, recordScopedGrant } from './scoped-invocation.js';
+import { assertScopedInvocation, isStockScopeAcl, recordScopedGrant, recordScopedLookup } from './scoped-invocation.js';
 import {
   ACLDeniedError,
   ApprovalDeniedError,
@@ -265,6 +265,7 @@ export class BuiltinModuleLookup implements Step {
     }
 
     ctx.module = mod;
+    recordScopedLookup(ctx);
     const moduleId = ctx.moduleId;
     moduleExecutionLeases.set(ctx, this._registry.bindExecution(moduleId, mod, ctx.context.cancelToken));
     // PROTOCOL_SPEC §7.4 (D-96): resolve the registry's DECLARED annotations
@@ -980,6 +981,7 @@ export class BuiltinExecute implements Step {
       if (isStreamingModule(candidate)) {
         if (invocation) {
           const protectedProducer = this._streamWithLease(ctx, () => {
+            assertScopedInvocation(ctx, true);
             assertPolicyBinding(ctx, invocation);
             invocation.dispatched = true;
             return candidate.stream(inputs, context);

@@ -365,6 +365,7 @@ impl Step for BuiltinModuleLookup {
             return Err(ModuleError::module_disabled(&ctx.module_id));
         }
         ctx.module = Some(module.clone());
+        ctx.record_scope_lookup(&module);
         ctx.module_lease = Some(lease);
 
         // PROTOCOL_SPEC §6.1.8 rule 1: compute the governance projection of the
@@ -412,6 +413,7 @@ impl Step for BuiltinACLCheck {
     }
 
     async fn execute(&self, ctx: &mut PipelineContext) -> Result<StepResult, ModuleError> {
+        ctx.require_scope_binding(false)?;
         if let Some(acl) = ctx.acl.clone() {
             let caller_id = ctx.context.caller_id.clone();
             // The structured accessor (PROTOCOL_SPEC §6.8.1), never the boolean:

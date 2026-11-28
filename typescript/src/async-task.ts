@@ -164,6 +164,7 @@ interface AsyncTaskManagerOptions {
  * Uses a simple counter-based concurrency limiter instead of a semaphore.
  */
 export class AsyncTaskManager {
+  readonly supportsTaskAllocationCallback = true;
   private readonly _executor: Executor;
   private readonly _store: TaskStore;
   private readonly _maxConcurrent: number;
@@ -203,7 +204,12 @@ export class AsyncTaskManager {
   async submit(
     moduleId: string,
     inputs: Record<string, unknown>,
-    opts?: { context?: Context | null; retry?: RetryConfig },
+    opts?: {
+      context?: Context | null;
+      retry?: RetryConfig;
+      /** Synchronous bookkeeping before the first store write, which may fail. */
+      onTaskAllocated?: (taskId: string) => void;
+    },
   ): Promise<string> {
     const taskId = uuidv4();
     const retry = opts?.retry ?? null;
@@ -237,6 +243,7 @@ export class AsyncTaskManager {
       if (active >= this._maxTasks) {
         throw new TaskLimitExceededError(this._maxTasks);
       }
+      opts?.onTaskAllocated?.(taskId);
       await this._store.save(info);
     });
 

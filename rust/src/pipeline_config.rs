@@ -7,7 +7,10 @@ use std::sync::OnceLock;
 
 use serde_json::Value;
 
-use crate::builtin_steps::{build_standard_strategy, BuiltinACLCheck, BuiltinContextCreation};
+use crate::builtin_steps::{
+    build_standard_strategy, BuiltinACLCheck, BuiltinContextCreation, BuiltinExecute,
+    BuiltinModuleLookup,
+};
 use crate::errors::{ErrorCode, ModuleError};
 use crate::pipeline::{ExecutionStrategy, Step};
 
@@ -94,27 +97,38 @@ pub(crate) fn builtin_context_creation_applies(step: &dyn Step, module_id: &str)
 }
 
 pub(crate) fn builtin_scope_gate_applies(strategy: &ExecutionStrategy, module_id: &str) -> bool {
-    let steps = strategy.steps();
-    let Some(index) = steps.iter().position(|step| {
-        step.pure()
-            && !step.ignore_errors()
-            && builtin_step_applies::<BuiltinACLCheck>(step.as_ref(), module_id)
-    }) else {
-        return false;
-    };
-    steps[..index].iter().any(|step| {
-        step.pure()
-            && !step.ignore_errors()
-            && builtin_context_creation_applies(step.as_ref(), module_id)
-    })
+    let mut context_ready = false;
+    let mut module_ready = false;
+    let mut gate_ready = false;
+    for step in strategy.steps().iter().map(Box::as_ref) {
+        if !step_applies(step, module_id) {
+            continue;
+        }
+        if step.name() == "execute" || is_builtin_step::<BuiltinExecute>(step) {
+            return gate_ready && is_builtin_step::<BuiltinExecute>(step) && !step.ignore_errors();
+        }
+        let enforcing = step.pure() && !step.ignore_errors();
+        if is_builtin_step::<BuiltinContextCreation>(step) {
+            context_ready = enforcing;
+        } else if is_builtin_step::<BuiltinModuleLookup>(step) {
+            module_ready = context_ready && enforcing;
+        } else if is_builtin_step::<BuiltinACLCheck>(step) {
+            gate_ready = module_ready && enforcing;
+        }
+    }
+    false
 }
 
 fn builtin_step_applies<T: Step>(step: &dyn Step, module_id: &str) -> bool {
+    step_applies(step, module_id) && is_builtin_step::<T>(step)
+}
+
+fn step_applies(step: &dyn Step, module_id: &str) -> bool {
     step.match_modules().is_none_or(|patterns| {
         patterns
             .iter()
             .any(|pattern| crate::utils::helpers::match_pattern(pattern, module_id))
-    }) && is_builtin_step::<T>(step)
+    })
 }
 
 fn is_builtin_step<T: Step>(step: &dyn Step) -> bool {

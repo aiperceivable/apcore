@@ -63,6 +63,22 @@ class TestTaskStoreProtocolIsAsync:
             assert inspect.iscoroutinefunction(method), f"TaskStore Protocol method {name!r} must be async (D-17)"
 
 
+@pytest.mark.asyncio
+async def test_submit_allocates_task_id_before_initial_write() -> None:
+    allocated: list[str] = []
+
+    class RejectingStore(InMemoryTaskStore):
+        async def save(self, info: TaskInfo) -> None:
+            assert allocated == [info.task_id]
+            raise RuntimeError("initial store write failed")
+
+    manager = AsyncTaskManager(executor=_StubExecutor(), store=RejectingStore())
+    with pytest.raises(RuntimeError, match="initial store write failed"):
+        await manager.submit("module", {}, on_task_allocated=allocated.append)
+    assert len(allocated) == 1
+    assert await manager.list_tasks_async() == []
+
+
 # ---------------------------------------------------------------------------
 # A-D-AT-03 / D-11 — ReaperHandle.stop is async and drains the task
 # ---------------------------------------------------------------------------

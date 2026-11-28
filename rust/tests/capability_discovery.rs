@@ -371,6 +371,41 @@ fn test_capability_discovery_fails_closed_without_the_stock_gate() {
         .is_none());
 }
 
+#[test]
+fn test_scoped_discovery_requires_acl_before_dispatch() {
+    use apcore::builtin_steps::{
+        BuiltinACLCheck, BuiltinContextCreation, BuiltinExecute, BuiltinModuleLookup,
+    };
+    let strategy = apcore::ExecutionStrategy::new(
+        "late-acl",
+        vec![
+            Box::new(BuiltinContextCreation),
+            Box::new(BuiltinModuleLookup::default()),
+            Box::new(BuiltinExecute),
+            Box::new(BuiltinACLCheck),
+        ],
+    )
+    .unwrap();
+    let mut executor = Executor::with_strategy(Registry::new(), Config::default(), strategy);
+    executor.set_acl(ACL::new(
+        serde_json::from_value(json!([{
+            "callers": ["@external"], "targets": ["demo.private"],
+            "effect": "allow", "conditions": {"scopes": ["read"]}
+        }]))
+        .unwrap(),
+        "deny",
+        None,
+    ));
+    register(&executor, &json!({"module_id": "demo.private"}));
+    let identity = Identity::new("reader".into(), "user".into(), vec![], HashMap::new())
+        .with_authority(Some(vec!["read".into()]), None)
+        .unwrap();
+    let requester = Context::new(identity);
+    assert!(executor
+        .get_callable_descriptor("demo.private", None, Some(&requester))
+        .is_none());
+}
+
 #[tokio::test]
 async fn test_capability_visibility_requires_context_creation_for_the_target() {
     let strategy = apcore::pipeline_config::build_strategy_from_config(&json!({

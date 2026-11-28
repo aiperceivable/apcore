@@ -9,6 +9,7 @@ type ScopedBinding = {
   readonly moduleId: string;
   readonly callerId: string | null;
   readonly callChain: readonly string[];
+  resolvedModule?: unknown;
   allowed: boolean;
 };
 
@@ -33,8 +34,15 @@ export function beginScopedInvocation(ctx: PipelineContext): void {
   }
 }
 
+/** @internal Record the registered module selected by the stock lookup step. */
+export function recordScopedLookup(ctx: PipelineContext): void {
+  const binding = bindings.get(ctx);
+  if (binding) binding.resolvedModule = ctx.module;
+}
+
 function remainsBound(ctx: PipelineContext, binding: ScopedBinding): boolean {
   return ctx.context.identity === binding.identity && ctx.moduleId === binding.moduleId &&
+    binding.resolvedModule !== undefined && binding.resolvedModule === ctx.module &&
     ctx.context.callerId === binding.callerId && ctx.context.callChain.length === binding.callChain.length &&
     ctx.context.callChain.every((id, index) => id === binding.callChain[index]);
 }
@@ -52,6 +60,11 @@ export function recordScopedGrant(ctx: PipelineContext, decision: AccessDecision
   assertScopedInvocation(ctx, false);
   const binding = bindings.get(ctx);
   if (binding) binding.allowed = decision.access === 'allow';
+}
+
+/** @internal A denial on a scoped invocation cannot become recovery output. */
+export function isScopedAdmissionError(ctx: PipelineContext, error: unknown): boolean {
+  return bindings.has(ctx) && error instanceof ACLDeniedError;
 }
 
 /** @internal Fail closed before traversing a strategy without a scope gate. */

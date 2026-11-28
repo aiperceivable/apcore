@@ -425,6 +425,8 @@ class AsyncTaskManager:
     Accepts a pluggable :class:`TaskStore` for custom persistence.
     """
 
+    supports_task_allocation_callback = True
+
     def __init__(
         self,
         executor: ExecutorProtocol,
@@ -496,6 +498,8 @@ class AsyncTaskManager:
         inputs: dict[str, Any],
         context: Context | None = None,
         retry_policy: "RetryPolicy | RetryConfig | None" = None,
+        *,
+        on_task_allocated: Callable[[str], None] | None = None,
     ) -> str:
         """Submit a module for background execution.
 
@@ -509,6 +513,8 @@ class AsyncTaskManager:
             retry_policy: Optional retry configuration — either the canonical
                 :class:`RetryConfig` or the legacy :class:`RetryPolicy`.
                 None means no retries.
+            on_task_allocated: Synchronous bookkeeping callback called with the
+                task ID immediately before the first store write. The write may fail.
 
         Returns:
             The generated task_id (UUID4 string).
@@ -531,6 +537,8 @@ class AsyncTaskManager:
                 submitted_at=time.time(),
                 max_retries=retry_policy.max_retries if retry_policy is not None else 0,
             )
+            if on_task_allocated is not None:
+                on_task_allocated(task_id)
             await self._save(info)
 
         async_task = asyncio.create_task(self._run(task_id, module_id, inputs, context, retry_policy))
