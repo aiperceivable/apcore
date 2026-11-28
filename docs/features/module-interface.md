@@ -486,7 +486,7 @@ The examples below use a stand-in `Mailer` so they run as written; replace it wi
 === "Rust"
 
     ```rust
-    // Rust has no attribute macro; register a closure with APCore::module().
+    // Register a closure when the optional macros feature is disabled.
     use apcore::errors::ModuleError;
     use apcore::{APCore, Context};
     use serde_json::{json, Value};
@@ -523,6 +523,118 @@ The examples below use a stand-in `Mailer` so they run as written; replace it wi
     ```
 
 For YAML-based bindings and decorator details, see [Decorator & YAML Bindings](./decorator-bindings.md).
+
+### Typed module declarations
+
+A typed declaration registers an ordinary APCore module. The typed handle
+invokes the registered module through the executor. An MCP adapter can use
+that executor to expose the same module and governance policy.
+
+=== "Python"
+
+    `APCore.module` exposes `invoke`, `invoke_async`, `validate`, and
+    `preview` with the function's business signature. `with_context` attaches
+    a caller context. `with_approval_token` carries a resume credential.
+    Ordinary function calls and `raw` call the underlying function directly.
+    Use the governed methods for application calls and `raw` for isolated unit
+    tests.
+
+    <!-- executable-example: typed-module -->
+    ```python
+    from apcore import APCore
+    from pydantic import BaseModel
+
+
+    class Note(BaseModel):
+        note_id: str
+
+
+    client = APCore()
+
+
+    @client.module("notes.lookup", description="Look up a note")
+    def lookup(note_id: str) -> Note:
+        return Note(note_id=note_id)
+
+
+    assert lookup.validate("note-1").valid
+    assert lookup.invoke("note-1").note_id == "note-1"
+    client.close()
+    ```
+
+=== "TypeScript"
+
+    `define` accepts validators that implement Standard Schema v1. If the
+    provider also implements Standard JSON Schema, Core requests Draft 2020-12
+    for the submitted inputs and the returned output. With validation-only
+    providers or conversions that cannot describe a transformation, pass
+    `inputSchema` and `outputSchema` explicitly on the affected side. The
+    handler receives normalized inputs and the caller receives the normalized
+    output. Both use JSON-compatible objects.
+
+    <!-- executable-example: typed-module -->
+    ```typescript
+    import assert from 'node:assert/strict';
+    import { APCore } from 'apcore-js';
+    import { z } from 'zod/v4';
+
+    const client = new APCore();
+    const lookup = await client.define({
+      id: 'notes.lookup',
+      description: 'Look up a note',
+      readonly: true,
+      input: z.object({ noteId: z.string().min(1) }),
+      output: z.object({ noteId: z.string() }),
+      execute: ({ noteId }) => ({ noteId }),
+    });
+
+    assert.equal((await lookup.invoke({ noteId: 'note-1' })).noteId, 'note-1');
+    await client.shutdown();
+    ```
+
+=== "Rust"
+
+    Enable the `macros` feature of `apcore` and derive Serde and
+    `schemars::JsonSchema` for the input and output. `ModulePack` explicitly
+    selects the declarations compiled into the host. Pass
+    `client.executor_arc()` to the Rust MCP builder to expose that pack
+    with the host's executor configuration.
+
+    <!-- executable-example: typed-module -->
+    ```rust
+    use apcore::{APCore, ModuleError, ModulePack};
+    use schemars::JsonSchema;
+    use serde::{Deserialize, Serialize};
+
+    #[derive(Deserialize, JsonSchema, Serialize)]
+    struct Note {
+        note_id: String,
+    }
+
+    /// Look up a note.
+    #[apcore::module(id = "notes.lookup", readonly = true)]
+    async fn lookup(input: Note) -> Result<Note, ModuleError> {
+        Ok(input)
+    }
+
+    const NOTES: ModulePack = ModulePack::new(&[lookup::DECLARATION]);
+
+    #[tokio::main]
+    async fn main() -> Result<(), ModuleError> {
+        let client = APCore::new();
+        NOTES.register(&client)?;
+        let note = lookup::HANDLE
+            .invoke(&client, Note { note_id: "note-1".into() }, None)
+            .await?;
+        assert_eq!(note.note_id, "note-1");
+        Ok(())
+    }
+    ```
+
+When the executor has a post-validation evaluator, both the evaluator and
+final approval receive the validated arguments. The default approval gate
+retains its early position in the execution pipeline. See
+[Approval System](./approval-system.md) for the two approval timings.
 
 ## Dependencies
 

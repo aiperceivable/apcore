@@ -43,6 +43,8 @@ pub mod schema;
 pub mod stream_completion;
 pub mod sys_modules;
 pub mod trace_context;
+#[cfg(feature = "macros")]
+mod typed_module;
 pub mod utils;
 pub mod version;
 
@@ -52,6 +54,8 @@ pub use acl::{
     RuleValidationFinding, ACL, EXTERNAL_CALLER,
 };
 pub use acl_handlers::{ACLConditionHandler, ConditionOutcome};
+#[cfg(feature = "macros")]
+pub use apcore_macros::module;
 pub use approval::{
     AlwaysDenyHandler, ApprovalHandler, ApprovalRequest, ApprovalResult, AutoApproveHandler,
     CallbackApprovalHandler,
@@ -211,6 +215,11 @@ pub use sys_modules::{
     UsageModule, UsageSummaryModule,
 };
 pub use trace_context::{TraceContext, TraceParent};
+#[doc(hidden)]
+#[cfg(feature = "macros")]
+pub use typed_module::__declare_module;
+#[cfg(feature = "macros")]
+pub use typed_module::{ModuleDeclaration, ModulePack, TypedHandle};
 pub use utils::{
     calculate_specificity, canonicalize_name, guard_call_chain, guard_call_chain_for_context,
     guard_call_chain_with_repeat, match_pattern, normalize_to_canonical_id, propagate_error,

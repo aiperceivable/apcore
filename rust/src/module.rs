@@ -39,6 +39,15 @@ pub trait Module: Send + Sync {
     /// Returns the JSON Schema describing this module's output.
     fn output_schema(&self) -> serde_json::Value;
 
+    #[cfg(feature = "macros")]
+    #[doc(hidden)]
+    fn normalize_declared_inputs(
+        &self,
+        _inputs: &serde_json::Value,
+    ) -> Result<Option<serde_json::Value>, ModuleError> {
+        Ok(None)
+    }
+
     /// Returns a human-readable description of this module.
     fn description(&self) -> &str;
 

@@ -1,0 +1,14 @@
+{
+  "feature": "typed-module-declarations",
+  "created": "2026-11-28",
+  "updated": "2026-11-28",
+  "status": "completed",
+  "execution_order": ["python", "typescript", "rust", "verification"],
+  "progress": { "total_tasks": 4, "completed": 4, "in_progress": 0, "pending": 0 },
+  "tasks": [
+    { "id": "python", "file": "tasks/python.md", "title": "Python governed module declarations", "status": "completed" },
+    { "id": "typescript", "file": "tasks/typescript.md", "title": "TypeScript Standard Schema declarations", "status": "completed" },
+    { "id": "rust", "file": "tasks/rust.md", "title": "Rust declaration macro and module pack", "status": "completed" },
+    { "id": "verification", "file": "tasks/verification.md", "title": "Installed SDK and Surface verification", "status": "completed", "dependencies": ["python", "typescript", "rust"] }
+  ]
+}

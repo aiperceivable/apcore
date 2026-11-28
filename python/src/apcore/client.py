@@ -15,18 +15,20 @@ for preflight, and ``stream()`` for chunked results.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import logging
 import threading
 from datetime import datetime, timezone
-from collections.abc import AsyncGenerator, Callable as CallableABC, Iterable
+from collections.abc import AsyncGenerator, Awaitable, Callable as CallableABC, Iterable
 from contextlib import aclosing
-from typing import Any, Callable
+from typing import Any, Callable, cast
 
+from apcore.bound_module import _BoundModuleDecorator, _bind_module
 from apcore.capabilities import CallableDefinition, CapabilityPage, CapabilitySearchProvider
 from apcore.config import Config
 from apcore.context import Context
 from apcore.errors import InvalidInputError, SysModulesDisabledError
-from apcore.decorator import module as decorator_module
+from apcore.decorator import FunctionModule, _make_auto_id
 from apcore.events.emitter import ApCoreEvent, EventEmitter, EventSubscriber
 from apcore.events.factory import SubscriberRegistry
 from apcore.executor import Executor
@@ -40,7 +42,7 @@ from apcore.lifecycle import (
     _validate_drain_options,
     _validate_duration,
 )
-from apcore.module import PreflightResult
+from apcore.module import ModuleAnnotations, ModuleExample, PreflightResult, PreviewResult
 from apcore.policy import ExecutionPolicy
 from apcore.observability.metrics import MetricsCollector
 from apcore.registry import Registry
@@ -215,18 +217,23 @@ class APCore:
         id: str | None = None,  # noqa: A002
         description: str | None = None,
         documentation: str | None = None,
-        annotations: dict[str, Any] | None = None,
+        annotations: ModuleAnnotations | dict[str, Any] | None = None,
         tags: list[str] | None = None,
         version: str = "1.0.0",
         metadata: dict[str, Any] | None = None,
         display: dict[str, Any] | None = None,
-        examples: list[Any] | None = None,
+        examples: list[ModuleExample] | None = None,
         *,
         resources: dict[str, Any] | None = None,
-    ) -> Callable:
+        destructive: bool | None = None,
+        requires_approval: bool | None = None,
+        preview: Callable[[dict[str, Any], Context[Any]], PreviewResult | Awaitable[PreviewResult]] | None = None,
+    ) -> _BoundModuleDecorator:
         """Decorator to register a function as a module in this client's registry.
 
         ``resources["timeout"]`` sets the module's execution budget in milliseconds.
+        Use ``invoke`` for governed execution and ``raw`` for direct execution.
+        Calling the decorated function directly retains its original behavior.
 
         Usage:
             @client.module(id="math.add")
@@ -234,23 +241,38 @@ class APCore:
                 return a + b
         """
 
-        def decorator(func: Callable) -> Callable:
-            inner = decorator_module(
-                id=id,
+        def decorator(func: Callable[..., Any], /) -> Callable[..., Any]:
+            flags = {
+                key: value
+                for key, value in (("destructive", destructive), ("requires_approval", requires_approval))
+                if value is not None
+            }
+            if not flags:
+                merged_annotations = annotations
+            elif isinstance(annotations, ModuleAnnotations):
+                merged_annotations = dataclasses.replace(annotations, **flags)
+            else:
+                merged_annotations = {**(annotations or {}), **flags}
+            module_id = id if id is not None else _make_auto_id(func)
+            module = FunctionModule(
+                func=func,
+                module_id=module_id,
                 description=description,
                 documentation=documentation,
-                annotations=annotations,
+                annotations=merged_annotations,
                 tags=tags,
                 version=version,
                 metadata=metadata,
                 display=display,
                 examples=examples,
-                registry=self.registry,
                 resources=resources,
+                preview=preview,
             )
-            return inner(func)
+            bound = _bind_module(self, func, module)
+            self.registry.register(module_id, module)
+            return bound
 
-        return decorator
+        return cast(_BoundModuleDecorator, decorator)
 
     def register(self, module_id: str, module_obj: Any) -> None:
         """Register a module object directly.

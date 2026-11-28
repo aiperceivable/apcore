@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass, field
 
-from apcore import ACL, ACLRule, APCore, ExecutionPolicy
+from apcore import ACL, ACLRule, APCore, BoundModule, ExecutionPolicy
 from apcore.acl import AuditEntry
 from apcore_mcp import APCoreMCP, InMemoryApprovalStore
 from pydantic import BaseModel
@@ -25,7 +25,7 @@ class Notebook:
         return ArchiveResult(archived=note_id)
 
 
-def build_app(notebook: Notebook, audit: list[AuditEntry]) -> APCore:
+def build_app(notebook: Notebook, audit: list[AuditEntry]) -> tuple[APCore, BoundModule[[str], ArchiveResult]]:
     client = APCore(policy=ExecutionPolicy(strict=True, gate_destructive=True))
     client.executor.set_acl(
         ACL(
@@ -35,7 +35,7 @@ def build_app(notebook: Notebook, audit: list[AuditEntry]) -> APCore:
         )
     )
 
-    @client.module(ARCHIVE, description="Archive a note", annotations={"destructive": True})
+    @client.module(ARCHIVE, description="Archive a note", destructive=True, requires_approval=True)
     def archive(note_id: str) -> ArchiveResult:
         return notebook.archive(note_id)
 
@@ -47,7 +47,7 @@ def build_app(notebook: Notebook, audit: list[AuditEntry]) -> APCore:
     def restricted() -> dict[str, bool]:
         raise AssertionError("The ACL must prevent this function from running")
 
-    return client
+    return client, archive
 
 
 def build_mcp(client: APCore, reviews: InMemoryApprovalStore) -> APCoreMCP:

@@ -12,10 +12,15 @@ import time
 from contextlib import suppress
 from copy import copy, deepcopy
 from typing import TYPE_CHECKING, Any
+from uuid import UUID
+
+from pydantic import AliasPath, BaseModel, RootModel
 
 from apcore.errors import PolicyEvaluationError
 from apcore.context import _APPROVAL_TOKEN_KEY
+from apcore.decorator import FunctionModule
 from apcore.policy import PolicyEvaluationRequest, PolicyEvaluator, PolicyVerdict
+from apcore.utils.module_output import _validation_property_name
 
 if TYPE_CHECKING:
     from apcore.cancel import CancelToken
@@ -55,6 +60,31 @@ def _argument_digest(arguments: dict[str, Any]) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
+def _project_function_value(value: Any) -> Any:
+    """Project validated function values using declared fields, without application serializers."""
+    if isinstance(value, BaseModel):
+        if value.__pydantic_private__:
+            raise PolicyEvaluationError()
+        if isinstance(value, RootModel):
+            return _project_function_value(value.root)
+        fields = dict(value.model_extra or {})
+        for name, field in type(value).model_fields.items():
+            if isinstance(field.validation_alias, AliasPath):
+                raise PolicyEvaluationError()
+            wire_name = _validation_property_name(name, field.validation_alias, name)
+            if wire_name in fields:
+                raise PolicyEvaluationError()
+            fields[wire_name] = getattr(value, name)
+        return _project_function_value(fields)
+    if type(value) is UUID:
+        return str(value)
+    if type(value) is dict:
+        return {key: _project_function_value(item) for key, item in value.items()}
+    if type(value) is list:
+        return [_project_function_value(item) for item in value]
+    return value
+
+
 class _PolicyInvocation:
     """Record the selected invocation before middleware or provider callbacks."""
 
@@ -70,6 +100,7 @@ class _PolicyInvocation:
         except Exception:
             raise PolicyEvaluationError() from None
         self.arguments: dict[str, Any] | None = None
+        self._native_arguments: dict[str, Any] | None = None
         self.digest: str | None = None
         self.authorized = False
 
@@ -77,8 +108,14 @@ class _PolicyInvocation:
         arguments = ctx.validated_inputs
         if arguments is None or _APPROVAL_TOKEN_KEY in arguments:
             raise PolicyEvaluationError()
-        self.digest = _argument_digest(arguments)
-        self.arguments = deepcopy(arguments)
+        try:
+            if isinstance(self.module, FunctionModule):
+                self._native_arguments = deepcopy(arguments)
+                arguments = _project_function_value(arguments)
+            self.digest = _argument_digest(arguments)
+            self.arguments = deepcopy(arguments)
+        except Exception:
+            raise PolicyEvaluationError() from None
 
     def _check_binding(self, ctx: PipelineContext) -> None:
         identity = ctx.context.identity
@@ -91,17 +128,27 @@ class _PolicyInvocation:
         ):
             raise PolicyEvaluationError()
 
-    def checked_arguments(self, ctx: PipelineContext) -> dict[str, Any]:
+    def checked_arguments(self, ctx: PipelineContext, *, dispatch: bool = False) -> dict[str, Any]:
         self._check_binding(ctx)
         capture = deepcopy(self.arguments)
+        current = ctx.validated_inputs
+        if self._native_arguments is not None:
+            try:
+                if current != self._native_arguments:
+                    raise PolicyEvaluationError()
+                current = _project_function_value(current)
+            except Exception:
+                raise PolicyEvaluationError() from None
         if (
-            ctx.validated_inputs is None
+            current is None
             or capture is None
             or self.digest is None
-            or _argument_digest(ctx.validated_inputs) != self.digest
+            or _argument_digest(current) != self.digest
             or _argument_digest(capture) != self.digest
         ):
             raise PolicyEvaluationError()
+        if dispatch and self._native_arguments is not None:
+            return deepcopy(self._native_arguments)
         return capture
 
     def preflight_snapshot(self, ctx: PipelineContext) -> tuple[dict[str, Any], Context[Any]]:

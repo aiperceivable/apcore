@@ -9,6 +9,7 @@ import type { ErrorOptions } from './errors.js';
 import { MiddlewareChainError } from './middleware/manager.js';
 import { matchPattern } from './utils/pattern.js';
 import { policyInvocationOf } from './policy-evaluation.js';
+import { StandardValidationError } from './schema/standard.js';
 import { isScopedAdmissionError } from './scoped-invocation.js';
 
 // ---------------------------------------------------------------------------
@@ -1244,7 +1245,12 @@ export class PipelineEngine {
           trace.steps.push({ name: step.name, durationMs,
             result: { action: 'abort', explanation: cause.message },
             skipped: false, decisionPoint: false,
-            error: { code: cause instanceof ModuleError ? cause.code : 'GENERAL_INTERNAL_ERROR', message: cause.message } });
+            error: {
+              code: cause instanceof ModuleError ? cause.code : 'GENERAL_INTERNAL_ERROR',
+              message: cause.message,
+              ...(cause instanceof StandardValidationError ? { details: cause.details } : {}),
+            },
+          });
           for (const key of step.provides ?? []) failedProvides.add(key);
           idx += 1;
           continue;

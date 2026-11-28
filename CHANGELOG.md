@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Add governed typed Python module handles, TypeScript Standard Schema declarations, and optional Rust module macros and packs.
 - Provide explicit configuration, discovery, and full runtime assemblies. The default profile supports in-memory execution from installed Python, TypeScript, and Rust packages.
 - Add the pure TypeScript Prometheus text renderer and host-owned subscriber factories for configured event delivery.
 - **Protocol 2.0.0 draft revision 2.** Add opt-in policy evaluation after input validation. The enabled pipeline combines approval requirements at one gate, binds approval to the selected module version and effective arguments, and enforces the gate before ordinary and streaming execution. Final-scope pending approvals require an explicitly compatible scoped handler.

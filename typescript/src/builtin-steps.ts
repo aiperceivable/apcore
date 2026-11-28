@@ -52,6 +52,7 @@ import { ConfigurationError, ExecutionStrategy, GOVERNANCE_GATE } from './pipeli
 import { isStreamingModule } from './streaming.js';
 import type { Registry } from './registry/registry.js';
 import { jsonSchemaToTypeBox } from './schema/loader-pure.js';
+import { declarationJsonObject, declarationOf, takeDeclarationInputs, validateDeclarationInputs } from './schema/standard.js';
 import { SchemaValidator } from './schema/validator.js';
 import { guardCallChain } from './utils/call-chain.js';
 import { normalizeModuleObject } from './utils/module-output.js';
@@ -61,6 +62,8 @@ import { normalizeModuleObject } from './utils/module-output.js';
 // ---------------------------------------------------------------------------
 
 function resolveSchema(mod: Record<string, unknown>, key: string): TSchema | null {
+  const declaration = declarationOf(mod);
+  if (declaration) return key === 'inputSchema' ? declaration.inputSchema : declaration.outputSchema;
   const schema = mod[key] as TSchema | undefined;
   if (schema == null) return null;
   if (Kind in schema) return schema;
@@ -831,18 +834,25 @@ export class BuiltinInputValidation implements Step {
     if (invocation) assertPolicyBinding(ctx, invocation);
     let snapshot = invocation ? copyPolicyInputs(ctx.moduleId, ctx.inputs) : null;
     const mod = ctx.module as Record<string, unknown>;
+    const declaration = declarationOf(mod);
     const inputSchema = resolveSchema(mod, 'inputSchema');
+    let effectiveInputs = snapshot?.arguments ?? ctx.inputs;
+    if (declaration && !snapshot) effectiveInputs = declarationJsonObject(effectiveInputs, 'input');
     if (inputSchema !== null) {
-      validateSchema(inputSchema, snapshot?.arguments ?? ctx.inputs, 'Input');
+      validateSchema(inputSchema, effectiveInputs, 'Input');
       // Native TypeBox validators can change the inputs and retain aliases.
       // Capture both the values and their encoding from the detached result.
-      if (snapshot) snapshot = copyPolicyInputs(ctx.moduleId, snapshot.arguments);
+      if (snapshot && !declaration) snapshot = copyPolicyInputs(ctx.moduleId, effectiveInputs);
+    }
+    if (declaration) {
+      effectiveInputs = await validateDeclarationInputs(ctx, declaration, effectiveInputs);
+      if (snapshot) snapshot = copyPolicyInputs(ctx.moduleId, effectiveInputs);
     }
 
     const effectiveSchema = inputSchema ?? {};
-    const effectiveInputs = snapshot?.arguments ?? ctx.inputs;
+    effectiveInputs = snapshot?.arguments ?? effectiveInputs;
     ctx.context.redactedInputs = redactSensitive(effectiveInputs, effectiveSchema, this._redaction);
-    ctx.validatedInputs = snapshot ? structuredClone(effectiveInputs) : effectiveInputs;
+    ctx.validatedInputs = snapshot || declaration ? structuredClone(effectiveInputs) : effectiveInputs;
     if (invocation && snapshot) {
       snapshot.sensitiveFields = sensitivePolicyFields(effectiveInputs, effectiveSchema);
       invocation.validated = snapshot;
@@ -959,7 +969,8 @@ export class BuiltinExecute implements Step {
   async execute(ctx: PipelineContext): Promise<StepResult> {
     assertScopedInvocation(ctx, true);
     const invocation = policyInvocationOf(ctx);
-    let inputs = ctx.inputs;
+    const declaration = declarationOf(ctx.module);
+    let inputs = declaration ? takeDeclarationInputs(ctx) : ctx.inputs;
     if (invocation) {
       assertPolicyBinding(ctx, invocation);
       if (!invocation.approvedForDispatch || !invocation.validated) throw new PolicyEvaluationError(ctx.moduleId);

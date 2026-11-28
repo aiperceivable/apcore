@@ -940,6 +940,14 @@ impl Step for BuiltinInputValidation {
         let input_schema = module.input_schema();
         validate_against_schema(&ctx.inputs, &input_schema, "Input")?;
 
+        // Keep the legacy approval step in its existing position. Hosted policy
+        // and its final-scope approval receive the validated Serde representation.
+        #[cfg(feature = "macros")]
+        if let Some(inputs) = module.normalize_declared_inputs(&ctx.inputs)? {
+            validate_against_schema(&inputs, &input_schema, "Input")?;
+            ctx.inputs = inputs;
+        }
+
         if ctx.policy_evaluator.is_some() {
             ctx.policy_sensitive_fields =
                 crate::executor::schema_sensitive_fields(&ctx.inputs, &input_schema);

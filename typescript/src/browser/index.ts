@@ -5,7 +5,8 @@
 
 // ---- Client / runtime core -----------------------------------------------
 export { APCore } from '../client.js';
-export type { APCoreOptions, APCorePlugin, ModuleOptions } from '../client.js';
+export type { APCoreOptions, APCorePlugin, BoundModule, DefineModuleOptions, ModuleOptions } from '../client.js';
+export type { StandardSchemaInput, StandardSchemaIssue, StandardSchemaOutput, StandardSchemaV1 } from '../schema/standard.js';
 export type { DrainAbortedContext, DrainAbortReason, DrainContext, LifecycleError, LifecycleEventFlush, LifecycleModuleReport, LifecycleOperation, LifecycleReport, LifecycleStatus, ShutdownOptions, UnregisterOptions, WatchOptions } from '../lifecycle.js';
 
 export { Executor, REDACTED_VALUE } from '../executor.js';

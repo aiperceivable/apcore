@@ -1,6 +1,6 @@
 [package]
 name = "apcore"
-version = "1.0.0-alpha.5"
+version = "1.0.0-alpha.6"
 edition = "2021"
 # Minimum supported Rust version. Verified with `cargo +1.86 check --all-features`.
 # The binding language constraint is `std::task::Waker::noop()` (used by the
@@ -34,6 +34,9 @@ categories = [
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
 
+[workspace]
+members = ["apcore-macros"]
+
 # The consolidated integration-test binary for all files that don't touch
 # process-global state (autotests disabled above).
 [[test]]
@@ -44,6 +47,11 @@ required-features = ["config", "discovery", "events-file", "sys-modules"]
 [[test]]
 name = "core_profile"
 path = "tests/core_profile.rs"
+
+[[test]]
+name = "typed_modules"
+path = "tests/typed_modules.rs"
+required-features = ["macros"]
 
 # Files that register into the process-global Config namespace registry or
 # mutate env vars are kept as SEPARATE binaries so each runs in its own process
@@ -148,6 +156,7 @@ path = "tests/test_otlp_proxy_routing.rs"
 required-features = ["events"]
 
 [dependencies]
+apcore-macros = { version = "=1.0.0-alpha.6", path = "apcore-macros", optional = true }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -181,6 +190,7 @@ config = ["dep:serde_yaml_ng"]
 discovery = ["config", "dep:notify"]
 events = ["reqwest", "dep:h2", "dep:url"]
 events-file = ["tokio/fs", "tokio/io-util"]
+macros = ["dep:apcore-macros"]
 sys-modules = ["config"]
 full = ["config", "discovery", "events", "events-file", "sys-modules"]
 

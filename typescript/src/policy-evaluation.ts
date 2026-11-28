@@ -166,15 +166,24 @@ function copyObject(value: object, parts: string[], active: Set<object>): Record
   return Object.fromEntries(keys.map((key) => [key, copies.get(key)]));
 }
 
+/** @internal Detach a wire object using the invocation's canonical JSON constraints. */
+export function snapshotJsonObject(value: unknown): ValidationSnapshot {
+  const parts: string[] = [];
+  const args = copyArgument(value, parts, new Set());
+  if (args === null || typeof args !== 'object' || Array.isArray(args)) {
+    throw new Error('Expected a JSON object.');
+  }
+  return { arguments: args as Record<string, unknown>, canonical: parts, sensitiveFields: [] };
+}
+
 /** @internal Detach the inputs and capture their canonical encoding. */
 export function copyPolicyInputs(moduleId: string, inputs: Record<string, unknown>): ValidationSnapshot {
   try {
-    const parts: string[] = [];
-    const args = copyArgument(inputs, parts, new Set());
-    if (args === null || typeof args !== 'object' || Array.isArray(args) || Object.hasOwn(args, '_approval_token')) {
+    const snapshot = snapshotJsonObject(inputs);
+    if (Object.hasOwn(snapshot.arguments, '_approval_token')) {
       throw new Error('Policy requires an object of business arguments.');
     }
-    return { arguments: args as Record<string, unknown>, canonical: parts, sensitiveFields: [] };
+    return snapshot;
   } catch {
     throw new PolicyEvaluationError(moduleId);
   }
