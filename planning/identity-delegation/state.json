@@ -1,0 +1,45 @@
+{
+  "feature": "identity-delegation",
+  "created": "2026-11-28",
+  "updated": "2026-11-28",
+  "status": "in_progress",
+  "execution_order": ["shared-contract", "core-sdks", "surfaces", "verification"],
+  "progress": {
+    "total_tasks": 4,
+    "completed": 0,
+    "in_progress": 0,
+    "pending": 3,
+    "skipped": 0,
+    "blocked": 1
+  },
+  "tasks": [
+    {
+      "id": "shared-contract",
+      "file": "tasks/shared-contract.md",
+      "title": "Shared delegation contract and conformance",
+      "status": "blocked",
+      "blocker": "Maintainer approval of the proposed protocol draft revision"
+    },
+    {
+      "id": "core-sdks",
+      "file": "tasks/core-sdks.md",
+      "title": "Python, TypeScript, and Rust delegated identity",
+      "status": "pending",
+      "dependencies": ["shared-contract"]
+    },
+    {
+      "id": "surfaces",
+      "file": "tasks/surfaces.md",
+      "title": "MCP and A2A verified claim mapping",
+      "status": "pending",
+      "dependencies": ["core-sdks"]
+    },
+    {
+      "id": "verification",
+      "file": "tasks/verification.md",
+      "title": "Dual-repository verification",
+      "status": "pending",
+      "dependencies": ["core-sdks", "surfaces"]
+    }
+  ]
+}
