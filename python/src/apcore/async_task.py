@@ -436,6 +436,7 @@ class AsyncTaskManager:
     ) -> None:
         self._executor = executor
         self._max_tasks = max_tasks
+        self._owns_private_task_store = store is None
         self._store: TaskStore = store if store is not None else InMemoryTaskStore()
         self._semaphore = asyncio.Semaphore(max_concurrent)
         # Admission guard (mirrors Rust's admission_lock): serializes the
@@ -447,6 +448,11 @@ class AsyncTaskManager:
         self._reaper_task: asyncio.Task[Any] | None = None
         self._reaper_interval: float = 3600.0
         self._reaper_max_age: float = 3600.0
+
+    @property
+    def owns_private_task_store(self) -> bool:
+        """Whether the task store was created exclusively for this manager."""
+        return self._owns_private_task_store
 
     async def _save(self, info: TaskInfo) -> None:
         """Persist ``info`` via the configured store.

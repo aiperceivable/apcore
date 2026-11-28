@@ -929,6 +929,8 @@ class PipelineEngine:
                         scoped_frame.require_module(ctx, scoped_module)
                     elif i > scoped_frame.steps.gate:
                         scoped_frame.require_grant(ctx, scoped_module)
+                        if i == scoped_frame.steps.dispatch:
+                            scoped_dispatched = True
                 if timeout_ms > 0:
                     result = await asyncio.wait_for(
                         step.execute(ctx),
@@ -936,11 +938,8 @@ class PipelineEngine:
                     )
                 else:
                     result = await step.execute(ctx)
-                if scoped_frame is not None:
-                    if i == scoped_frame.steps.lookup:
-                        scoped_module = ctx.module
-                    elif i == scoped_frame.steps.dispatch:
-                        scoped_dispatched = True
+                if scoped_frame is not None and i == scoped_frame.steps.lookup:
+                    scoped_module = ctx.module
             except Exception as exc:
                 duration = (time.monotonic() - step_start) * 1000
 

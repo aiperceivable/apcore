@@ -177,6 +177,24 @@ async def test_scoped_strategy_requires_dispatch_before_returning_output() -> No
 
 
 @pytest.mark.asyncio
+async def test_scoped_dispatch_preserves_business_error_recovery() -> None:
+    class FailingModule(_Module):
+        async def execute(self, inputs: dict[str, Any], context: Context) -> dict[str, Any]:
+            raise ValueError("Business error")
+
+    class Recover:
+        def on_step_error(self, step_name: str, state: PipelineState, error: Exception) -> dict[str, Any] | None:
+            return {"recovered": True} if step_name == "execute" else None
+
+    registry = Registry()
+    registry.register("test.run", FailingModule())
+    with Executor(registry, acl=ACL([_allow({"scopes": ["read"]})])) as executor:
+        executor.current_strategy.add_step_middleware(Recover())
+        context = Context.create(Identity("actor", scopes=["read"]))
+        assert await executor.call_async("test.run", {}, context) == {"recovered": True}
+
+
+@pytest.mark.asyncio
 async def test_scoped_lookup_binds_module_before_step_observers() -> None:
     class ClearLookupOutput:
         def after_step(self, step_name: str, state: PipelineState, result: StepResult) -> None:

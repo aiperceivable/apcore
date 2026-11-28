@@ -165,6 +165,8 @@ interface AsyncTaskManagerOptions {
  */
 export class AsyncTaskManager {
   readonly supportsTaskAllocationCallback = true;
+  /** Whether the task store was created exclusively for this manager. */
+  readonly ownsPrivateTaskStore: boolean;
   private readonly _executor: Executor;
   private readonly _store: TaskStore;
   private readonly _maxConcurrent: number;
@@ -187,6 +189,7 @@ export class AsyncTaskManager {
 
   constructor(opts: AsyncTaskManagerOptions) {
     this._executor = opts.executor;
+    this.ownsPrivateTaskStore = opts.store == null;
     this._store = opts.store ?? new InMemoryTaskStore();
     this._maxConcurrent = opts.maxConcurrent ?? 10;
     this._maxTasks = opts.maxTasks ?? 1000;
