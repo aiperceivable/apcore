@@ -544,7 +544,8 @@ mod tests {
             .list_callable(Some(&context), resume.clone())
             .is_ok());
 
-        executor.capability_discovery.cursors.lock()[0].created = Instant::now() - CURSOR_TTL;
+        executor.capability_discovery.cursors.lock()[0].created =
+            Instant::now().checked_sub(CURSOR_TTL).unwrap();
         let error = executor.list_callable(Some(&context), resume).unwrap_err();
         assert_eq!(error.code, ErrorCode::GeneralInvalidInput);
         assert_eq!(error.message, "Invalid capability cursor");
